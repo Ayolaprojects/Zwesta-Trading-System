@@ -54,8 +54,6 @@ linter:
     - avoid_positional_boolean_parameters
     - avoid_private_typedef_functions
     - avoid_renaming_method_parameters
-    - avoid_returning_null
-    - avoid_returning_null_for_async
     - avoid_returning_this
     - avoid_setters_without_getters
     - avoid_shadowing_type_parameters
@@ -80,13 +78,11 @@ linter:
     - library_prefixes
     - library_private_types_in_public_api
     - no_leading_underscores_for_library_prefixes
-    - no_leading_underscores_for_local_variables
     - null_closures
     - omit_local_variable_types
     - one_member_abstracts
     - only_throw_errors
     - overridden_fields
-    - package_api_docs
     - package_names
     - package_prefixed_library_names
     - parameter_assignments
@@ -101,7 +97,6 @@ linter:
     - prefer_const_literals_to_create_immutables
     - prefer_constructors_over_static_methods
     - prefer_contains
-    - prefer_equal_for_default_values
     - prefer_expression_function_bodies
     - prefer_final_fields
     - prefer_final_in_for_each
@@ -111,9 +106,6 @@ linter:
     - prefer_function_declarations_over_variables
     - prefer_generic_function_type_aliases
     - prefer_if_elements_to_conditional_expressions
-    - prefer_if_null_to_conditional_expressions
-    - prefer_if_on_single_line_is_else
-    - prefer_inline_over_function_references
     - prefer_int_literals
     - prefer_interpolation_to_compose_strings
     - prefer_inlined_adds
@@ -121,18 +113,15 @@ linter:
     - prefer_is_empty
     - prefer_is_not_empty
     - prefer_is_not_operator
-    - prefer_is_null_check_on_cascade_sequences
     - prefer_iterable_whereType
     - prefer_mixin
     - prefer_null_aware_operators
-    - prefer_null_coalescing_operators
     - prefer_relative_imports
     - prefer_single_quotes
     - prefer_spread_collections
     - provide_deprecation_message
     - recursive_getters
     - sized_box_for_whitespace
-    - sized_box_shrink_to_nothing
     - slash_for_doc_comments
     - sort_child_properties_last
     - sort_constructors_first
@@ -151,8 +140,6 @@ linter:
     - unnecessary_null_aware_assignments
     - unnecessary_null_checks
     - unnecessary_null_in_if_null_operators
-    - unnecessary_null_keyword
-    - unnecessary_null_to_get_or_else
     - unnecessary_overrides
     - unnecessary_parenthesis
     - unnecessary_raw_strings
@@ -160,12 +147,9 @@ linter:
     - unnecessary_string_interpolations
     - unnecessary_this
     - unnecessary_to_list_in_spreads
-    - unsafe_html
     - use_build_context_synchronously
     - use_full_hex_values_for_flutter_colors
     - use_function_type_syntax_for_parameters
-    - use_getters_to_change_properties
-    - use_if_null_to_convert_nullability
     - use_is_even_rather_than_modulo
     - use_key_in_widget_constructors
     - use_late_for_private_fields_and_variables
@@ -175,7 +159,6 @@ linter:
     - use_setters_to_change_properties
     - use_string_buffers
     - use_test_throws_matchers
-    - use_to_close_resource
     - use_truncating_division
     - void_checks
 

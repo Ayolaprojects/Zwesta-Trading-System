@@ -88,8 +88,7 @@ class MockDataProvider {
     );
 
     return {
-      'totalBalance': 75000.0,
-      'totalProfit': totalProfit + totalLoss,
+      'totalBalance': 75000,
       'openTrades': trades.where((t) => t.status == TradeStatus.open).length,
       'closedTrades': closedTrades.length,
       'winningTrades': winningTrades.length,

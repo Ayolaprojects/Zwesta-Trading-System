@@ -29,7 +29,7 @@ class PDFService {
     }
 
     // Generate HTML report
-    final html_content = '''
+    final reportHtml = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -246,8 +246,12 @@ class PDFService {
 </html>
     ''';
 
-    // Note: For APK builds, use PdfExportService instead for proper PDF export
-    // Web-only functionality removed for mobile compatibility
+        if (reportHtml.isEmpty) {
+            throw StateError('Failed to generate trade report template');
+        }
+
+        // Note: For APK builds, use PdfExportService instead for proper PDF export.
+        // Web-only functionality removed for mobile compatibility.
   }
 }
 

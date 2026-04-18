@@ -254,16 +254,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .toList();
   }
 
-  Map<String, double> _aggregateBotValues(String field) {
-    final totals = <String, double>{};
-    for (final bot in _realBotsList.cast<Map<String, dynamic>>()) {
-      final currency = _botCurrency(bot);
-      final amount = double.tryParse(bot[field]?.toString() ?? '0') ?? 0.0;
-      totals[currency] = (totals[currency] ?? 0.0) + amount;
-    }
-    return totals;
-  }
-
   String _normalizedModeValue(dynamic value, {bool defaultLive = false}) {
     final normalized = value?.toString().trim().toLowerCase() ?? '';
     if (normalized == 'live' || normalized == 'real') return 'live';
@@ -530,11 +520,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void dispose() {
     _refreshTimer?.cancel();
     super.dispose();
-  }
-
-  Future<String> _currentTradingMode() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('trading_mode') ?? 'DEMO';
   }
 
   /// Fetch broker account balances from /api/accounts/balances
@@ -902,8 +887,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 return withdrawalAccount == accountNum;
               })
               .toList();
-          final totalWithdrawn = accountWithdrawals.fold<double>(0, (sum, w) => sum + ((w['amount'] as num?)?.toDouble() ?? 0));
-
+          final totalWithdrawn = accountWithdrawals.fold<double>(
+            0,
+            (sum, withdrawal) => sum + ((withdrawal['amount'] as num?)?.toDouble() ?? 0),
+          );
           return Padding(
             padding: EdgeInsets.only(bottom: entry.key == selectedAccounts.length - 1 ? 0 : 16),
             child: _glassCard(
@@ -917,6 +904,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Row(
                     children: [
                       Container(
@@ -1114,7 +1102,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  /// Get withdrawal status color based on status string
   Color _getWithdrawalStatusColor(String status) {
     switch (status.toLowerCase()) {
       case 'completed':

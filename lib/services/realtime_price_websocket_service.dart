@@ -376,6 +376,7 @@ class RealtimePriceWebSocketService {
   // ==================== GETTERS ====================
 
   bool get isConnected => _isConnected;
+  bool get isUsingRestFallback => _useRestFallback;
   int get activeSubscriptions => _priceCallbacks.length;
 
   /// Get list of currently subscribed symbols

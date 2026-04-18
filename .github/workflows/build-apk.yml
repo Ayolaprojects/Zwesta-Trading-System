@@ -63,7 +63,17 @@ jobs:
         run: 'flutter pub get --enforce-lockfile'
 
       - name: Flutter analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos --no-fatal-warnings > flutter_analyze.log 2>&1
+          analyze_exit=$?
+          cat flutter_analyze.log
+          if grep -Eq '^[[:space:]]*(warning|error) -' flutter_analyze.log; then
+            echo "Analyzer reported warning/error findings"
+            exit 1
+          fi
+          echo "Analyzer findings are info-only; continuing build"
+          exit 0
       
       - name: Build APK
         run: 'flutter build apk --release --verbose'

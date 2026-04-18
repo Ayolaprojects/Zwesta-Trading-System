@@ -388,7 +388,6 @@ class _TradeAnalysisScreenState extends State<TradeAnalysisScreen>
     );
 
   Widget _buildSymbolRow(_SymbolStats s) {
-    const maxVal = 1.0;
     final normalized = s.totalProfit.abs().clamp(0.0, 1000.0) / 1000.0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),

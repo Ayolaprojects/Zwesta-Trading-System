@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-class _SummaryTile extends StatelessWidget {
+class SummaryTile extends StatelessWidget {
 
-  const _SummaryTile({
+  const SummaryTile({
     required this.label,
     required this.value,
     required this.icon,

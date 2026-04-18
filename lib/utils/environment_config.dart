@@ -3,10 +3,6 @@ import 'package:flutter/foundation.dart';
 enum Environment { development, staging, production }
 
 class EnvironmentConfig {
-  // VPS Configuration (Direct connection)
-  static const String _vpsHost = '148.113.5.39';
-  static const int _vpsPort = 9000;
-
   // Default API URLs — use HTTPS when SSL certs are deployed on VPS
   // Change to https:// once cert.pem/key.pem are placed on the VPS
   static const String _devApiUrl = 'http://148.113.5.39:9000';  // VPS

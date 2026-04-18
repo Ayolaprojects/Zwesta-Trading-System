@@ -19,20 +19,6 @@ class StatementService extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
 
-  Future<void> _loadStatementsFromStorage() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final statementsJson = prefs.getStringList('statements') ?? [];
-      _statements = statementsJson
-          .map((json) => Statement.fromJson(jsonDecode(json)))
-          .toList();
-      notifyListeners();
-    } catch (e) {
-      _errorMessage = 'Failed to load statements: $e';
-      notifyListeners();
-    }
-  }
-
   Future<Statement> generateStatement(
     Account account,
     List<Trade> trades,

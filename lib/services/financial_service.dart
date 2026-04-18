@@ -19,20 +19,6 @@ class FinancialService extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
 
-  Future<void> _loadFinancialStatementsFromStorage() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final statementsJson = prefs.getStringList('financial_statements') ?? [];
-      _financialStatements = statementsJson
-          .map((json) => FinancialStatement.fromJson(jsonDecode(json)))
-          .toList();
-      notifyListeners();
-    } catch (e) {
-      _errorMessage = 'Failed to load financial statements: $e';
-      notifyListeners();
-    }
-  }
-
   /// Generate comprehensive financial statement with capital, revenue, costs, and cash flows
   Future<FinancialStatement> generateFinancialStatement(
     Account account,

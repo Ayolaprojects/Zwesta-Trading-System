@@ -180,7 +180,6 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
 
   Widget _buildSummaryCards() {
     final stats = _dashboardStats;
-    final totalBalance = stats['totalBalance'] ?? 0.0;
     final totalProfit = stats['totalProfit'] ?? 0.0;
     final totalBalanceByCurrency = stats['totalBalanceByCurrency'] as Map<String, dynamic>?;
     final totalProfitByCurrency = stats['totalProfitByCurrency'] as Map<String, dynamic>?;
