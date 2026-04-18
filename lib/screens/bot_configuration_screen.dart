@@ -1,21 +1,4 @@
-INFO:__main__:🔍 Comprehensive MT5 readiness check (timeout: 30s)...
-INFO:__main__:✅ MT5 is READY - order execution path is functional (order_check retcode=0)
-INFO:__main__:   Account: 295677214, Balance: $1042.31
-INFO:__main__:   Symbol AAPLm: bid=270.41000, ask=270.55000
-INFO:__main__:  💾 Cached balance for Exness:295677214: $1042.31 equity=$1042.31 margin=$1042.31 (cache size: 1 entries)
-INFO:__main__:⏳ Checking critical symbols: ['BTCUSDm', 'ETHUSDm'] (timeout: 15s)
-INFO:__main__:✅ All critical symbols ready after 0s: ['BTCUSDm', 'ETHUSDm']
-INFO:__main__:🧭 Bot bot_1776374938731: Limiting cycle to top 2 symbols for risk control: ['AUDUSDm', 'BTCUSDm']
-INFO:__main__:⏱️ Bot bot_1776374938731: Adaptive cadence -> symbol=BTCUSDm strength=20/100 interval=240s poll=8s
-INFO:__main__:📊 Bot bot_1776374938731 Cycle #1: Signal check: ⏭️AUDUSDm:10 NEUTRAL | ⏭️BTCUSDm:20 SELL (threshold: 70/100)
-INFO:__main__:🧠 Bot bot_1776374938731: Adaptive scanner engaged for this cycle because assigned symbols produced no qualifying setup
-INFO:__main__:[SCANNER] No symbols met threshold 70. Closest setups: BTCUSDm:20 SELL (RSI overbought (72) + MACD conflicts with RSI signal + Low volatility - favorable conditions + Confidence: 20%), ETHUSDm:20 SELL (RSI overbought (66) + MACD conflicts with RSI signal + Low volatility - favorable conditions + Confidence: 20%), AUDUSDm:10 NEUTRAL (RSI neutral (47) + Low volatility - favorable conditions)
-INFO:__main__:🧠 Bot bot_1776374938731 SCANNER[adaptive]: No qualifying opportunities across 3 symbols
-INFO:__main__:[RISK] Bot bot_1776374938731 is in drawdown cooldown until 2026-04-18T18:38:48.787829, skipping AUDUSDm.
-INFO:__main__:[RISK] Bot bot_1776374938731 is in drawdown cooldown until 2026-04-18T18:38:48.787829, skipping BTCUSDm.
-INFO:__main__:[RISK] Bot bot_1776374938731 is in drawdown cooldown until 2026-04-18T18:38:48.787829, skipping ETHUSDm.
-INFO:__main__:✅ Bot bot_1776374938731: Cycle #1 complete | Trades placed: 0 | Open positions: 0 | Total P&L: 12.47 ZAR
-INFO:__main__:✅ Updated 34 live prices | Signals: 4 BUY, 11 SELL, 1 FLATimport 'dart:convert';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
