@@ -1,0 +1,19 @@
+<svg width="640" height="480" viewBox="0 0 640 480" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="640" height="480" rx="28" fill="url(#bg)"/>
+  <rect x="56" y="72" width="528" height="336" rx="24" fill="#FFF5ED"/>
+  <rect x="92" y="112" width="456" height="28" rx="14" fill="#EFD6C2"/>
+  <ellipse cx="320" cy="286" rx="170" ry="86" fill="#3C2115"/>
+  <ellipse cx="320" cy="282" rx="142" ry="62" fill="#FFF7F0"/>
+  <path d="M236 280C253 242 291 218 332 218C372 218 412 242 428 280C412 318 373 342 332 342C290 342 251 318 236 280Z" fill="#BB582B"/>
+  <path d="M285 240C301 221 326 210 353 211C344 236 343 261 352 286C326 282 302 265 285 240Z" fill="#6B9D50"/>
+  <path d="M238 300C260 322 296 336 333 336C368 336 404 322 426 300" stroke="#E5C3A5" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="278" cy="278" r="14" fill="#F7D6B7"/>
+  <circle cx="352" cy="256" r="18" fill="#F7D6B7"/>
+  <circle cx="383" cy="292" r="12" fill="#F7D6B7"/>
+  <defs>
+    <linearGradient id="bg" x1="44" y1="40" x2="598" y2="446" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5E0CE"/>
+      <stop offset="1" stop-color="#E8BC97"/>
+    </linearGradient>
+  </defs>
+</svg>

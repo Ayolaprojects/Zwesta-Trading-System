@@ -1,0 +1,115 @@
+:root {
+  --bg: #11100c;
+  --bg-deep: #1b170f;
+  --ink: #d6ccb0;
+  --ink-strong: #fff4cf;
+  --ink-muted: #b7a97b;
+  --accent: #d4a93d;
+  --panel-shadow: 0 28px 70px rgba(0, 0, 0, 0.34);
+  --font-display: 'Playfair Display', 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Garamond, serif;
+  --font-body: 'Inter', 'Trebuchet MS', 'Lucida Sans Unicode', 'Segoe UI', sans-serif;
+  font-family: var(--font-body);
+  line-height: 1.6;
+  font-weight: 400;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(255, 226, 137, 0.08), transparent 22%),
+    radial-gradient(circle at 88% 18%, rgba(199, 153, 36, 0.18), transparent 20%),
+    linear-gradient(180deg, #13110c 0%, #17130d 42%, #0b0906 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(143, 110, 32, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(143, 110, 32, 0.06) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.6), transparent 82%);
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 20% 12%, rgba(255, 221, 123, 0.12), transparent 18%),
+    radial-gradient(circle at 78% 24%, rgba(35, 69, 102, 0.08), transparent 22%),
+    radial-gradient(circle at 68% 76%, rgba(177, 130, 22, 0.12), transparent 20%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+a {
+  color: inherit;
+}
+
+img {
+  max-width: 100%;
+}
+
+h1,
+h2,
+h3,
+p,
+ul {
+  margin-top: 0;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--ink-strong);
+  font-family: var(--font-display);
+  line-height: 1.08;
+}
+
+h1 {
+  font-size: clamp(3rem, 6vw, 5.6rem);
+  letter-spacing: -0.05em;
+  margin-bottom: 20px;
+}
+
+h2 {
+  font-size: clamp(2rem, 3.8vw, 3.5rem);
+  letter-spacing: -0.04em;
+}
+
+h3 {
+  font-size: 1.55rem;
+  margin-bottom: 12px;
+}
+
+p,
+li {
+  font-size: 1rem;
+}
+
+@media (max-width: 640px) {
+  :root {
+    font-size: 15px;
+  }
+}

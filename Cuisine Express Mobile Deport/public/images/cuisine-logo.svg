@@ -1,0 +1,17 @@
+<svg width="220" height="170" viewBox="0 0 220 170" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="220" height="170" rx="18" fill="#F7F7F2"/>
+  <path d="M0 0H220V108H0V0Z" fill="#D4AA00"/>
+  <g transform="translate(34 18)">
+    <circle cx="58" cy="42" r="38" stroke="#282118" stroke-width="3.5"/>
+    <path d="M20 42H96" stroke="#282118" stroke-width="2.8"/>
+    <path d="M58 4V80" stroke="#282118" stroke-width="2.8"/>
+    <path d="M32 14C43 22 48 31 48 42C48 53 43 62 32 70" stroke="#282118" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M84 14C73 22 68 31 68 42C68 53 73 62 84 70" stroke="#282118" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M26 26H90" stroke="#282118" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M26 58H90" stroke="#282118" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M41 2C29 24 29 47 41 80" stroke="#282118" stroke-width="5.2" stroke-linecap="round"/>
+    <path d="M31 5C23 18 18 31 17 47" stroke="#282118" stroke-width="2.4" stroke-linecap="round"/>
+  </g>
+  <text x="110" y="130" text-anchor="middle" fill="#2D2418" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700">CUISINE EXPRESS DEPOT</text>
+  <text x="110" y="148" text-anchor="middle" fill="#5F5440" font-family="Arial, Helvetica, sans-serif" font-size="13" font-style="italic" font-weight="700">We Deliver Globally</text>
+</svg>
