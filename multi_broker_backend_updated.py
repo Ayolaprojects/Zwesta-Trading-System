@@ -1249,6 +1249,8 @@ class BrokerType(Enum):
     METATRADER5 = "mt5"
     INTERACTIVE_BROKERS = "ib"
     BINANCE = "binance"
+    FXCM = "fxcm"
+    FXM = "fxcm"
     OANDA = "oanda"
     PEPPERSTONE = "pepperstone"
     FXOPEN = "fxopen"
@@ -4488,6 +4490,7 @@ class FXCMConnection(BrokerConnection):
         super().__init__(BrokerType.FXM, credentials)
         is_live = bool(credentials.get('is_live', False))
         self.base_url = 'https://api.fxcm.com' if is_live else 'https://api-demo.fxcm.com'
+        self.last_error = ''
 
     def _headers(self, content_type: bool = True) -> Dict:
         headers = {
@@ -4523,27 +4526,67 @@ class FXCMConnection(BrokerConnection):
     def _display_symbol(self, instrument: str) -> str:
         return (instrument or '').replace('/', '').upper()
 
-    def connect(self) -> bool:
+    def _extract_payload_list(self, payload: Dict, *keys: str) -> List[Dict]:
+        if not isinstance(payload, dict):
+            return []
+
+        response_payload = payload.get('response') if isinstance(payload.get('response'), dict) else {}
+        candidates = [payload, response_payload]
+        for candidate in candidates:
+            for key in keys:
+                value = candidate.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
+
+    def _request(self, method: str, path: str, *, params: Dict = None, json: Dict = None, timeout: int = 15) -> Optional[Dict]:
         try:
             import requests
 
+            response = requests.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=self._headers(content_type=json is not None),
+                params=params,
+                json=json,
+                timeout=timeout,
+            )
+            if response.status_code != 200:
+                self.last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+                logger.error(f"FXCM request failed for {path}: {self.last_error}")
+                return None
+
+            payload = response.json()
+            if isinstance(payload, dict) and payload.get('error'):
+                self.last_error = str(payload.get('error'))
+                logger.error(f"FXCM API returned error for {path}: {self.last_error}")
+                return None
+
+            self.last_error = ''
+            return payload if isinstance(payload, dict) else {}
+        except Exception as e:
+            self.last_error = str(e)
+            logger.error(f"Error calling FXCM endpoint {path}: {e}")
+            return None
+
+    def connect(self) -> bool:
+        try:
             if not self.credentials.get('api_key'):
+                self.last_error = 'Missing API token'
                 logger.error('FXCM: Missing API token')
                 return False
 
-            resp = requests.get(
-                f"{self.base_url}/trading/get_model",
-                headers=self._headers(content_type=False),
-                params={'models': 'Account'},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                self.connected = True
-                self.get_account_info()
-                return True
-            logger.error(f"FXCM authentication failed: {resp.status_code} - {resp.text}")
-            return False
+            payload = self._request('GET', '/trading/get_model', params={'models': 'Account'}, timeout=15)
+            if not payload:
+                if not self.last_error:
+                    self.last_error = 'Authentication failed'
+                return False
+
+            self.connected = True
+            self.get_account_info()
+            return True
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Error connecting to FXCM: {e}")
             return False
 
@@ -4553,71 +4596,72 @@ class FXCMConnection(BrokerConnection):
 
     def get_account_info(self) -> Dict:
         try:
-            import requests
-
             if not self.connected:
                 return {}
 
-            resp = requests.get(
-                f"{self.base_url}/trading/get_model",
-                headers=self._headers(content_type=False),
-                params={'models': 'Account'},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                accounts = data.get('accounts', data.get('response', {}).get('accounts', []))
-                account_id = str(self.credentials.get('account_number', '') or '')
-                account = {}
-                if isinstance(accounts, list):
-                    for item in accounts:
-                        if str(item.get('accountId', '')) == account_id or not account_id:
-                            account = item
-                            break
-                    if not account and accounts:
-                        account = accounts[0]
-                if account and not self.credentials.get('account_number'):
-                    self.credentials['account_number'] = str(account.get('accountId', ''))
-                self.account_info = {
-                    'account_id': account.get('accountId', ''),
-                    'balance': float(account.get('balance', 0)),
-                    'equity': float(account.get('equity', 0)),
-                    'margin_free': float(account.get('usableMargin', 0)),
-                    'currency': account.get('mc', 'USD'),
-                    'broker': 'FXCM',
-                }
-                return self.account_info
+            data = self._request('GET', '/trading/get_model', params={'models': 'Account'}, timeout=10)
+            if not data:
+                return {}
+
+            accounts = self._extract_payload_list(data, 'accounts', 'Account')
+            account_id = str(self.credentials.get('account_number', '') or '')
+            account = {}
+            if isinstance(accounts, list):
+                for item in accounts:
+                    if str(item.get('accountId', item.get('account_id', ''))) == account_id or not account_id:
+                        account = item
+                        break
+                if not account and accounts:
+                    account = accounts[0]
+
+            if account and not self.credentials.get('account_number'):
+                self.credentials['account_number'] = str(account.get('accountId', account.get('account_id', '')))
+
+            if not account:
+                self.last_error = 'No FXCM account payload returned'
+                return {}
+
+            self.account_info = {
+                'account_id': account.get('accountId', account.get('account_id', '')),
+                'accountNumber': str(account.get('accountId', account.get('account_id', ''))),
+                'balance': float(account.get('balance', 0) or 0),
+                'equity': float(account.get('equity', account.get('balance', 0)) or 0),
+                'margin_free': float(account.get('usableMargin', account.get('usable_margin', 0)) or 0),
+                'marginFree': float(account.get('usableMargin', account.get('usable_margin', 0)) or 0),
+                'margin': float(account.get('usdMr', account.get('margin', 0)) or 0),
+                'profit': float(account.get('grossPL', account.get('profit', 0)) or 0),
+                'currency': str(account.get('mc', account.get('currency', 'USD')) or 'USD').upper(),
+                'broker': 'FXCM',
+                'dataSource': 'live',
+            }
+            return self.account_info
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Error getting FXCM account info: {e}")
 
         return {}
 
     def get_positions(self) -> List[Dict]:
         try:
-            import requests
-
             if not self.connected:
                 return []
 
-            resp = requests.get(
-                f"{self.base_url}/trading/get_model",
-                headers=self._headers(content_type=False),
-                params={'models': 'OpenPosition'},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                raw = data.get('open_positions', data.get('openPositions', []))
-                return [{
-                    'deal_id': str(pos.get('tradeId', '')),
-                    'symbol': self._display_symbol(pos.get('currency', '')),
-                    'type': 'BUY' if pos.get('isBuy', False) else 'SELL',
-                    'size': abs(float(pos.get('amountK', 0))),
-                    'level': float(pos.get('open', 0)),
-                    'profit_loss': float(pos.get('grossPL', 0)),
-                    'broker': 'FXCM',
-                } for pos in (raw if isinstance(raw, list) else [])]
+            data = self._request('GET', '/trading/get_model', params={'models': 'OpenPosition'}, timeout=10)
+            if not data:
+                return []
+
+            raw = self._extract_payload_list(data, 'open_positions', 'openPositions', 'OpenPosition')
+            return [{
+                'deal_id': str(pos.get('tradeId', pos.get('trade_id', ''))),
+                'symbol': self._display_symbol(pos.get('currency', pos.get('symbol', ''))),
+                'type': 'BUY' if pos.get('isBuy', pos.get('is_buy', False)) else 'SELL',
+                'size': abs(float(pos.get('amountK', pos.get('amount', 0)) or 0)),
+                'level': float(pos.get('open', pos.get('open_price', 0)) or 0),
+                'profit_loss': float(pos.get('grossPL', pos.get('gross_pl', 0)) or 0),
+                'broker': 'FXCM',
+            } for pos in (raw if isinstance(raw, list) else [])]
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Error getting FXCM positions: {e}")
 
         return []
@@ -4680,7 +4724,40 @@ class FXCMConnection(BrokerConnection):
             return {'success': False, 'error': str(e)}
 
     def get_trades(self) -> List[Dict]:
-        return []
+        try:
+            if not self.connected:
+                return []
+
+            data = self._request('GET', '/trading/get_model', params={'models': 'ClosedPosition'}, timeout=10)
+            if not data:
+                return []
+
+            raw = self._extract_payload_list(data, 'closed_positions', 'closedPositions', 'ClosedPosition')
+            result = []
+            for trade in raw if isinstance(raw, list) else []:
+                is_buy = trade.get('isBuy', trade.get('is_buy', False))
+                open_time = trade.get('openTime') or trade.get('open_time')
+                close_time = trade.get('closeTime') or trade.get('close_time')
+                result.append({
+                    'ticket': str(trade.get('tradeId', trade.get('trade_id', ''))),
+                    'symbol': self._display_symbol(trade.get('currency', trade.get('symbol', ''))),
+                    'type': 'BUY' if is_buy else 'SELL',
+                    'entryCategory': 'trade',
+                    'volume': abs(float(trade.get('amountK', trade.get('amount', 0)) or 0)),
+                    'openPrice': float(trade.get('open', trade.get('open_price', 0)) or 0),
+                    'closePrice': float(trade.get('close', trade.get('close_price', 0)) or 0),
+                    'profit': float(trade.get('grossPL', trade.get('gross_pl', 0)) or 0),
+                    'commission': float(trade.get('commission', 0) or 0),
+                    'time': close_time or open_time or datetime.now().isoformat(),
+                    'openTime': open_time,
+                    'closeTime': close_time,
+                    'broker': 'FXCM',
+                })
+            return result
+        except Exception as e:
+            self.last_error = str(e)
+            logger.error(f"Error getting FXCM trades: {e}")
+            return []
 
 
 class OANDAConnection(BrokerConnection):
@@ -8585,6 +8662,10 @@ def get_account_detailed():
                             account_info['credential_id'] = cred['credential_id']
                             logger.info(f"✅ Fetched account details from FXCM {account_num}")
                         fxcm_conn.disconnect()
+                    else:
+                        logger.warning(
+                            f"⚠️ FXCM account fetch failed for {account_num}: {fxcm_conn.last_error or 'Unknown FXCM error'}"
+                        )
                 
                 # ==================== OANDA ====================
                 elif broker_name == 'OANDA':
@@ -8621,6 +8702,13 @@ def get_account_detailed():
                         }
                 
                 if account_info:
+                    persist_account_snapshot(
+                        broker_name,
+                        account_num,
+                        account_info,
+                        credential_id=cred.get('credential_id'),
+                        user_id=user_id,
+                    )
                     accounts_data.append(account_info)
                     
             except Exception as e:
@@ -8851,6 +8939,10 @@ def get_trades_history():
                         all_trades.extend(broker_trades)
                         logger.info(f"✅ Fetched {len(broker_trades)} trades from FXCM {account_num}")
                         fxcm_conn.disconnect()
+                    else:
+                        logger.warning(
+                            f"⚠️ FXCM trade fetch failed for {account_num}: {fxcm_conn.last_error or 'Unknown FXCM error'}"
+                        )
                 
                 # ==================== OANDA ====================
                 elif broker_name == 'OANDA':
