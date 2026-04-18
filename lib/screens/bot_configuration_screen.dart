@@ -1,4 +1,21 @@
-import 'dart:convert';
+INFO:__main__:🔍 Comprehensive MT5 readiness check (timeout: 30s)...
+INFO:__main__:✅ MT5 is READY - order execution path is functional (order_check retcode=0)
+INFO:__main__:   Account: 295677214, Balance: $1042.31
+INFO:__main__:   Symbol AAPLm: bid=270.41000, ask=270.55000
+INFO:__main__:  💾 Cached balance for Exness:295677214: $1042.31 equity=$1042.31 margin=$1042.31 (cache size: 1 entries)
+INFO:__main__:⏳ Checking critical symbols: ['BTCUSDm', 'ETHUSDm'] (timeout: 15s)
+INFO:__main__:✅ All critical symbols ready after 0s: ['BTCUSDm', 'ETHUSDm']
+INFO:__main__:🧭 Bot bot_1776374938731: Limiting cycle to top 2 symbols for risk control: ['AUDUSDm', 'BTCUSDm']
+INFO:__main__:⏱️ Bot bot_1776374938731: Adaptive cadence -> symbol=BTCUSDm strength=20/100 interval=240s poll=8s
+INFO:__main__:📊 Bot bot_1776374938731 Cycle #1: Signal check: ⏭️AUDUSDm:10 NEUTRAL | ⏭️BTCUSDm:20 SELL (threshold: 70/100)
+INFO:__main__:🧠 Bot bot_1776374938731: Adaptive scanner engaged for this cycle because assigned symbols produced no qualifying setup
+INFO:__main__:[SCANNER] No symbols met threshold 70. Closest setups: BTCUSDm:20 SELL (RSI overbought (72) + MACD conflicts with RSI signal + Low volatility - favorable conditions + Confidence: 20%), ETHUSDm:20 SELL (RSI overbought (66) + MACD conflicts with RSI signal + Low volatility - favorable conditions + Confidence: 20%), AUDUSDm:10 NEUTRAL (RSI neutral (47) + Low volatility - favorable conditions)
+INFO:__main__:🧠 Bot bot_1776374938731 SCANNER[adaptive]: No qualifying opportunities across 3 symbols
+INFO:__main__:[RISK] Bot bot_1776374938731 is in drawdown cooldown until 2026-04-18T18:38:48.787829, skipping AUDUSDm.
+INFO:__main__:[RISK] Bot bot_1776374938731 is in drawdown cooldown until 2026-04-18T18:38:48.787829, skipping BTCUSDm.
+INFO:__main__:[RISK] Bot bot_1776374938731 is in drawdown cooldown until 2026-04-18T18:38:48.787829, skipping ETHUSDm.
+INFO:__main__:✅ Bot bot_1776374938731: Cycle #1 complete | Trades placed: 0 | Open positions: 0 | Total P&L: 12.47 ZAR
+INFO:__main__:✅ Updated 34 live prices | Signals: 4 BUY, 11 SELL, 1 FLATimport 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -435,6 +452,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   int _maxOpenTrades = 3; // Max simultaneous trades
   double _maxDrawdownPercent = 20; // Max allowed drawdown %
   String _managementProfile = 'beginner';
+  int? _manualSignalThreshold;
 
   String _selectedStrategy = 'Trend Following';
   List<String> _selectedSymbols = [];
@@ -605,6 +623,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       _riskPercent = (preset['riskPercent'] as num).toDouble();
       _maxOpenTrades = preset['maxOpenTrades'] as int;
       _maxDrawdownPercent = (preset['maxDrawdownPercent'] as num).toDouble();
+      _manualSignalThreshold = null;
       _allowedVolatility = List<String>.from(
         preset['allowedVolatility'] as List,
       );
@@ -1243,21 +1262,32 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     });
   }
 
-  int _recommendedSignalThreshold() {
-    switch (_managementProfile) {
+  int _defaultSignalThresholdForProfile(String profile) {
+    switch (profile) {
       case 'small_account':
-        return 70;
+        return 30;
       case 'beginner':
-        return 70;
-      case 'balanced':
-        return 65;
-      case 'advanced':
         return 60;
+      case 'balanced':
+        return 45;
+      case 'advanced':
+        return 30;
       case 'fast_growth':
-        return 68;
+        return 30;
       default:
-        return 65;
+        return 45;
     }
+  }
+
+  int _recommendedSignalThreshold() {
+    return _manualSignalThreshold ?? _defaultSignalThresholdForProfile(_managementProfile);
+  }
+
+  String _signalThresholdLabel() {
+    if (_manualSignalThreshold == null) {
+      return 'Auto (${_defaultSignalThresholdForProfile(_managementProfile)})';
+    }
+    return '${_manualSignalThreshold!}';
   }
 
   int _recommendedMaxPositionsPerSymbol() {
@@ -1493,6 +1523,13 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           (config['riskPercent'] as num?)?.toDouble() ??
           ((config['riskPerTrade'] as num?)?.toDouble() ?? _riskPercent * 10) /
               10.0;
+      final signalThreshold =
+          (config['signalThreshold'] as num?)?.toInt() ??
+          _defaultSignalThresholdForProfile(
+            (config['managementProfile'] ?? _managementProfile).toString(),
+          );
+      final signalThresholdMode =
+          (config['signalThresholdMode'] ?? 'auto').toString().toLowerCase();
 
       setState(() {
         _botIdController.text = preserveBotId
@@ -1518,6 +1555,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             _maxDrawdownPercent;
         _managementProfile = (config['managementProfile'] ?? _managementProfile)
             .toString();
+        _manualSignalThreshold =
+          signalThresholdMode == 'manual' ? signalThreshold : null;
         _allowedVolatility = allowedVolatility;
         _intelligentScanner = config['intelligentScanner'] == true;
         _enableProfitProtection =
@@ -1760,7 +1799,6 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         .clamp(5.0, 30.0)
         .toDouble();
     final maxPositionsPerSymbol = _recommendedMaxPositionsPerSymbol();
-    final signalThreshold = _recommendedSignalThreshold();
     final tradingMode = _recommendedTradingMode();
     final tradingInterval = _recommendedTradingInterval();
     final pollInterval = _recommendedPollInterval();
@@ -1780,7 +1818,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'maxPositionsPerSymbol': maxPositionsPerSymbol,
       'maxDrawdownPercent': _maxDrawdownPercent,
       'drawdownPausePercent': _maxDrawdownPercent,
-      'signalThreshold': signalThreshold,
+      'signalThresholdMode':
+          _manualSignalThreshold == null ? 'auto' : 'manual',
+      if (_manualSignalThreshold != null)
+        'signalThreshold': _manualSignalThreshold,
       'tradingMode': tradingMode,
       'tradingInterval': tradingInterval,
       'pollInterval': pollInterval,
@@ -3489,6 +3530,49 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     ),
                                   );
                                 },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Signal Threshold',
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Auto lets the backend choose the threshold from the profile and adaptive logic. Pick a value only when you want to force the minimum signal strength.',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  ChoiceChip(
+                                    label: Text(_signalThresholdLabel()),
+                                    selected: _manualSignalThreshold == null,
+                                    onSelected: (_) => setState(
+                                      () => _manualSignalThreshold = null,
+                                    ),
+                                  ),
+                                  for (final threshold in const [30, 45, 60, 70])
+                                    ChoiceChip(
+                                      label: Text('$threshold'),
+                                      selected:
+                                          _manualSignalThreshold == threshold,
+                                      onSelected: (_) => setState(
+                                        () => _manualSignalThreshold = threshold,
+                                      ),
+                                    ),
+                                ],
                               ),
                             ],
                           ),
