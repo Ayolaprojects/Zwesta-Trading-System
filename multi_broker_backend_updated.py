@@ -1048,7 +1048,8 @@ def _get_cached_strategy_params(strategy_cache: Dict[str, Optional[Dict[str, Any
 
 
 def _get_effective_symbol_params(symbol: str, market_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    params = dict(SYMBOL_PARAMETERS.get(symbol, DEFAULT_SYMBOL_PARAMS))
+    symbol_key = _normalize_symbol_base(symbol)
+    params = dict(SYMBOL_PARAMETERS.get(symbol_key, DEFAULT_SYMBOL_PARAMS))
     adaptive_reduction = 0
     if isinstance(market_data, dict):
         try:
@@ -10423,6 +10424,11 @@ def build_scanner_symbol_universe(bot_config: Dict[str, Any]) -> List[str]:
             _safe_float(bot_config.get('accountEquity'), 0.0),
             _safe_float(bot_config.get('accountBalance'), 0.0),
         )
+        configured_base_symbols = {
+            _normalize_symbol_base(symbol)
+            for symbol in normalized_configured
+            if _normalize_symbol_base(symbol)
+        }
         crypto_min_balance = _get_small_live_crypto_min_balance(account_currency)
         configured_crypto_bases = {
             _normalize_symbol_base(symbol)
@@ -10430,6 +10436,16 @@ def build_scanner_symbol_universe(bot_config: Dict[str, Any]) -> List[str]:
             if _normalize_symbol_base(symbol) in SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS
         }
         allow_requested_crypto = bool(configured_crypto_bases) and balance_basis >= crypto_min_balance
+        configured_crypto_only = bool(configured_base_symbols) and configured_base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS)
+
+        if configured_crypto_only:
+            crypto_only_symbols = [
+                symbol for symbol in broker_symbol_universe
+                if _normalize_symbol_base(symbol) in configured_crypto_bases
+            ]
+            if normalized_configured:
+                return normalized_configured if normalized_configured else crypto_only_symbols
+            return crypto_only_symbols or normalized_configured or broker_symbol_universe
 
         allowed_base_symbols = set(SMALL_LIVE_ACCOUNT_SAFE_BASE_SYMBOLS)
         if allow_requested_crypto:
@@ -10610,6 +10626,14 @@ def _choose_strategy_for_cycle(
     signal_threshold: int,
 ) -> str:
     current_strategy = str(bot_config.get('strategy') or 'Trend Following')
+    configured_base_symbols = {
+        _normalize_symbol_base(symbol)
+        for symbol in (configured_symbols or [])
+        if _normalize_symbol_base(symbol)
+    }
+    if configured_base_symbols and configured_base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
+        return current_strategy if current_strategy in STRATEGY_MAP else 'Swing Trend DCA'
+
     if not _coerce_bool(bot_config.get('autoSwitch', True), True):
         return current_strategy
 
@@ -10796,6 +10820,7 @@ class DynamicPositionSizer:
         performance_multiplier = _safe_float(performance_state.get('multiplier'), 1.0)
         size *= performance_multiplier
         bot_config['effectivePositionSizeMultiplier'] = round(performance_multiplier, 3)
+        bot_config['effectiveScannerCapitalMultiplier'] = round(_safe_float(performance_state.get('scannerCapitalMultiplier'), 1.0), 3)
         bot_config['lastSizingAdjustment'] = performance_state
         
         # 3. VOLATILITY ADJUSTMENT
@@ -11494,7 +11519,7 @@ PERSISTED_BOT_STATE_FIELDS = {
     'profit', 'drawdownPauseUntil', 'accountBalance', 'accountEquity', 'tradeAmount',
     'selectedPreset', 'presetName',
     'autoAdaptationEnabled', 'lastAdaptationAt', 'lastAdaptationReason',
-    'effectivePositionSizeMultiplier', 'lastSizingAdjustment',
+    'effectivePositionSizeMultiplier', 'effectiveScannerCapitalMultiplier', 'lastSizingAdjustment',
     'promotionReadyAt', 'promotionExpiredAt',
     'open_positions', 'lastPauseEvent', 'intelligentScanner', 'lastScanResults', 'mode',
     'profitProtection', 'symbolReentryCooldowns'
@@ -11564,6 +11589,7 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         'lastAdaptationAt': None,
         'lastAdaptationReason': None,
         'effectivePositionSizeMultiplier': 1.0,
+        'effectiveScannerCapitalMultiplier': 1.0,
         'lastSizingAdjustment': None,
         'promotionReadyAt': None,
         'promotionExpiredAt': None,
@@ -12458,6 +12484,7 @@ def get_scanner_status(bot_id):
             'lastScan': scan_results,
             'currentSymbols': bot.get('symbols', []),
             'openPositions': len(bot.get('open_positions', {})),
+            'effectiveScannerCapitalMultiplier': round(_safe_float(bot.get('effectiveScannerCapitalMultiplier'), 1.0), 3),
         }), 200
     except Exception as e:
         logger.error(f"Error getting scanner status: {e}")
@@ -12563,6 +12590,10 @@ def get_bot_config(bot_id):
                 'intelligentScanner': bool(bot.get('intelligentScanner', False)),
                 'profitProtection': _normalize_profit_protection_config(bot.get('profitProtection')),
                 'volatilityLevel': bot.get('volatilityLevel'),
+                'effectivePositionSizeMultiplier': round(_safe_float(bot.get('effectivePositionSizeMultiplier'), 1.0), 3),
+                'effectiveScannerCapitalMultiplier': round(_safe_float(bot.get('effectiveScannerCapitalMultiplier'), 1.0), 3),
+                'effectiveTradeAmount': round(_safe_float(bot.get('effectiveTradeAmount'), _safe_float(bot.get('tradeAmount'), 0.0)), 2),
+                'tradeAmountAdaptation': bot.get('tradeAmountAdaptation'),
             },
             'status': {
                 'runtime': f"{int(runtime_hours):02d}:{int(runtime_minutes):02d}",
@@ -12573,6 +12604,10 @@ def get_bot_config(bot_id):
                 'dailyProfit': round(bot.get('dailyProfits', {}).get(datetime.now().strftime('%Y-%m-%d'), 0), 2),
                 'maxDrawdown': round(bot.get('maxDrawdown', 0), 2),
                 'drawdownPauseUntil': bot.get('drawdownPauseUntil'),
+                'effectivePositionSizeMultiplier': round(_safe_float(bot.get('effectivePositionSizeMultiplier'), 1.0), 3),
+                'effectiveScannerCapitalMultiplier': round(_safe_float(bot.get('effectiveScannerCapitalMultiplier'), 1.0), 3),
+                'effectiveTradeAmount': round(_safe_float(bot.get('effectiveTradeAmount'), _safe_float(bot.get('tradeAmount'), 0.0)), 2),
+                'tradeAmountAdaptation': bot.get('tradeAmountAdaptation'),
             },
             'intelligence': {
                 'lastStrategySwitch': bot.get('lastStrategySwitch'),
@@ -13063,10 +13098,12 @@ def _resolve_adaptive_trade_amount(
 
     adjusted_amount = round(max(1.0, safe_base_amount * multiplier), 2)
     bot_config['effectiveTradeAmount'] = adjusted_amount
+    bot_config['effectiveScannerCapitalMultiplier'] = round(_safe_float(performance_state.get('scannerCapitalMultiplier'), 1.0), 3)
     bot_config['tradeAmountAdaptation'] = {
         'timestamp': datetime.now().isoformat(),
         'state': state,
         'multiplier': round(multiplier, 3),
+        'scannerCapitalMultiplier': round(_safe_float(performance_state.get('scannerCapitalMultiplier'), 1.0), 3),
         'baseTradeAmount': round(safe_base_amount, 2),
         'adjustedTradeAmount': adjusted_amount,
         'dailyProfit': round(daily_profit, 2),
@@ -13079,6 +13116,58 @@ def _resolve_adaptive_trade_amount(
 
 
 # --- ENHANCED RISK MANAGEMENT: Profit Lock-In, Volatility Filter, Regime Check, Drawdown Pause ---
+def _recent_symbol_loss_pressure(bot_config: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    symbol_base = _normalize_symbol_base(symbol)
+    trade_history = bot_config.get('tradeHistory') or []
+    recent_trades: List[Dict[str, Any]] = []
+
+    for trade in reversed(trade_history):
+        if not isinstance(trade, dict):
+            continue
+        trade_symbol = _normalize_symbol_base(trade.get('symbol', ''))
+        if trade_symbol != symbol_base:
+            continue
+        status = str(trade.get('status') or '').lower()
+        if status != 'closed' and not (trade.get('exitTime') or trade.get('time_close')):
+            continue
+        recent_trades.append(trade)
+        if len(recent_trades) >= 4:
+            break
+
+    losses = 0
+    rapid_losses = 0
+    last_close_at = None
+    for trade in recent_trades:
+        profit = _safe_float(trade.get('profit'), 0.0)
+        if profit < 0:
+            losses += 1
+            entry_time = trade.get('entryTime') or trade.get('time_open') or trade.get('time')
+            exit_time = trade.get('exitTime') or trade.get('time_close') or trade.get('time')
+            age_minutes = 0.0
+            if entry_time and exit_time:
+                try:
+                    entry_dt = datetime.fromisoformat(str(entry_time).replace('Z', '+00:00'))
+                    exit_dt = datetime.fromisoformat(str(exit_time).replace('Z', '+00:00'))
+                    age_minutes = max(0.0, (exit_dt - entry_dt).total_seconds() / 60.0)
+                except Exception:
+                    age_minutes = 0.0
+            if age_minutes <= 20.0:
+                rapid_losses += 1
+
+        close_marker = trade.get('exitTime') or trade.get('time_close') or trade.get('time')
+        if close_marker and last_close_at is None:
+            try:
+                last_close_at = datetime.fromisoformat(str(close_marker).replace('Z', '+00:00'))
+            except Exception:
+                last_close_at = None
+
+    return {
+        'losses': losses,
+        'rapid_losses': rapid_losses,
+        'last_close_at': last_close_at,
+    }
+
+
 def should_trade_today(bot_config, symbol):
     """
     Returns False if bot should NOT trade today due to profit lock-in, drawdown, volatility, regime filter,
@@ -13108,6 +13197,32 @@ def should_trade_today(bot_config, symbol):
                 f"balance {balance_basis:.2f} {account_currency} is below crypto safety floor {crypto_min_balance:.2f}"
             )
             return False
+
+    symbol_loss_pressure = _recent_symbol_loss_pressure(bot_config, symbol)
+    last_symbol_close = symbol_loss_pressure.get('last_close_at')
+    if last_symbol_close and getattr(last_symbol_close, 'tzinfo', None) is not None:
+        now_compare = now.replace(tzinfo=last_symbol_close.tzinfo)
+    else:
+        now_compare = now
+    if (
+        symbol_loss_pressure.get('losses', 0) >= 2
+        and symbol_loss_pressure.get('rapid_losses', 0) >= 2
+        and last_symbol_close
+        and (now_compare - last_symbol_close).total_seconds() <= 90 * 60
+    ):
+        cooldown_minutes = 45.0 if symbol_base in SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS else 30.0
+        cooldown_until = _set_symbol_reentry_cooldown(
+            bot_config,
+            symbol,
+            cooldown_minutes,
+            'RECENT_SYMBOL_CHURN',
+        )
+        logger.info(
+            f"[RISK] Bot {bot_config.get('botId')} skipping {symbol}: recent churn detected "
+            f"({symbol_loss_pressure.get('losses', 0)} losses, {symbol_loss_pressure.get('rapid_losses', 0)} rapid) "
+            f"cooldown until {cooldown_until}."
+        )
+        return False
 
     # Loss-streak pause guard: temporarily halt entries after repeated losses.
     loss_pause_until_raw = bot_config.get('lossStreakPauseUntil')
@@ -15363,9 +15478,9 @@ BOT_RISK_LIMITS = {
 }
 
 ADAPTIVE_SIGNAL_THRESHOLD_STEP = 5
-ADAPTIVE_SIGNAL_THRESHOLD_LOW_SIGNAL_STEP = 10
+ADAPTIVE_SIGNAL_THRESHOLD_LOW_SIGNAL_STEP = 5
 ADAPTIVE_SIGNAL_THRESHOLD_MAX_REDUCTION = 70
-ADAPTIVE_SIGNAL_THRESHOLD_MIN = 70
+ADAPTIVE_SIGNAL_THRESHOLD_MIN = 60
 ADAPTIVE_SCANNER_TRIGGER_MISSES = 1
 ADAPTIVE_STRATEGY_MIN_SIGNAL_REDUCTION_MAX = 25
 ADAPTIVE_FORCED_SCANNER_IDLE_CYCLES = 3
@@ -15385,8 +15500,11 @@ MAX_ASSISTED_SYMBOLS_PER_CYCLE = 2
 MIN_RISK_REWARD_RATIO = 1.5
 PERFORMANCE_SIZING_WINDOW = 6
 PERFORMANCE_SIZING_MIN_SAMPLE = 3
-PERFORMANCE_SIZING_MAX_BOOST = 1.35
+PERFORMANCE_SIZING_MAX_BOOST = 2.0
 PERFORMANCE_SIZING_MAX_REDUCTION = 0.45
+SCANNER_CAPITAL_MAX_BOOST = 2.0
+SCANNER_CAPITAL_LIVE_MAX_BOOST = 1.6
+SCANNER_CAPITAL_GUARDED_LIVE_MAX_BOOST = 1.15
 UPSWING_SCALE_MIN_OPEN_PROFIT = 2.0
 UPSWING_SCALE_MIN_SIGNAL_STRENGTH = 72.0
 UPSWING_RETRACE_MIN_PEAK_PROFIT = 3.0
@@ -15444,12 +15562,12 @@ BOT_MANAGEMENT_PROFILES = {
     'small_account': {
         'riskPerTrade': 5.0,          # 1% risk on scale (5/10 = 0.5%, ultra conservative)
         'maxDailyLoss': 20.0,         # Stop trading after $20 daily loss
-        'profitLock': 30.0,           # Lock profits at $30
-        'drawdownPausePercent': 3.0,  # Pause at just 3% drawdown
-        'drawdownPauseHours': 12.0,   # Long cooldown after drawdown
+        'profitLock': 25.0,           # Lock profits without stalling the bot too early
+        'drawdownPausePercent': 5.0,  # Give small accounts more room before forcing a pause
+        'drawdownPauseHours': 8.0,    # Shorter cooldown so the bot can recover sooner
         'maxOpenPositions': 2,        # Max 2 trades open at once
         'maxPositionsPerSymbol': 1,   # 1 trade per symbol
-        'signalThreshold': 70,        # Require stronger setups on small live accounts
+        'signalThreshold': 66,        # High-quality entries without starving the bot
         'allowedVolatility': ['Very Low', 'Low', 'Medium'],
         'autoSwitch': False,          # Stick to swing trend strategy
         'dynamicSizing': True,        # Scale with equity
@@ -15586,6 +15704,7 @@ PROFIT_PROTECTION_VOLATILITY_PROFILES = {
         'breakEvenActivationShare': 0.45,
     },
     'medium': {
+        'max_hold_minutes': 45,  # BTC moves fast; avoid overstaying peak conditions
         'activationMinProfit': 7.0,
         'minLockedProfit': 5.0,
         'retraceClosePercent': 25.0,
@@ -15595,7 +15714,7 @@ PROFIT_PROTECTION_VOLATILITY_PROFILES = {
     'high': {
         'activationMinProfit': 10.0,
         'minLockedProfit': 7.0,
-        'retraceClosePercent': 30.0,
+        'max_hold_minutes': 45,  # Close ETH positions before late-session reversals become expensive
         'breakEvenBufferProfit': 4.0,
         'breakEvenActivationShare': 0.55,
     },
@@ -15636,6 +15755,82 @@ def _default_strategy_trading_cadence(strategy_name: str, management_profile: st
     base_interval = 150 if normalized_profile == 'beginner' else 120 if normalized_profile == 'balanced' else 90
     base_poll = 15 if normalized_profile == 'beginner' else 12 if normalized_profile == 'balanced' else 10
     return {'tradingMode': 'signal-driven', 'tradingInterval': base_interval, 'pollInterval': base_poll}
+
+
+def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
+    strategy_name = str(bot_config.get('strategy') or '').strip().lower()
+    configured_symbols = bot_config.get('symbols') or []
+    base_symbols = {
+        _normalize_symbol_base(symbol)
+        for symbol in configured_symbols
+        if _normalize_symbol_base(symbol)
+    }
+
+    if base_symbols and base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
+        return 35
+    if strategy_name in {'scalping', 'momentum trading'}:
+        return 35
+    if strategy_name in {'trend following', 'swing trend dca'}:
+        return 40
+    if _normalize_management_profile(bot_config.get('managementProfile')) == 'small_account':
+        return 40
+    return 35
+
+
+def _resolve_runtime_trade_cadence(
+    bot_config: Dict[str, Any],
+    strategy_name: str,
+    signal_symbol: Optional[str],
+    signal_strength: float,
+) -> Dict[str, int]:
+    base_interval = int(bot_config.get('tradingInterval') or 300)
+    base_poll = int(bot_config.get('pollInterval') or 15)
+    strategy_label = str(strategy_name or '').strip().lower()
+    base_symbol = _normalize_symbol_base(signal_symbol or '')
+    market_data = _get_market_data_for_symbol(signal_symbol or '') if signal_symbol else {}
+    volatility = str(market_data.get('volatility') or 'Medium').title()
+
+    target_interval = base_interval
+    target_poll = base_poll
+
+    if base_symbol in {'BTCUSD', 'ETHUSD'}:
+        if signal_strength >= 80:
+            target_interval, target_poll = 120, 3
+        elif signal_strength >= 70:
+            target_interval, target_poll = 180, 5
+        else:
+            target_interval, target_poll = 240, 8
+    elif strategy_label in {'trend following', 'swing trend dca'}:
+        if signal_strength >= 75:
+            target_interval, target_poll = 180, 10
+        elif signal_strength >= 65:
+            target_interval, target_poll = 240, 15
+        else:
+            target_interval, target_poll = 300, 20
+    elif strategy_label == 'scalping':
+        if signal_strength >= 75:
+            target_interval, target_poll = 120, 3
+        else:
+            target_interval, target_poll = 180, 5
+    else:
+        if signal_strength >= 75:
+            target_interval, target_poll = 180, 8
+        elif signal_strength >= 65:
+            target_interval, target_poll = 240, 12
+
+    if volatility == 'Very High':
+        target_interval = min(target_interval, 120 if base_symbol in {'BTCUSD', 'ETHUSD'} else 180)
+        target_poll = min(target_poll, 4 if base_symbol in {'BTCUSD', 'ETHUSD'} else 8)
+    elif volatility == 'High':
+        target_interval = min(target_interval, 180 if base_symbol in {'BTCUSD', 'ETHUSD'} else 240)
+        target_poll = min(target_poll, 6 if base_symbol in {'BTCUSD', 'ETHUSD'} else 10)
+
+    target_interval = max(60, min(target_interval, 600))
+    target_poll = max(2, min(target_poll, max(2, target_interval // 2)))
+    return {
+        'tradingInterval': target_interval,
+        'pollInterval': target_poll,
+    }
 
 
 def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -15935,6 +16130,12 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             continue
 
         tracked = tracked_positions[ticket]
+        strategy_name = str(
+            tracked.get('strategy')
+            or bot_config.get('strategy')
+            or ''
+        ).strip().lower()
+        allow_wider_trend_exits = strategy_name in {'trend following', 'swing trend dca'}
         symbol = tracked.get('symbol', current_position.get('symbol', ''))
         symbol_market_data = _get_market_data_for_symbol(symbol)
         effective_protection = _resolve_profit_protection_for_symbol(bot_config, symbol, symbol_market_data)
@@ -15980,12 +16181,18 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
                 f"(loss {current_profit:.2f} {_currency_label} > {-_hard_loss_limit:.2f} {_currency_label}) — force closing"
             )
 
+        stale_loss_min_age = STALE_LOSS_MINUTES
+        stale_loss_threshold = _stale_loss_threshold
+        if allow_wider_trend_exits:
+            stale_loss_min_age = max(STALE_LOSS_MINUTES * 2.5, 30.0)
+            stale_loss_threshold = _stale_loss_threshold * 1.6 if _stale_loss_threshold < 0 else _stale_loss_threshold
+
         # ── STALE LOSS EXIT: close slowly-bleeding positions that never turned profit ─
         if (
             not close_reason
             and peak_profit <= 0          # position never reached profit
-            and current_profit <= _stale_loss_threshold
-            and time_in_position >= STALE_LOSS_MINUTES
+            and current_profit <= stale_loss_threshold
+            and time_in_position >= stale_loss_min_age
             and not _recent_close_request(tracked)
         ):
             close_reason = 'STALE_LOSS_EXIT'
@@ -16005,12 +16212,17 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             # Zero-loss lock: close any trade that was ever in profit but has fallen back to 0 or negative.
             # This fires regardless of whether profitProtectionArmed is set, so even small winning
             # positions that reversed before hitting the activation threshold are protected.
-            if effective_protection.get('zeroLossLockEnabled', True) and peak_profit > 0 and current_profit <= 0 and not _recent_close_request(tracked):
+            zero_loss_lock_active = effective_protection.get('zeroLossLockEnabled', True)
+            if allow_wider_trend_exits and peak_profit < break_even_activation_amount:
+                zero_loss_lock_active = False
+
+            if zero_loss_lock_active and peak_profit > 0 and current_profit <= 0 and not _recent_close_request(tracked):
                 close_reason = 'ZERO_LOSS_LOCK'
 
         if not close_reason:
             if (
-                time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
+                not allow_wider_trend_exits
+                and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
                 and peak_profit >= UPSWING_RETRACE_MIN_PEAK_PROFIT
                 and current_profit > 0
                 and current_profit <= upswing_retrace_floor
@@ -16020,7 +16232,8 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
 
         if not close_reason:
             if (
-                time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
+                not allow_wider_trend_exits
+                and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
                 and peak_profit >= UPSWING_RETRACE_MIN_PEAK_PROFIT
                 and current_profit > 0
                 and _signal_reversed_for_position(tracked.get('type', ''), current_signal)
@@ -16901,6 +17114,14 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
     top_opportunities = last_scan_results.get('topOpportunities') if isinstance(last_scan_results.get('topOpportunities'), list) else []
     if top_opportunities:
         top_strength = max(_safe_float(opportunity.get('strength'), 0.0) for opportunity in top_opportunities[:3])
+    top_average_strength = 0.0
+    if top_opportunities:
+        sampled_strengths = [
+            _safe_float(opportunity.get('strength'), 0.0)
+            for opportunity in top_opportunities[: min(3, len(top_opportunities))]
+        ]
+        if sampled_strengths:
+            top_average_strength = sum(sampled_strengths) / len(sampled_strengths)
 
     open_positions = bot_config.get('open_positions') if isinstance(bot_config.get('open_positions'), dict) else {}
     aggregate_open_profit = round(sum(_safe_float(position.get('profit'), 0.0) for position in open_positions.values()), 2)
@@ -16908,6 +17129,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
     best_open_peak = max((_safe_float(position.get('peakProfit'), 0.0) for position in open_positions.values()), default=0.0)
 
     multiplier = 1.0
+    scanner_market_multiplier = 1.0
     reasons: List[str] = []
     state = 'normal'
     guarded_small_live = _is_guarded_small_live_account(bot_config, 2.0)
@@ -16945,6 +17167,51 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         state = 'defensive'
         reasons.append('scanner opportunity drought')
 
+    # Scanner-driven capital allocation layer. This is the part that lets the bot
+    # press harder in strong market periods and scale down when market quality fades.
+    if qualifying_opportunities >= 4 and top_strength >= 85.0 and top_average_strength >= 78.0:
+        scanner_market_multiplier = 1.55
+        reasons.append(f'scanner regime very strong ({qualifying_opportunities} setups, avg {top_average_strength:.0f})')
+    elif qualifying_opportunities >= 3 and top_strength >= 80.0 and top_average_strength >= 74.0:
+        scanner_market_multiplier = 1.35
+        reasons.append(f'scanner regime strong ({qualifying_opportunities} setups, avg {top_average_strength:.0f})')
+    elif qualifying_opportunities >= 2 and top_strength >= 72.0:
+        scanner_market_multiplier = 1.18
+        reasons.append(f'scanner regime supportive ({qualifying_opportunities} setups)')
+    elif qualifying_opportunities == 1 and top_strength >= 68.0:
+        scanner_market_multiplier = 1.08
+        reasons.append('single high-quality scanner setup')
+    elif qualifying_opportunities == 0:
+        scanner_market_multiplier = 0.82
+        reasons.append('scanner found no qualified setups')
+
+    if recent_profit > 0 and recent_win_rate >= 60.0 and scanner_market_multiplier > 1.0:
+        scanner_market_multiplier += 0.10
+        reasons.append('recent profits confirm scanner momentum')
+    elif recent_profit < 0 and recent_win_rate <= 45.0:
+        scanner_market_multiplier = min(scanner_market_multiplier, 0.78)
+        reasons.append('recent losses override aggressive scanner sizing')
+
+    if aggregate_open_profit > 0 and positive_open_positions > 0 and top_strength >= 78.0:
+        scanner_market_multiplier += 0.08
+        reasons.append('open positions support increasing capital deployment')
+    elif aggregate_open_profit < 0:
+        scanner_market_multiplier = min(scanner_market_multiplier, 0.85)
+        reasons.append('open-position pressure reduces scanner capital')
+
+    if consecutive_losses >= 2:
+        scanner_market_multiplier = min(scanner_market_multiplier, 0.72)
+        reasons.append('loss streak blocks capital expansion')
+
+    if volatility_level == 'Very High' and scanner_market_multiplier > 1.0:
+        scanner_market_multiplier = min(scanner_market_multiplier, 1.12)
+        reasons.append('very high volatility tempers scanner boost')
+    elif volatility_level == 'High' and scanner_market_multiplier > 1.0:
+        scanner_market_multiplier = min(scanner_market_multiplier, 1.25)
+        reasons.append('high volatility tempers scanner boost')
+
+    multiplier *= scanner_market_multiplier
+
     if (
         open_positions
         and aggregate_open_profit >= UPSWING_SCALE_MIN_OPEN_PROFIT
@@ -16968,6 +17235,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
 
     if bot_config.get('managementState') == 'recovery':
         multiplier = min(multiplier, 0.65)
+        scanner_market_multiplier = min(scanner_market_multiplier, 0.75)
         state = 'defensive'
         reasons.append('recovery mode active')
 
@@ -16980,10 +17248,15 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         reasons.append('very high volatility cap')
 
     if guarded_small_live:
-        multiplier = min(multiplier, 0.75)
+        multiplier = min(multiplier, SCANNER_CAPITAL_GUARDED_LIVE_MAX_BOOST)
+        scanner_market_multiplier = min(scanner_market_multiplier, SCANNER_CAPITAL_GUARDED_LIVE_MAX_BOOST)
         reasons.append('small live account cap')
     elif is_live:
-        multiplier = min(multiplier, 1.2)
+        multiplier = min(multiplier, SCANNER_CAPITAL_LIVE_MAX_BOOST)
+        scanner_market_multiplier = min(scanner_market_multiplier, SCANNER_CAPITAL_LIVE_MAX_BOOST)
+    else:
+        multiplier = min(multiplier, SCANNER_CAPITAL_MAX_BOOST)
+        scanner_market_multiplier = min(scanner_market_multiplier, SCANNER_CAPITAL_MAX_BOOST)
 
     multiplier = max(PERFORMANCE_SIZING_MAX_REDUCTION, min(multiplier, PERFORMANCE_SIZING_MAX_BOOST))
     if abs(multiplier - 1.0) < 0.03:
@@ -17005,6 +17278,8 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         'bestOpenPeakProfit': round(best_open_peak, 2),
         'qualifyingOpportunities': qualifying_opportunities,
         'topOpportunityStrength': round(top_strength, 2),
+        'topOpportunityAverageStrength': round(top_average_strength, 2),
+        'scannerCapitalMultiplier': round(scanner_market_multiplier, 3),
         'reason': '; '.join(reasons) if reasons else 'baseline sizing',
     }
 
@@ -17027,10 +17302,11 @@ def apply_universal_performance_adaptation(bot_id: str, bot_config: Dict[str, An
     defaults = BOT_MANAGEMENT_PROFILES.get(profile, BOT_MANAGEMENT_PROFILES['beginner'])
     is_live = str(bot_config.get('mode') or 'demo').strip().lower() == 'live' or bool(bot_config.get('is_live'))
     guarded_small_live = _is_guarded_small_live_account(bot_config, 2.0)
+    adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
     changes: List[str] = []
     reasons: List[str] = []
 
-    current_threshold = max(int(bot_config.get('signalThreshold') or defaults['signalThreshold']), ADAPTIVE_SIGNAL_THRESHOLD_MIN)
+    current_threshold = max(int(bot_config.get('signalThreshold') or defaults['signalThreshold']), adaptive_floor)
     current_allowed_volatility = list(bot_config.get('allowedVolatility') or defaults['allowedVolatility'])
     if not current_allowed_volatility:
         current_allowed_volatility = list(defaults['allowedVolatility'])
@@ -17048,7 +17324,7 @@ def apply_universal_performance_adaptation(bot_id: str, bot_config: Dict[str, An
         if not bot_config.get('intelligentScanner', False):
             bot_config['intelligentScanner'] = True
             changes.append('intelligentScanner=enabled')
-        lowered_threshold = max(ADAPTIVE_SIGNAL_THRESHOLD_MIN, current_threshold - 5)
+        lowered_threshold = max(adaptive_floor, current_threshold - 5)
         if lowered_threshold != current_threshold:
             bot_config['signalThreshold'] = lowered_threshold
             current_threshold = lowered_threshold
@@ -17071,7 +17347,7 @@ def apply_universal_performance_adaptation(bot_id: str, bot_config: Dict[str, An
                 break
 
         if (not is_live) and recent_profit > 0 and recent_win_rate >= UNIVERSAL_ADAPTATION_SUCCESS_WIN_RATE:
-            target_threshold = max(ADAPTIVE_SIGNAL_THRESHOLD_MIN, current_threshold - 3)
+            target_threshold = max(adaptive_floor, current_threshold - 3)
             if target_threshold != current_threshold:
                 bot_config['signalThreshold'] = target_threshold
                 current_threshold = target_threshold
@@ -17182,6 +17458,7 @@ def update_adaptive_signal_threshold_state(
     trades_placed: int,
     open_positions: int,
 ) -> None:
+    adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
     if bot_config.get('managementState') == 'recovery':
         if _reset_adaptive_signal_threshold(bot_config):
             logger.info(
@@ -17210,7 +17487,7 @@ def update_adaptive_signal_threshold_state(
     bot_config['adaptiveSignalThresholdReason'] = 'no_qualifying_signal'
 
     if new_offset != current_offset:
-        lowered_threshold = max(ADAPTIVE_SIGNAL_THRESHOLD_MIN, base_threshold - new_offset)
+        lowered_threshold = max(adaptive_floor, base_threshold - new_offset)
         logger.info(
             f"📉 Bot {bot_id}: No qualifying signals for {miss_count} cycle(s) - "
             f"best raw signal was {best_signal_strength:.0f}/100, reducing threshold by {reduction_step} "
@@ -17223,6 +17500,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
     is_assisted = bot_config.get('managementMode', 'assisted') != 'manual'
     guarded_small_live = _is_guarded_small_live_account(bot_config, 2.0)
     defaults = BOT_MANAGEMENT_PROFILES.get(profile, BOT_MANAGEMENT_PROFILES['beginner'])
+    adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
     effective = {
         'profile': profile,
         'mode': 'assisted' if is_assisted else 'manual',
@@ -17243,7 +17521,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
         if profile == 'small_account':
             effective['maxOpenPositions'] = 1
             effective['maxPositionsPerSymbol'] = 1
-            effective['signalThreshold'] = max(effective['signalThreshold'], 70)
+            effective['signalThreshold'] = max(effective['signalThreshold'], 66)
             effective['allowedVolatility'] = [
                 level for level in effective['allowedVolatility'] if level in ['Very Low', 'Low', 'Medium']
             ] or ['Very Low', 'Low', 'Medium']
@@ -17251,7 +17529,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
         if profile == 'fast_growth':
             effective['maxOpenPositions'] = min(effective['maxOpenPositions'], 2)
             effective['maxPositionsPerSymbol'] = 1
-            effective['signalThreshold'] = max(effective['signalThreshold'], 70 if is_assisted else defaults['signalThreshold'])
+            effective['signalThreshold'] = max(effective['signalThreshold'], 65 if is_assisted else defaults['signalThreshold'])
             effective['allowedVolatility'] = [
                 level for level in effective['allowedVolatility'] if level in ['Low', 'Medium']
             ] or ['Low', 'Medium']
@@ -17259,7 +17537,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
         if guarded_small_live:
             effective['maxOpenPositions'] = 1
             effective['maxPositionsPerSymbol'] = 1
-            effective['signalThreshold'] = max(effective['signalThreshold'], 70)
+            effective['signalThreshold'] = max(effective['signalThreshold'], 66)
             effective['allowedVolatility'] = [
                 level for level in effective['allowedVolatility'] if level in ['Very Low', 'Low', 'Medium']
             ] or ['Very Low', 'Low', 'Medium']
@@ -17281,12 +17559,13 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
         is_recovery_condition = consecutive_losses >= 2 or (recent_count >= 4 and recent_win_rate < 40)
         fast_growth_recovery = profile == 'fast_growth' and (consecutive_losses >= 1 or (recent_count >= 3 and recent_win_rate < 45))
         if is_recovery_condition or fast_growth_recovery:
-            effective['signalThreshold'] = min(90, max(70, effective['signalThreshold'] + 10))
+            recovery_floor = 68 if profile == 'small_account' else 66
+            effective['signalThreshold'] = min(88, max(recovery_floor, effective['signalThreshold'] + 6))
             effective['maxOpenPositions'] = min(effective['maxOpenPositions'], 1 if profile == 'beginner' else 2)
             effective['maxPositionsPerSymbol'] = 1
             effective['allowedVolatility'] = ['Very Low', 'Low', 'Medium']  # Tighten but still allow trading
             if profile == 'fast_growth':
-                effective['signalThreshold'] = min(90, max(effective['signalThreshold'], 80))
+                effective['signalThreshold'] = min(88, max(effective['signalThreshold'], 72))
                 effective['maxOpenPositions'] = 1
                 effective['allowedVolatility'] = ['Very Low', 'Low']
             bot_config['managementState'] = 'recovery'
@@ -17318,7 +17597,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
 
     adaptive_offset = int(bot_config.get('adaptiveSignalThresholdOffset') or 0)
     if adaptive_offset > 0 and bot_config.get('managementState') != 'recovery':
-        effective['signalThreshold'] = max(ADAPTIVE_SIGNAL_THRESHOLD_MIN, effective['signalThreshold'] - adaptive_offset)
+        effective['signalThreshold'] = max(adaptive_floor, effective['signalThreshold'] - adaptive_offset)
 
     bot_config['effectiveSignalThreshold'] = effective['signalThreshold']
     bot_config['effectiveMaxOpenPositions'] = effective['maxOpenPositions']
@@ -17430,7 +17709,7 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
     signal_threshold = _clamp_int_value(
         'signalThreshold',
         data.get('signalThreshold', profile_defaults['signalThreshold']),
-        70,
+        55,
         90,
         profile_defaults['signalThreshold'],
         warnings,
@@ -18222,7 +18501,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         # Get trading mode configuration
         trading_mode = bot_config.get('tradingMode', 'interval')  # 'interval' or 'signal-driven'
         trading_interval = bot_config.get('tradingInterval', 300)  # Default 5 minutes for time-based
-        signal_threshold = max(int(bot_config.get('signalThreshold', 70) or 70), ADAPTIVE_SIGNAL_THRESHOLD_MIN)    # 0-100, minimum signal strength
+        signal_threshold = max(int(bot_config.get('signalThreshold', ADAPTIVE_SIGNAL_THRESHOLD_MIN) or ADAPTIVE_SIGNAL_THRESHOLD_MIN), ADAPTIVE_SIGNAL_THRESHOLD_MIN)    # 0-100, minimum signal strength
         poll_interval = bot_config.get('pollInterval', 15)          # Check signals every N seconds in signal-driven mode
         
         if trading_mode == 'signal-driven':
@@ -18699,13 +18978,18 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
 
                 # ENHANCED LOGGING: Log signal evaluation for ALL symbols upfront
                 management_state = apply_assisted_management_overrides(bot_config)
-                base_signal_threshold = max(int(bot_config.get('signalThreshold', 70) or 70), ADAPTIVE_SIGNAL_THRESHOLD_MIN)
+                adaptive_threshold_floor = _adaptive_signal_threshold_floor(bot_config)
+                base_signal_threshold = max(
+                    int(bot_config.get('signalThreshold', adaptive_threshold_floor) or adaptive_threshold_floor),
+                    adaptive_threshold_floor,
+                )
                 signal_threshold = management_state['signalThreshold']
                 strategy_name = _choose_strategy_for_cycle(bot_id, bot_config, symbols, signal_threshold)
                 strategy_func = STRATEGY_MAP.get(strategy_name, trend_following_strategy)
                 strategy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
                 signal_summary = []
                 best_signal_strength = 0.0
+                best_signal_symbol = None
                 configured_signal_hits = 0
                 for eval_symbol in symbols:
                     eval_market_data = _enrich_market_data_with_bot_context(bot_config, eval_symbol)
@@ -18719,12 +19003,28 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         eval_market_data,
                     )
                     signal_score = eval_signal.get('strength', 0)
-                    best_signal_strength = max(best_signal_strength, float(signal_score or 0.0))
+                    signal_score_value = float(signal_score or 0.0)
+                    if signal_score_value >= best_signal_strength:
+                        best_signal_strength = signal_score_value
+                        best_signal_symbol = eval_symbol
                     signal_label = eval_signal.get('signal', 'NEUTRAL')
                     if eval_params and signal_score >= signal_threshold:
                         configured_signal_hits += 1
                     status = "✅" if eval_params and signal_score >= signal_threshold else "⏭️"
                     signal_summary.append(f"{status}{eval_symbol}:{signal_score:.0f} {signal_label}")
+
+                runtime_cadence = _resolve_runtime_trade_cadence(
+                    bot_config,
+                    strategy_name,
+                    best_signal_symbol,
+                    best_signal_strength,
+                )
+                trading_interval = runtime_cadence['tradingInterval']
+                poll_interval = runtime_cadence['pollInterval']
+                logger.info(
+                    f"⏱️ Bot {bot_id}: Adaptive cadence -> symbol={best_signal_symbol or 'n/a'} "
+                    f"strength={best_signal_strength:.0f}/100 interval={trading_interval}s poll={poll_interval}s"
+                )
                 
                 logger.info(f"📊 Bot {bot_id} Cycle #{trade_cycle}: Signal check: {' | '.join(signal_summary)} (threshold: {signal_threshold}/100)")
                 
@@ -18818,6 +19118,22 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 f"multiplier {_safe_float(sizing_snapshot.get('multiplier'), 1.0):.2f}) -> "
                                 f"target volume {fixed_trade_volume:.4f} lots ({volume_details.get('method')})"
                             )
+                            if is_mt5 and mt5_api is not None and fixed_trade_volume is not None:
+                                try:
+                                    mt5_api.symbol_select(symbol, True)
+                                    symbol_info = mt5_api.symbol_info(symbol)
+                                    min_volume = float(getattr(symbol_info, 'volume_min', 0.0) or 0.0) if symbol_info else 0.0
+                                    if min_volume > 0 and fixed_trade_volume < min_volume:
+                                        logger.warning(
+                                            f"⏭️ Bot {bot_id}: Skipping {symbol} - configured trade amount "
+                                            f"would require {fixed_trade_volume:.4f} lots, below broker minimum {min_volume:.4f}. "
+                                            f"Refusing to auto-upsize risk."
+                                        )
+                                        continue
+                                except Exception as volume_guard_error:
+                                    logger.warning(
+                                        f"Bot {bot_id}: Could not validate broker minimum volume for {symbol}: {volume_guard_error}"
+                                    )
                         elif bot_config.get('dynamicSizing', True):
                             position_size = position_sizer.calculate_position_size(
                                 bot_config,
@@ -19681,7 +19997,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 adaptive_offset = int(bot_config.get('adaptiveSignalThresholdOffset') or 0)
                 adaptive_note = ''
                 if adaptive_offset > 0:
-                    adaptive_note = f" | Next threshold: {max(ADAPTIVE_SIGNAL_THRESHOLD_MIN, base_signal_threshold - adaptive_offset)}/{base_signal_threshold}"
+                    adaptive_note = f" | Next threshold: {max(adaptive_threshold_floor, base_signal_threshold - adaptive_offset)}/{base_signal_threshold}"
                 logger.info(f"✅ Bot {bot_id}: Cycle #{trade_cycle} complete | Trades placed: {trades_placed} | Open positions: {open_pos_count} | Total P&L: {bot_config.get('totalProfit', 0):.2f} {display_currency}{adaptive_note}")
                 
                 # DUAL MODE: TIME-BASED vs SIGNAL-DRIVEN waiting
@@ -20883,6 +21199,7 @@ def bot_summary():
                 'lastAdaptationAt': bot.get('lastAdaptationAt'),
                 'lastAdaptationReason': bot.get('lastAdaptationReason'),
                 'effectivePositionSizeMultiplier': round(_safe_float(bot.get('effectivePositionSizeMultiplier'), 1.0), 3),
+                'effectiveScannerCapitalMultiplier': round(_safe_float(bot.get('effectiveScannerCapitalMultiplier'), 1.0), 3),
                 'lastSizingAdjustment': last_sizing_adjustment,
                 'selectedPreset': bot.get('selectedPreset'),
                 'presetName': bot.get('presetName'),
@@ -21103,6 +21420,7 @@ def get_bot_analytics_snapshot(bot_id: str):
                 'lastScanTimestamp': (last_scan_results or {}).get('timestamp'),
                 'scannerTopOpportunities': (last_scan_results or {}).get('topOpportunities', []),
                 'effectivePositionSizeMultiplier': round(_safe_float(bot.get('effectivePositionSizeMultiplier'), 1.0), 3),
+                'effectiveScannerCapitalMultiplier': round(_safe_float(bot.get('effectiveScannerCapitalMultiplier'), 1.0), 3),
                 'lastSizingAdjustment': last_sizing_adjustment,
                 'mode': str(bot_mode_value).upper(),
                 'is_live': bot_is_live,
@@ -21114,6 +21432,8 @@ def get_bot_analytics_snapshot(bot_id: str):
                 'accountBalance': round(bot.get('accountBalance', 0), 2),
                 'accountEquity': round(bot.get('accountEquity', 0), 2),
                 'activeSymbolCooldowns': active_symbol_cooldowns,
+                'effectiveTradeAmount': round(_safe_float(bot.get('effectiveTradeAmount'), _safe_float(bot.get('tradeAmount'), 0.0)), 2),
+                'tradeAmountAdaptation': bot.get('tradeAmountAdaptation'),
                 'profitProtection': _normalize_profit_protection_config(bot.get('profitProtection')),
                 'cumulativeProfitProtection': {
                     'enabled': cumulative_loss_allowance > 0,
