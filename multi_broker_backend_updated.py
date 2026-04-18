@@ -7987,10 +7987,20 @@ def list_commodities():
                         live_data.get('signal_strength', live_data.get('signalStrength', 0.0)),
                         0.0,
                     )
-                    # Only re-evaluate if no signal from background thread yet
-                    if strength_value == 0.0 and live_data.get('signal', '').startswith('🟡 INITIAL'):
+                    # Re-evaluate whenever cached strength is missing/zero.
+                    # The live MT5 fetcher can populate labels like CONSOLIDATING before the
+                    # background signal evaluator has written a non-zero strength.
+                    if strength_value <= 0.0:
                         evaluated_signal = evaluate_real_trade_signal(symbol, merged_item)
                         strength_value = _safe_float(evaluated_signal.get('strength', 0.0), 0.0)
+                        if strength_value > 0.0:
+                            merged_item['signal_strength'] = strength_value
+                            merged_item['signalStrength'] = strength_value
+                            merged_item['signalPercentage'] = round(strength_value, 1)
+                            if symbol in commodity_market_data:
+                                commodity_market_data[symbol]['signal_strength'] = strength_value
+                                commodity_market_data[symbol]['signalStrength'] = strength_value
+                                commodity_market_data[symbol]['signalPercentage'] = round(strength_value, 1)
                     strength_value = max(0.0, min(100.0, strength_value))
                     merged_item['signal_strength'] = strength_value
                     merged_item['signalStrength'] = strength_value

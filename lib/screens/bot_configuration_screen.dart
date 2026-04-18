@@ -23,8 +23,7 @@ class BotConfigurationScreen extends StatefulWidget {
     this.botId,
     this.cloneFromBotId,
     this.promoteToLive = false,
-  })
-      : super(key: key);
+  }) : super(key: key);
 
   final String? botId;
   final String? cloneFromBotId;
@@ -35,7 +34,8 @@ class BotConfigurationScreen extends StatefulWidget {
 }
 
 class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
-  bool get _isEditMode => widget.botId != null && widget.botId!.trim().isNotEmpty;
+  bool get _isEditMode =>
+      widget.botId != null && widget.botId!.trim().isNotEmpty;
   bool get _isCloneMode =>
       !_isEditMode &&
       widget.cloneFromBotId != null &&
@@ -64,12 +64,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     {
       'symbol': 'BTCUSDT',
       'name': '₿ Bitcoin / Tether',
-      'category': 'Large Cap'
+      'category': 'Large Cap',
     },
     {
       'symbol': 'ETHUSDT',
       'name': '◆ Ethereum / Tether',
-      'category': 'Large Cap'
+      'category': 'Large Cap',
     },
     {'symbol': 'BNBUSDT', 'name': '◈ BNB / Tether', 'category': 'Large Cap'},
     {'symbol': 'SOLUSDT', 'name': '◎ Solana / Tether', 'category': 'Large Cap'},
@@ -77,28 +77,28 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     {
       'symbol': 'ADAUSDT',
       'name': '◌ Cardano / Tether',
-      'category': 'Large Cap'
+      'category': 'Large Cap',
     },
     {
       'symbol': 'DOGEUSDT',
       'name': '🐕 Dogecoin / Tether',
-      'category': 'Large Cap'
+      'category': 'Large Cap',
     },
     // --- Tier 2: High-Volume Altcoins ---
     {
       'symbol': 'AVAXUSDT',
       'name': '▲ Avalanche / Tether',
-      'category': 'Altcoin'
+      'category': 'Altcoin',
     },
     {
       'symbol': 'MATICUSDT',
       'name': '⬟ Polygon / Tether',
-      'category': 'Altcoin'
+      'category': 'Altcoin',
     },
     {
       'symbol': 'LINKUSDT',
       'name': '⛓ Chainlink / Tether',
-      'category': 'Altcoin'
+      'category': 'Altcoin',
     },
     {'symbol': 'LTCUSDT', 'name': 'Ł Litecoin / Tether', 'category': 'Altcoin'},
     {'symbol': 'TRXUSDT', 'name': '△ TRON / Tether', 'category': 'Altcoin'},
@@ -108,56 +108,56 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     {
       'symbol': 'SHIBUSDT',
       'name': '🦴 Shiba Inu / Tether',
-      'category': 'DeFi & L2'
+      'category': 'DeFi & L2',
     },
     {
       'symbol': 'UNIUSDT',
       'name': '🦄 Uniswap / Tether',
-      'category': 'DeFi & L2'
+      'category': 'DeFi & L2',
     },
     {
       'symbol': 'NEARUSDT',
       'name': '◎ NEAR Protocol / Tether',
-      'category': 'DeFi & L2'
+      'category': 'DeFi & L2',
     },
     {
       'symbol': 'ARBUSDT',
       'name': '🔵 Arbitrum / Tether',
-      'category': 'DeFi & L2'
+      'category': 'DeFi & L2',
     },
     {
       'symbol': 'OPUSDT',
       'name': '🔴 Optimism / Tether',
-      'category': 'DeFi & L2'
+      'category': 'DeFi & L2',
     },
     {'symbol': 'APTUSDT', 'name': '⚡ Aptos / Tether', 'category': 'DeFi & L2'},
     {
       'symbol': 'INJUSDT',
       'name': '💉 Injective / Tether',
-      'category': 'DeFi & L2'
+      'category': 'DeFi & L2',
     },
     {'symbol': 'SUIUSDT', 'name': '💧 Sui / Tether', 'category': 'DeFi & L2'},
     {
       'symbol': 'FTMUSDT',
       'name': '👻 Fantom / Tether',
-      'category': 'DeFi & L2'
+      'category': 'DeFi & L2',
     },
     {'symbol': 'AAVEUSDT', 'name': '👻 Aave / Tether', 'category': 'DeFi & L2'},
     // --- Tier 4: Gaming / Metaverse / Cross-chain ---
     {
       'symbol': 'SANDUSDT',
       'name': '🏖 The Sandbox / Tether',
-      'category': 'Gaming'
+      'category': 'Gaming',
     },
     {
       'symbol': 'MANAUSDT',
       'name': '🌐 Decentraland / Tether',
-      'category': 'Gaming'
+      'category': 'Gaming',
     },
     {
       'symbol': 'RUNEUSDT',
       'name': '⚗️ THORChain / Tether',
-      'category': 'Gaming'
+      'category': 'Gaming',
     },
     {'symbol': 'ALGOUSDT', 'name': '◈ Algorand / Tether', 'category': 'Gaming'},
   ];
@@ -168,196 +168,196 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'winRate': 63.0,
       'liquidityScore': 98.0,
       'risk': 'Low',
-      'analysis': 'Momentum leader'
+      'analysis': 'Momentum leader',
     },
     'ETHUSDT': {
       'edgePct': 6.2,
       'winRate': 61.0,
       'liquidityScore': 95.0,
       'risk': 'Low',
-      'analysis': 'Trend continuation'
+      'analysis': 'Trend continuation',
     },
     'BNBUSDT': {
       'edgePct': 5.3,
       'winRate': 58.0,
       'liquidityScore': 90.0,
       'risk': 'Medium',
-      'analysis': 'Exchange beta'
+      'analysis': 'Exchange beta',
     },
     'SOLUSDT': {
       'edgePct': 7.4,
       'winRate': 59.0,
       'liquidityScore': 88.0,
       'risk': 'Medium',
-      'analysis': 'High momentum'
+      'analysis': 'High momentum',
     },
     'XRPUSDT': {
       'edgePct': 5.6,
       'winRate': 57.0,
       'liquidityScore': 89.0,
       'risk': 'Medium',
-      'analysis': 'Range breakout'
+      'analysis': 'Range breakout',
     },
     'ADAUSDT': {
       'edgePct': 5.1,
       'winRate': 56.0,
       'liquidityScore': 84.0,
       'risk': 'Medium',
-      'analysis': 'Mean reversion'
+      'analysis': 'Mean reversion',
     },
     'DOGEUSDT': {
       'edgePct': 6.5,
       'winRate': 54.0,
       'liquidityScore': 86.0,
       'risk': 'High',
-      'analysis': 'Volatility spikes'
+      'analysis': 'Volatility spikes',
     },
     'AVAXUSDT': {
       'edgePct': 6.1,
       'winRate': 55.0,
       'liquidityScore': 80.0,
       'risk': 'High',
-      'analysis': 'Momentum bursts'
+      'analysis': 'Momentum bursts',
     },
     'MATICUSDT': {
       'edgePct': 5.4,
       'winRate': 55.0,
       'liquidityScore': 79.0,
       'risk': 'Medium',
-      'analysis': 'Swing setup'
+      'analysis': 'Swing setup',
     },
     'LINKUSDT': {
       'edgePct': 5.8,
       'winRate': 57.0,
       'liquidityScore': 82.0,
       'risk': 'Medium',
-      'analysis': 'Trend strength'
+      'analysis': 'Trend strength',
     },
     'LTCUSDT': {
       'edgePct': 4.8,
       'winRate': 54.0,
       'liquidityScore': 76.0,
       'risk': 'Medium',
-      'analysis': 'Lower beta'
+      'analysis': 'Lower beta',
     },
     'TRXUSDT': {
       'edgePct': 4.3,
       'winRate': 56.0,
       'liquidityScore': 74.0,
       'risk': 'Low',
-      'analysis': 'Stable mover'
+      'analysis': 'Stable mover',
     },
     'DOTUSDT': {
       'edgePct': 5.0,
       'winRate': 55.0,
       'liquidityScore': 75.0,
       'risk': 'Medium',
-      'analysis': 'Trend rebound'
+      'analysis': 'Trend rebound',
     },
     'ATOMUSDT': {
       'edgePct': 5.2,
       'winRate': 54.0,
       'liquidityScore': 73.0,
       'risk': 'Medium',
-      'analysis': 'Range expansion'
+      'analysis': 'Range expansion',
     },
     'SHIBUSDT': {
       'edgePct': 7.0,
       'winRate': 51.0,
       'liquidityScore': 78.0,
       'risk': 'High',
-      'analysis': 'Speculative bursts'
+      'analysis': 'Speculative bursts',
     },
     'UNIUSDT': {
       'edgePct': 5.7,
       'winRate': 55.0,
       'liquidityScore': 70.0,
       'risk': 'High',
-      'analysis': 'DeFi momentum'
+      'analysis': 'DeFi momentum',
     },
     'NEARUSDT': {
       'edgePct': 6.0,
       'winRate': 54.0,
       'liquidityScore': 72.0,
       'risk': 'High',
-      'analysis': 'Trend acceleration'
+      'analysis': 'Trend acceleration',
     },
     'ARBUSDT': {
       'edgePct': 6.4,
       'winRate': 53.0,
       'liquidityScore': 74.0,
       'risk': 'High',
-      'analysis': 'L2 impulse'
+      'analysis': 'L2 impulse',
     },
     'OPUSDT': {
       'edgePct': 6.3,
       'winRate': 53.0,
       'liquidityScore': 73.0,
       'risk': 'High',
-      'analysis': 'L2 breakout'
+      'analysis': 'L2 breakout',
     },
     'APTUSDT': {
       'edgePct': 6.7,
       'winRate': 52.0,
       'liquidityScore': 71.0,
       'risk': 'High',
-      'analysis': 'High beta alpha'
+      'analysis': 'High beta alpha',
     },
     'INJUSDT': {
       'edgePct': 7.8,
       'winRate': 56.0,
       'liquidityScore': 69.0,
       'risk': 'High',
-      'analysis': 'Strong trend alpha'
+      'analysis': 'Strong trend alpha',
     },
     'SUIUSDT': {
       'edgePct': 6.9,
       'winRate': 53.0,
       'liquidityScore': 68.0,
       'risk': 'High',
-      'analysis': 'Volatility trend'
+      'analysis': 'Volatility trend',
     },
     'FTMUSDT': {
       'edgePct': 6.5,
       'winRate': 52.0,
       'liquidityScore': 66.0,
       'risk': 'High',
-      'analysis': 'Fast movers'
+      'analysis': 'Fast movers',
     },
     'AAVEUSDT': {
       'edgePct': 5.9,
       'winRate': 54.0,
       'liquidityScore': 67.0,
       'risk': 'High',
-      'analysis': 'DeFi trend'
+      'analysis': 'DeFi trend',
     },
     'SANDUSDT': {
       'edgePct': 5.6,
       'winRate': 52.0,
       'liquidityScore': 63.0,
       'risk': 'High',
-      'analysis': 'Narrative spikes'
+      'analysis': 'Narrative spikes',
     },
     'MANAUSDT': {
       'edgePct': 5.4,
       'winRate': 51.0,
       'liquidityScore': 62.0,
       'risk': 'High',
-      'analysis': 'Event-driven'
+      'analysis': 'Event-driven',
     },
     'RUNEUSDT': {
       'edgePct': 6.1,
       'winRate': 53.0,
       'liquidityScore': 65.0,
       'risk': 'High',
-      'analysis': 'Cross-chain momentum'
+      'analysis': 'Cross-chain momentum',
     },
     'ALGOUSDT': {
       'edgePct': 4.9,
       'winRate': 53.0,
       'liquidityScore': 61.0,
       'risk': 'Medium',
-      'analysis': 'Range rotations'
+      'analysis': 'Range rotations',
     },
   };
 
@@ -393,8 +393,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   // Dialog to input amount
-  Future<double?> _showAmountInputDialog(BuildContext context,
-      {String title = 'Enter Amount'}) async {
+  Future<double?> _showAmountInputDialog(
+    BuildContext context, {
+    String title = 'Enter Amount',
+  }) async {
     String? amountStr;
     await showDialog(
       context: context,
@@ -586,12 +588,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       _selectedPreset = presetKey;
       _selectedStrategy = preset['strategy'] as String;
       _managementProfile = preset['managementProfile'] as String;
-      _intelligentScanner = preset['intelligentScanner'] as bool? ?? _intelligentScanner;
+      _intelligentScanner =
+          preset['intelligentScanner'] as bool? ?? _intelligentScanner;
       _riskPercent = (preset['riskPercent'] as num).toDouble();
       _maxOpenTrades = preset['maxOpenTrades'] as int;
       _maxDrawdownPercent = (preset['maxDrawdownPercent'] as num).toDouble();
-      _allowedVolatility =
-          List<String>.from(preset['allowedVolatility'] as List);
+      _allowedVolatility = List<String>.from(
+        preset['allowedVolatility'] as List,
+      );
 
       // Apply symbols if not Binance broker (Binance uses its own symbol list)
       if (!_isBinanceBroker) {
@@ -649,8 +653,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       };
     }).toList();
 
-    ranked
-        .sort((a, b) => (b['score'] as double).compareTo(a['score'] as double));
+    ranked.sort(
+      (a, b) => (b['score'] as double).compareTo(a['score'] as double),
+    );
     return ranked;
   }
 
@@ -664,8 +669,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
     switch (preset) {
       case 'top_edge':
-        symbols =
-            ranked.take(5).map((item) => item['symbol'] as String).toList();
+        symbols = ranked
+            .take(5)
+            .map((item) => item['symbol'] as String)
+            .toList();
         break;
       case 'high_liquidity':
         symbols = ranked
@@ -712,7 +719,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   String _normalizeSymbolBase(String symbol) {
-    var normalized = symbol.trim().toUpperCase().replaceAll('/', '').replaceAll('_', '');
+    var normalized = symbol
+        .trim()
+        .toUpperCase()
+        .replaceAll('/', '')
+        .replaceAll('_', '');
     if (normalized.endsWith('M') && normalized.length > 1) {
       normalized = normalized.substring(0, normalized.length - 1);
     }
@@ -745,7 +756,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   bool _isSymbolSelected(String symbolCode) {
     final normalized = _normalizeSymbolBase(symbolCode);
-    return _selectedSymbols.any((symbol) => _normalizeSymbolBase(symbol) == normalized);
+    return _selectedSymbols.any(
+      (symbol) => _normalizeSymbolBase(symbol) == normalized,
+    );
   }
 
   String _traditionalVolatilityBucket(String symbol) {
@@ -816,8 +829,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     visibleSymbols.sort((left, right) {
       final leftBucket = _traditionalVolatilityBucket(left['symbol']!);
       final rightBucket = _traditionalVolatilityBucket(right['symbol']!);
-      final bucketComparison =
-          _traditionalVolatilityRank(leftBucket).compareTo(_traditionalVolatilityRank(rightBucket));
+      final bucketComparison = _traditionalVolatilityRank(
+        leftBucket,
+      ).compareTo(_traditionalVolatilityRank(rightBucket));
       if (bucketComparison != 0) {
         return bucketComparison;
       }
@@ -870,13 +884,25 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     if (normalized.contains('BTC') || normalized.contains('ETH')) {
       return 15.0;
     }
-    if (normalized.contains('XAU') || normalized.contains('XAG') || normalized.contains('OIL')) {
+    if (normalized.contains('XAU') ||
+        normalized.contains('XAG') ||
+        normalized.contains('OIL')) {
       return 10.0;
     }
-    if (normalized.contains('US30') || normalized.contains('US500') || normalized.contains('USTEC')) {
+    if (normalized.contains('US30') ||
+        normalized.contains('US500') ||
+        normalized.contains('USTEC')) {
       return 12.0;
     }
-    if ({'NVDA', 'AAPL', 'MSFT', 'META', 'GOOGL', 'TSLA', 'AMD'}.contains(normalized)) {
+    if ({
+      'NVDA',
+      'AAPL',
+      'MSFT',
+      'META',
+      'GOOGL',
+      'TSLA',
+      'AMD',
+    }.contains(normalized)) {
       return 20.0;
     }
     return 5.0;
@@ -893,13 +919,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     final symbolMinimums = <Map<String, dynamic>>[];
     for (final symbol in _selectedSymbols) {
       final usdMinimum = _symbolMinimumUsd(symbol);
-      symbolMinimums.add({
-        'symbol': symbol,
-        'minimum': usdMinimum * rate,
-      });
+      symbolMinimums.add({'symbol': symbol, 'minimum': usdMinimum * rate});
     }
 
-    symbolMinimums.sort((a, b) => (b['minimum'] as double).compareTo(a['minimum'] as double));
+    symbolMinimums.sort(
+      (a, b) => (b['minimum'] as double).compareTo(a['minimum'] as double),
+    );
     final highest = symbolMinimums.first;
     final estimatedMinimum = highest['minimum'] as double;
 
@@ -907,7 +932,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       return null;
     }
 
-    final limitedSymbols = symbolMinimums.take(3).map((item) => item['symbol']).join(', ');
+    final limitedSymbols = symbolMinimums
+        .take(3)
+        .map((item) => item['symbol'])
+        .join(', ');
     return {
       'entered': rawAmount,
       'currency': currencyCode,
@@ -917,7 +945,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     };
   }
 
-  Future<bool> _confirmLowFixedTradeAmount(BuildContext context, Map<String, dynamic> warning) async {
+  Future<bool> _confirmLowFixedTradeAmount(
+    BuildContext context,
+    Map<String, dynamic> warning,
+  ) async {
     final proceed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -1027,15 +1058,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     final avgEdge = selectedInsights.isEmpty
         ? 0.0
         : selectedInsights
-                .map((i) => (i['edgePct'] as num?)?.toDouble() ?? 0.0)
-                .reduce((a, b) => a + b) /
-            selectedInsights.length;
+                  .map((i) => (i['edgePct'] as num?)?.toDouble() ?? 0.0)
+                  .reduce((a, b) => a + b) /
+              selectedInsights.length;
     final avgWinRate = selectedInsights.isEmpty
         ? 0.0
         : selectedInsights
-                .map((i) => (i['winRate'] as num?)?.toDouble() ?? 0.0)
-                .reduce((a, b) => a + b) /
-            selectedInsights.length;
+                  .map((i) => (i['winRate'] as num?)?.toDouble() ?? 0.0)
+                  .reduce((a, b) => a + b) /
+              selectedInsights.length;
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1251,7 +1282,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   bool _autoScannerEnabled() {
-    return _intelligentScanner || _enableProfitProtection || _selectedPreset != null;
+    return _intelligentScanner ||
+        _enableProfitProtection ||
+        _selectedPreset != null;
   }
 
   final List<String> strategies = [
@@ -1311,9 +1344,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     await _fetchTradingData();
   }
 
-  Future<void> _alignActiveCredentialWithTradingMode({String? desiredMode}) async {
-    final tradingMode =
-        (desiredMode ?? await _currentTradingMode()).trim().toUpperCase();
+  Future<void> _alignActiveCredentialWithTradingMode({
+    String? desiredMode,
+  }) async {
+    final tradingMode = (desiredMode ?? await _currentTradingMode())
+        .trim()
+        .toUpperCase();
     final expectsLive = tradingMode == 'LIVE';
     final activeCredential = _brokerService.activeCredential;
 
@@ -1330,9 +1366,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   String _buildClonedBotId(String sourceBotId) {
-    final sanitized = sourceBotId
-        .trim()
-        .replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
+    final sanitized = sourceBotId.trim().replaceAll(
+      RegExp(r'[^a-zA-Z0-9_\-]'),
+      '_',
+    );
     final suffix = widget.promoteToLive ? 'live' : 'copy';
     return '${sanitized}_${suffix}_${DateTime.now().millisecondsSinceEpoch}';
   }
@@ -1352,7 +1389,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
       final response = await http
           .get(
-            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/config/$_configSourceBotId'),
+            Uri.parse(
+              '${EnvironmentConfig.apiUrl}/api/bot/config/$_configSourceBotId',
+            ),
             headers: {
               'Content-Type': 'application/json',
               'X-Session-Token': sessionToken,
@@ -1376,12 +1415,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         }
       }
 
-      final symbols = (config['symbols'] as List?)
+      final symbols =
+          (config['symbols'] as List?)
               ?.map((item) => item.toString())
               .where((item) => item.trim().isNotEmpty)
               .toList() ??
           <String>[];
-      final allowedVolatility = (config['allowedVolatility'] as List?)
+      final allowedVolatility =
+          (config['allowedVolatility'] as List?)
               ?.map((item) => item.toString())
               .where((item) => item.trim().isNotEmpty)
               .toList() ??
@@ -1390,8 +1431,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         config['profitProtection'] as Map? ?? const {},
       );
       final tradeAmount = config['tradeAmount'];
-      final riskPercent = (config['riskPercent'] as num?)?.toDouble() ??
-          ((config['riskPerTrade'] as num?)?.toDouble() ?? _riskPercent * 10) / 10.0;
+      final riskPercent =
+          (config['riskPercent'] as num?)?.toDouble() ??
+          ((config['riskPerTrade'] as num?)?.toDouble() ?? _riskPercent * 10) /
+              10.0;
 
       setState(() {
         _botIdController.text = preserveBotId
@@ -1399,44 +1442,47 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             : _buildClonedBotId(
                 (config['botId'] ?? widget.cloneFromBotId).toString(),
               );
-        _selectedPreset = (config['selectedPreset'] ?? '').toString().trim().isEmpty
+        _selectedPreset =
+            (config['selectedPreset'] ?? '').toString().trim().isEmpty
             ? null
             : (config['selectedPreset'] ?? '').toString().trim();
-        _selectedStrategy = (config['strategy'] ?? _selectedStrategy).toString();
+        _selectedStrategy = (config['strategy'] ?? _selectedStrategy)
+            .toString();
         _selectedSymbols = symbols;
         _riskPercent = riskPercent;
-        _maxOpenTrades = (config['maxOpenTrades'] as num?)?.toInt() ??
+        _maxOpenTrades =
+            (config['maxOpenTrades'] as num?)?.toInt() ??
             (config['maxOpenPositions'] as num?)?.toInt() ??
             _maxOpenTrades;
         _maxDrawdownPercent =
             (config['maxDrawdownPercent'] as num?)?.toDouble() ??
-                (config['drawdownPausePercent'] as num?)?.toDouble() ??
-                _maxDrawdownPercent;
-        _managementProfile =
-            (config['managementProfile'] ?? _managementProfile).toString();
+            (config['drawdownPausePercent'] as num?)?.toDouble() ??
+            _maxDrawdownPercent;
+        _managementProfile = (config['managementProfile'] ?? _managementProfile)
+            .toString();
         _allowedVolatility = allowedVolatility;
         _intelligentScanner = config['intelligentScanner'] == true;
         _enableProfitProtection =
             (profitProtection['enabled'] ?? _enableProfitProtection) == true;
         _profitProtectionActivationPercent =
             (profitProtection['activationPercent'] as num?)?.toDouble() ??
-                _profitProtectionActivationPercent;
+            _profitProtectionActivationPercent;
         _profitProtectionActivationMinProfit =
             (profitProtection['activationMinProfit'] as num?)?.toDouble() ??
-                _profitProtectionActivationMinProfit;
+            _profitProtectionActivationMinProfit;
         _profitProtectionRetracePercent =
             (profitProtection['retraceClosePercent'] as num?)?.toDouble() ??
-                _profitProtectionRetracePercent;
+            _profitProtectionRetracePercent;
         _profitProtectionSwitchOnReversal =
             (profitProtection['switchOnReversal'] ??
-                    _profitProtectionSwitchOnReversal) ==
-                true;
+                _profitProtectionSwitchOnReversal) ==
+            true;
         _investmentAmountController.text = tradeAmount == null
             ? ''
             : ((tradeAmount as num).toDouble() ==
-                    (tradeAmount as num).toDouble().roundToDouble())
-                ? (tradeAmount as num).toDouble().toStringAsFixed(0)
-                : (tradeAmount as num).toDouble().toStringAsFixed(2);
+                  (tradeAmount as num).toDouble().roundToDouble())
+            ? (tradeAmount as num).toDouble().toStringAsFixed(0)
+            : (tradeAmount as num).toDouble().toStringAsFixed(2);
       });
     } catch (e) {
       setState(() {
@@ -1484,9 +1530,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     setState(() => _isLoadingData = true);
     try {
       final response = await http
-          .get(
-            Uri.parse('${EnvironmentConfig.apiUrl}/api/commodities/list'),
-          )
+          .get(Uri.parse('${EnvironmentConfig.apiUrl}/api/commodities/list'))
           .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
@@ -1517,57 +1561,91 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           {
             'symbol': 'BTCUSD',
             'name': '₿ Bitcoin (BTC/USD)',
-            'category': 'Crypto'
+            'category': 'Crypto',
           },
           {
             'symbol': 'ETHUSD',
             'name': 'Ethereum (ETH/USD)',
-            'category': 'Crypto'
+            'category': 'Crypto',
           },
           {
             'symbol': 'XAUUSD',
             'name': '🥇 Gold (XAU/USD)',
-            'category': 'Precious Metals'
+            'category': 'Precious Metals',
           },
           {
             'symbol': 'EURUSD',
             'name': '💱 Euro vs US Dollar',
-            'category': 'Forex'
+            'category': 'Forex',
           },
           {
             'symbol': 'USDJPY',
             'name': '💱 US Dollar vs Japanese Yen',
-            'category': 'Forex'
+            'category': 'Forex',
           },
           {
             'symbol': 'GBPUSD',
             'name': '💱 British Pound vs US Dollar',
-            'category': 'Forex'
+            'category': 'Forex',
           },
           {
             'symbol': 'AUDUSD',
             'name': '💱 Australian Dollar vs US Dollar',
-            'category': 'Forex'
+            'category': 'Forex',
           },
           {
             'symbol': 'USDCAD',
             'name': '💱 US Dollar vs Canadian Dollar',
-            'category': 'Forex'
+            'category': 'Forex',
           },
           {
             'symbol': 'NVDA',
             'name': '📈 NVIDIA Corporation',
-            'category': 'Stocks'
+            'category': 'Stocks',
           },
           {'symbol': 'AAPL', 'name': '📈 Apple Inc.', 'category': 'Stocks'},
           {
             'symbol': 'MSFT',
             'name': '📈 Microsoft Corporation',
-            'category': 'Stocks'
+            'category': 'Stocks',
           },
         ];
         _isLoadingData = false;
       });
+    }
+  }
+
+  double _marketSignalStrength(Map<String, dynamic> marketData) {
+    final rawValue =
+        marketData['signalPercentage'] ??
+        marketData['signalStrength'] ??
+        marketData['signal_strength'] ??
+        0;
+
+    if (rawValue is num) {
+      return rawValue.toDouble().clamp(0.0, 100.0);
+    }
+
+    return (double.tryParse(rawValue.toString()) ?? 0.0).clamp(0.0, 100.0);
+  }
+
+  Color _marketSignalColor({
+    required bool isBinanceSymbol,
+    required String trend,
+  }) {
+    if (isBinanceSymbol) {
+      return Colors.orangeAccent;
+    }
+
+    switch (trend.toUpperCase()) {
+      case 'UP':
+        return Colors.green;
+      case 'DOWN':
+        return Colors.red;
+      case 'RANGING':
+        return Colors.amber;
+      default:
+        return Colors.blueGrey;
     }
   }
 
@@ -1620,8 +1698,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   Map<String, dynamic> _buildBotPayload(BrokerCredential credential) {
-    final internalRiskPerTrade =
-        (_riskPercent * 10).clamp(5.0, 30.0).toDouble();
+    final internalRiskPerTrade = (_riskPercent * 10)
+        .clamp(5.0, 30.0)
+        .toDouble();
     final maxPositionsPerSymbol = _recommendedMaxPositionsPerSymbol();
     final signalThreshold = _recommendedSignalThreshold();
     final tradingMode = _recommendedTradingMode();
@@ -1752,17 +1831,22 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       final credential = _brokerService.activeCredential;
       if (credential == null) {
         throw Exception(
-            'Broker credential lost. Please setup broker integration again.');
+          'Broker credential lost. Please setup broker integration again.',
+        );
       }
 
       print(
-          '🤖 Creating bot with broker credential: ${credential.credentialId}');
+        '🤖 Creating bot with broker credential: ${credential.credentialId}',
+      );
       print('   Broker: ${credential.broker}');
       print('   Account: ${credential.accountNumber}');
 
       final fixedAmountWarning = _fixedTradeAmountWarningData(context);
       if (fixedAmountWarning != null) {
-        final shouldContinue = await _confirmLowFixedTradeAmount(context, fixedAmountWarning);
+        final shouldContinue = await _confirmLowFixedTradeAmount(
+          context,
+          fixedAmountWarning,
+        );
         if (!shouldContinue) {
           setState(() {
             _isCreating = false;
@@ -1776,7 +1860,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (_isEditMode) {
         final updateResponse = await http
             .put(
-              Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/config/${widget.botId}'),
+              Uri.parse(
+                '${EnvironmentConfig.apiUrl}/api/bot/config/${widget.botId}',
+              ),
               headers: {
                 'Content-Type': 'application/json',
                 'X-Session-Token': sessionToken,
@@ -1787,8 +1873,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
         final updateData = jsonDecode(updateResponse.body);
         if (updateResponse.statusCode != 200 || updateData['success'] != true) {
-          throw Exception(updateData['error'] ??
-              'Failed to update bot: ${updateResponse.statusCode}');
+          throw Exception(
+            updateData['error'] ??
+                'Failed to update bot: ${updateResponse.statusCode}',
+          );
         }
 
         if (restartAfterSave) {
@@ -1799,17 +1887,17 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                   'Content-Type': 'application/json',
                   'X-Session-Token': sessionToken,
                 },
-                body: jsonEncode({
-                  'botId': widget.botId,
-                  'user_id': null,
-                }),
+                body: jsonEncode({'botId': widget.botId, 'user_id': null}),
               )
               .timeout(const Duration(seconds: 30));
 
           final restartData = jsonDecode(restartResponse.body);
-          if (restartResponse.statusCode != 200 || restartData['success'] != true) {
-            throw Exception(restartData['error'] ??
-                'Bot settings saved, but restart failed: ${restartResponse.statusCode}');
+          if (restartResponse.statusCode != 200 ||
+              restartData['success'] != true) {
+            throw Exception(
+              restartData['error'] ??
+                  'Bot settings saved, but restart failed: ${restartResponse.statusCode}',
+            );
           }
         }
 
@@ -1826,9 +1914,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(restartAfterSave
-                ? 'Bot updated and restarted successfully.'
-                : (updateData['message'] ?? 'Bot updated successfully.')),
+            content: Text(
+              restartAfterSave
+                  ? 'Bot updated and restarted successfully.'
+                  : (updateData['message'] ?? 'Bot updated successfully.'),
+            ),
             backgroundColor: Colors.green,
             duration: const Duration(seconds: 3),
           ),
@@ -1851,17 +1941,22 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (createResponse.statusCode != 200 &&
           createResponse.statusCode != 201) {
         final errorData = jsonDecode(createResponse.body);
-        throw Exception(errorData['error'] ??
-            'Failed to create bot: ${createResponse.statusCode}');
+        throw Exception(
+          errorData['error'] ??
+              'Failed to create bot: ${createResponse.statusCode}',
+        );
       }
 
       final createData = jsonDecode(createResponse.body);
-      final createdBotId = (createData['botId']?.toString().trim().isNotEmpty ?? false)
+      final createdBotId =
+          (createData['botId']?.toString().trim().isNotEmpty ?? false)
           ? createData['botId'].toString().trim()
           : _botIdController.text.trim();
 
       if (createdBotId.isEmpty) {
-        throw Exception('Bot creation succeeded but no botId was returned by the backend.');
+        throw Exception(
+          'Bot creation succeeded but no botId was returned by the backend.',
+        );
       }
 
       print('✅ Bot created successfully: $createdBotId');
@@ -1888,7 +1983,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         print('⚠️ Bot created but failed to start: ${startError['error']}');
         // Don't throw - bot is created, just warn about start failure
         setState(() {
-          _successMessage = 'Bot created successfully! 🎉\n'
+          _successMessage =
+              'Bot created successfully! 🎉\n'
               'Bot ID: $createdBotId\n'
               '${_isBinanceBroker ? 'Pairs' : 'Symbols'}: ${_selectedSymbols.join(', ')}\n\n'
               '⚠️ Bot was created but failed to start automatically. '
@@ -1899,7 +1995,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         final startData = jsonDecode(startResponse.body);
         print('✅ Bot started successfully: ${startData['message']}');
         setState(() {
-          _successMessage = 'Bot created and started successfully! 🎉\n'
+          _successMessage =
+              'Bot created and started successfully! 🎉\n'
               'Bot ID: $createdBotId\n'
               '${_isBinanceBroker ? 'Pairs' : 'Symbols'}: ${_selectedSymbols.join(', ')}\n\n'
               'The bot is now actively trading in the background.';
@@ -1918,9 +2015,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(startSucceeded
-                ? '✅ Bot created and started. It will appear in your bot list.'
-                : '⚠️ Bot created, but automatic start failed. Check the warning on this screen.'),
+            content: Text(
+              startSucceeded
+                  ? '✅ Bot created and started. It will appear in your bot list.'
+                  : '⚠️ Bot created, but automatic start failed. Check the warning on this screen.',
+            ),
             backgroundColor: startSucceeded ? Colors.green : Colors.orange,
             duration: const Duration(seconds: 3),
           ),
@@ -1952,12 +2051,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token') ?? '';
-      final response = await http.get(
-        Uri.parse('${EnvironmentConfig.apiUrl}/api/risk-settings/get'),
-        headers: {
-          if (sessionToken.isNotEmpty) 'X-Session-Token': sessionToken,
-        },
-      ).timeout(const Duration(seconds: 5));
+      final response = await http
+          .get(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/risk-settings/get'),
+            headers: {
+              if (sessionToken.isNotEmpty) 'X-Session-Token': sessionToken,
+            },
+          )
+          .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -1965,8 +2066,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         setState(() {
           _riskPercent = (settings['risk_percent'] ?? 2.0).toDouble();
           _maxOpenTrades = (settings['max_open_trades'] ?? 3) as int;
-          _maxDrawdownPercent =
-              (settings['max_drawdown_percent'] ?? 20.0).toDouble();
+          _maxDrawdownPercent = (settings['max_drawdown_percent'] ?? 20.0)
+              .toDouble();
         });
       }
     } catch (e) {
@@ -1998,7 +2099,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                '✅ Risk settings saved! Bot will use automatic lot sizing.'),
+              '✅ Risk settings saved! Bot will use automatic lot sizing.',
+            ),
             duration: Duration(seconds: 3),
           ),
         );
@@ -2029,9 +2131,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           children: [
             LogoWidget(size: 40, showText: false),
             SizedBox(width: 12),
-            Expanded(
-              child: Text('Bot Configuration'),
-            ),
+            Expanded(child: Text('Bot Configuration')),
           ],
         ),
         backgroundColor: Colors.grey[900],
@@ -2046,11 +2146,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 icon: const Icon(Icons.currency_exchange, color: Colors.white),
                 style: const TextStyle(color: Colors.white),
                 items: AppCurrency.values
-                    .map((currency) => DropdownMenuItem<AppCurrency>(
-                          value: currency,
-                          child: Text(_currencyCode(currency),
-                              style: const TextStyle(color: Colors.white)),
-                        ))
+                    .map(
+                      (currency) => DropdownMenuItem<AppCurrency>(
+                        value: currency,
+                        child: Text(
+                          _currencyCode(currency),
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    )
                     .toList(),
                 onChanged: (value) {
                   if (value != null) {
@@ -2064,7 +2168,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                    builder: (context) => const BotDashboardScreen()),
+                  builder: (context) => const BotDashboardScreen(),
+                ),
               );
             },
             icon: const Icon(Icons.dashboard),
@@ -2080,8 +2185,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             // Success Banner
             if (_successMessage != null)
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.green.withOpacity(0.2),
                   border: Border.all(color: Colors.green),
@@ -2089,14 +2196,19 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.check_circle,
-                        color: Colors.green, size: 20),
+                    const Icon(
+                      Icons.check_circle,
+                      color: Colors.green,
+                      size: 20,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         _successMessage!,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -2114,8 +2226,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             // Error Banner
             if (_errorMessage != null)
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.red.withOpacity(0.2),
                   border: Border.all(color: Colors.red),
@@ -2128,8 +2242,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     Expanded(
                       child: Text(
                         _errorMessage!,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -2150,8 +2266,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: const Color(0xFF0066FF).withOpacity(0.12),
-                border:
-                    Border.all(color: const Color(0xFF0066FF).withOpacity(0.4)),
+                border: Border.all(
+                  color: const Color(0xFF0066FF).withOpacity(0.4),
+                ),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Row(
@@ -2189,8 +2306,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.rocket_launch,
-                          color: Colors.amber, size: 22),
+                      const Icon(
+                        Icons.rocket_launch,
+                        color: Colors.amber,
+                        size: 22,
+                      ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Column(
@@ -2207,15 +2327,20 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                             Text(
                               r'One-tap setup for $10 - $1,000 accounts',
                               style: TextStyle(
-                                  fontSize: 11, color: Colors.grey[400]),
+                                fontSize: 11,
+                                color: Colors.grey[400],
+                              ),
                             ),
                           ],
                         ),
                       ),
                       if (_selectedPreset != null)
                         IconButton(
-                          icon: const Icon(Icons.clear,
-                              size: 18, color: Colors.grey),
+                          icon: const Icon(
+                            Icons.clear,
+                            size: 18,
+                            color: Colors.grey,
+                          ),
                           onPressed: () =>
                               setState(() => _selectedPreset = null),
                           tooltip: 'Clear preset',
@@ -2271,35 +2396,43 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            _smallAccountPresets[_selectedPreset]![
-                                'description'] as String,
+                            _smallAccountPresets[_selectedPreset]!['description']
+                                as String,
                             style: const TextStyle(
-                                fontSize: 12, color: Colors.white70),
+                              fontSize: 12,
+                              color: Colors.white70,
+                            ),
                           ),
                           const SizedBox(height: 8),
                           ...(_smallAccountPresets[_selectedPreset]!['tips']
                                   as List)
                               .map(
-                            (tip) => Padding(
-                              padding: const EdgeInsets.only(bottom: 3),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text('• ',
-                                      style: TextStyle(
-                                          color: Colors.amber, fontSize: 11)),
-                                  Expanded(
-                                    child: Text(
-                                      tip as String,
-                                      style: TextStyle(
+                                (tip) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 3),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        '• ',
+                                        style: TextStyle(
+                                          color: Colors.amber,
                                           fontSize: 11,
-                                          color: Colors.grey[300]),
-                                    ),
+                                        ),
+                                      ),
+                                      Expanded(
+                                        child: Text(
+                                          tip as String,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey[300],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
+                                ),
                               ),
-                            ),
-                          ),
                         ],
                       ),
                     ),
@@ -2328,8 +2461,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       height: 100,
                       width: 100,
                       color: Colors.grey[800],
-                      child: const Icon(Icons.image_not_supported,
-                          color: Colors.grey),
+                      child: const Icon(
+                        Icons.image_not_supported,
+                        color: Colors.grey,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -2386,8 +2521,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                         children: [
                           Row(
                             children: [
-                              const Icon(Icons.account_balance,
-                                  color: Colors.green, size: 24),
+                              const Icon(
+                                Icons.account_balance,
+                                color: Colors.green,
+                                size: 24,
+                              ),
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Column(
@@ -2410,13 +2548,19 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                                    if (_brokerService.activeCredential != null) ...[
+                                    if (_brokerService.activeCredential !=
+                                        null) ...[
                                       const SizedBox(height: 4),
                                       Text(
                                         '${_credentialModeLabel(_brokerService.activeCredential!)} • ${_brokerService.activeCredential!.accountCurrency} • ${_credentialStatusText(_brokerService.activeCredential!)}',
                                         style: TextStyle(
                                           fontSize: 12,
-                                          color: _brokerService.activeCredential!.isHealthy ? Colors.grey[300] : Colors.orange[300],
+                                          color:
+                                              _brokerService
+                                                  .activeCredential!
+                                                  .isHealthy
+                                              ? Colors.grey[300]
+                                              : Colors.orange[300],
                                           fontWeight: FontWeight.w600,
                                         ),
                                       ),
@@ -2428,21 +2572,23 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                 onPressed: () {
                                   Navigator.of(context)
                                       .push(
-                                    MaterialPageRoute(
-                                        builder: (context) =>
-                                            const BrokerIntegrationScreen()),
-                                  )
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              const BrokerIntegrationScreen(),
+                                        ),
+                                      )
                                       .then((_) {
-                                    setState(() {
-                                      _brokerService.fetchCredentials();
-                                    });
-                                  });
+                                        setState(() {
+                                          _brokerService.fetchCredentials();
+                                        });
+                                      });
                                 },
                                 icon: const Icon(Icons.edit, size: 18),
                                 label: const Text('Change'),
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor:
-                                      Colors.green.withOpacity(0.3),
+                                  backgroundColor: Colors.green.withOpacity(
+                                    0.3,
+                                  ),
                                   foregroundColor: Colors.green,
                                 ),
                               ),
@@ -2459,27 +2605,40 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                 const Text(
                                   'Your Saved Credentials',
                                   style: TextStyle(
-                                      fontSize: 12, color: Colors.grey),
+                                    fontSize: 12,
+                                    color: Colors.grey,
+                                  ),
                                 ),
                                 const SizedBox(height: 8),
                                 Wrap(
                                   spacing: 8,
                                   runSpacing: 8,
-                                  children:
-                                      _brokerService.credentials.map((cred) {
-                                    final isActive = cred.credentialId ==
+                                  children: _brokerService.credentials.map((
+                                    cred,
+                                  ) {
+                                    final isActive =
+                                        cred.credentialId ==
                                         _brokerService
-                                            .activeCredential?.credentialId;
-                                    final modeLabel = _credentialModeLabel(cred);
-                                    final modeColor = _credentialModeColor(cred);
+                                            .activeCredential
+                                            ?.credentialId;
+                                    final modeLabel = _credentialModeLabel(
+                                      cred,
+                                    );
+                                    final modeColor = _credentialModeColor(
+                                      cred,
+                                    );
                                     return FilterChip(
                                       label: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Text('${cred.broker} #${cred.accountNumber} '),
+                                          Text(
+                                            '${cred.broker} #${cred.accountNumber} ',
+                                          ),
                                           Container(
                                             padding: const EdgeInsets.symmetric(
-                                                horizontal: 6, vertical: 1),
+                                              horizontal: 6,
+                                              vertical: 1,
+                                            ),
                                             decoration: BoxDecoration(
                                               color: modeColor.withOpacity(0.2),
                                               borderRadius:
@@ -2488,9 +2647,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                             child: Text(
                                               modeLabel,
                                               style: TextStyle(
-                                                  fontSize: 10,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: modeColor),
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                                color: modeColor,
+                                              ),
                                             ),
                                           ),
                                           const SizedBox(width: 6),
@@ -2504,12 +2664,17 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           const SizedBox(width: 6),
                                           Text(
                                             cred.isHealthy
-                                                ? _formatCompactCurrency(cred.cachedBalance, cred.accountCurrency)
+                                                ? _formatCompactCurrency(
+                                                    cred.cachedBalance,
+                                                    cred.accountCurrency,
+                                                  )
                                                 : 'STALE',
                                             style: TextStyle(
                                               fontSize: 10,
                                               fontWeight: FontWeight.w600,
-                                              color: cred.isHealthy ? Colors.white70 : Colors.orangeAccent,
+                                              color: cred.isHealthy
+                                                  ? Colors.white70
+                                                  : Colors.orangeAccent,
                                             ),
                                           ),
                                         ],
@@ -2518,15 +2683,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       onSelected: (selected) {
                                         if (selected) {
                                           setState(() {
-                                            _brokerService
-                                                .setActiveCredential(cred);
+                                            _brokerService.setActiveCredential(
+                                              cred,
+                                            );
                                           });
                                         }
                                       },
-                                      backgroundColor:
-                                          Colors.grey.withOpacity(0.2),
-                                      selectedColor:
-                                          Colors.green.withOpacity(0.3),
+                                      backgroundColor: Colors.grey.withOpacity(
+                                        0.2,
+                                      ),
+                                      selectedColor: Colors.green.withOpacity(
+                                        0.3,
+                                      ),
                                     );
                                   }).toList(),
                                 ),
@@ -2546,14 +2714,16 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                             enabled: !_isEditMode,
                             decoration: InputDecoration(
                               labelText: 'Bot ID',
-                              hintText: (_isEditMode || _isCloneMode) ? null : 'bot_trend_1',
+                              hintText: (_isEditMode || _isCloneMode)
+                                  ? null
+                                  : 'bot_trend_1',
                               helperText: _isEditMode
                                   ? 'Bot ID stays fixed when reconfiguring an existing bot.'
                                   : (_isCloneMode
-                                    ? (widget.promoteToLive
-                                      ? 'This live bot is prefilled from your demo bot settings. Change the bot ID if you want a custom live name.'
-                                      : 'This is a cloned setup. Change the bot ID if you want a custom copy name.')
-                                      : null),
+                                        ? (widget.promoteToLive
+                                              ? 'This live bot is prefilled from your demo bot settings. Change the bot ID if you want a custom live name.'
+                                              : 'This is a cloned setup. Change the bot ID if you want a custom copy name.')
+                                        : null),
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(8),
                               ),
@@ -2571,10 +2741,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               ),
                             ),
                             items: strategies
-                                .map((strategy) => DropdownMenuItem(
-                                      value: strategy,
-                                      child: Text(strategy),
-                                    ))
+                                .map(
+                                  (strategy) => DropdownMenuItem(
+                                    value: strategy,
+                                    child: Text(strategy),
+                                  ),
+                                )
                                 .toList(),
                             onChanged: (value) {
                               if (value != null) {
@@ -2601,7 +2773,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       if (!_brokerService.activeCredential!.isHealthy)
                         Text(
                           'This credential has no warmed cache yet. It may show as disconnected until you test the connection or start a bot on it.',
-                          style: TextStyle(fontSize: 11, color: Colors.orange[300]),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.orange[300],
+                          ),
                         ),
                     ],
                     if (_isBinanceBroker) ...[
@@ -2612,26 +2787,29 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: Row(
-                        children: [
-                          'All',
-                          'Stable',
-                          'Moderate',
-                          'High Volatility',
-                        ].map((bucket) {
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              label: Text(bucket),
-                              selected:
-                                  _selectedTraditionalVolatilityFilter == bucket,
-                              onSelected: (_) {
-                                setState(() {
-                                  _selectedTraditionalVolatilityFilter = bucket;
-                                });
-                              },
-                            ),
-                          );
-                        }).toList(),
+                        children:
+                            [
+                              'All',
+                              'Stable',
+                              'Moderate',
+                              'High Volatility',
+                            ].map((bucket) {
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ChoiceChip(
+                                  label: Text(bucket),
+                                  selected:
+                                      _selectedTraditionalVolatilityFilter ==
+                                      bucket,
+                                  onSelected: (_) {
+                                    setState(() {
+                                      _selectedTraditionalVolatilityFilter =
+                                          bucket;
+                                    });
+                                  },
+                                ),
+                              );
+                            }).toList(),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -2644,7 +2822,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(
                           '$_hiddenSelectedSymbolCount selected symbol(s) are outside this filter and remain selected.',
-                          style: TextStyle(fontSize: 11, color: Colors.orange[300]),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.orange[300],
+                          ),
                         ),
                       ),
                     const SizedBox(height: 8),
@@ -2656,123 +2837,167 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       child: Padding(
                         padding: const EdgeInsets.all(8),
                         child: _isLoadingData
-                            ? const Center(
-                                child: CircularProgressIndicator(),
-                              )
+                            ? const Center(child: CircularProgressIndicator())
                             : SizedBox(
                                 height: 350,
                                 child: ListView.builder(
                                   itemCount: _filteredTradingSymbols.length,
                                   itemBuilder: (context, index) {
-                                    final symbol = _filteredTradingSymbols[index];
+                                    final symbol =
+                                        _filteredTradingSymbols[index];
                                     final symbolCode = symbol['symbol']!;
                                     final isBinanceSymbol = _isBinanceBroker;
-                                    final traditionalBucket = _traditionalVolatilityBucket(symbolCode);
-                                    final traditionalBucketColor = _traditionalVolatilityColor(traditionalBucket);
+                                    final traditionalBucket =
+                                        _traditionalVolatilityBucket(
+                                          symbolCode,
+                                        );
+                                    final traditionalBucketColor =
+                                        _traditionalVolatilityColor(
+                                          traditionalBucket,
+                                        );
 
                                     // Get market data for this symbol directly (API now uses correct keys)
                                     final marketData =
                                         commodityMarketData[symbolCode] ?? {};
                                     final binanceData =
                                         _binancePairAnalytics[symbolCode] ??
-                                            const {};
+                                        const {};
                                     final trend =
                                         marketData['trend'] ?? 'NEUTRAL';
-                                    final isBullish =
-                                        isBinanceSymbol ? true : trend == 'UP';
-                                    final change =
-                                        (marketData['change'] ?? 0).toDouble();
+                                    final signalColor = _marketSignalColor(
+                                      isBinanceSymbol: isBinanceSymbol,
+                                      trend: trend.toString(),
+                                    );
+                                    final isBullish = isBinanceSymbol
+                                        ? true
+                                        : trend == 'UP';
+                                    final change = (marketData['change'] ?? 0)
+                                        .toDouble();
+                                    final signalStrength =
+                                        _marketSignalStrength(marketData);
                                     final edgePct =
                                         (binanceData['edgePct'] as num?)
-                                                ?.toDouble() ??
-                                            0.0;
+                                            ?.toDouble() ??
+                                        0.0;
                                     final winRate =
                                         (binanceData['winRate'] as num?)
-                                                ?.toDouble() ??
-                                            0.0;
+                                            ?.toDouble() ??
+                                        0.0;
                                     final signal = isBinanceSymbol
                                         ? 'EDGE ${edgePct.toStringAsFixed(1)}%'
                                         : (marketData['signal'] ??
-                                            '🟡 NEUTRAL');
+                                              '🟡 NEUTRAL');
+                                    final visiblePercentageLabel =
+                                        isBinanceSymbol
+                                        ? '${edgePct.toStringAsFixed(1)}% edge • ${winRate.toStringAsFixed(0)}% win'
+                                        : signalStrength > 0
+                                        ? '${signalStrength.toStringAsFixed(signalStrength >= 10 ? 0 : 1)}% signal'
+                                        : '${change > 0 ? '+' : ''}${change.toStringAsFixed(2)}%';
                                     final recommendation = isBinanceSymbol
                                         ? '${binanceData['analysis'] ?? 'Selected Binance pair will follow your strategy.'} | Est. win rate ${winRate.toStringAsFixed(0)}%'
                                         : (marketData['recommendation'] ??
-                                            'No data available');
+                                              'No data available');
                                     final volatility = isBinanceSymbol
                                         ? '${binanceData['risk'] ?? 'Medium'} risk'
                                         : (marketData['volatility'] ??
-                                            'Unknown');
+                                              'Unknown');
 
                                     return Container(
                                       margin: const EdgeInsets.only(bottom: 8),
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: isBullish
-                                              ? Colors.green.withOpacity(0.3)
-                                              : Colors.red.withOpacity(0.3),
+                                          color: signalColor.withOpacity(0.35),
                                         ),
                                         borderRadius: BorderRadius.circular(8),
-                                        color: isBullish
-                                            ? Colors.green.withOpacity(0.05)
-                                            : Colors.red.withOpacity(0.05),
+                                        color: signalColor.withOpacity(0.06),
                                       ),
                                       child: CheckboxListTile(
                                         value: _isSymbolSelected(symbolCode),
                                         onChanged: (value) {
                                           setState(() {
                                             if (value ?? false) {
-                                              if (!_isSymbolSelected(symbolCode)) {
-                                                _selectedSymbols.add(symbolCode);
+                                              if (!_isSymbolSelected(
+                                                symbolCode,
+                                              )) {
+                                                _selectedSymbols.add(
+                                                  symbolCode,
+                                                );
                                               }
                                             } else {
                                               _selectedSymbols.removeWhere(
                                                 (selected) =>
-                                                    _normalizeSymbolBase(selected) ==
-                                                    _normalizeSymbolBase(symbolCode),
+                                                    _normalizeSymbolBase(
+                                                      selected,
+                                                    ) ==
+                                                    _normalizeSymbolBase(
+                                                      symbolCode,
+                                                    ),
                                               );
                                             }
                                           });
                                         },
-                                        title: Row(
+                                        title: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
                                           children: [
-                                            Expanded(
-                                              child: Text(symbol['name']!),
-                                            ),
-                                            Flexible(
-                                              child: Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                  horizontal: 8,
-                                                  vertical: 4,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: isBullish
-                                                      ? Colors.green
-                                                          .withOpacity(0.2)
-                                                      : Colors.red
-                                                          .withOpacity(0.2),
-                                                  border: Border.all(
-                                                    color: isBullish
-                                                        ? Colors.green
-                                                        : Colors.red,
+                                            Text(symbol['name']!),
+                                            const SizedBox(height: 6),
+                                            Wrap(
+                                              spacing: 8,
+                                              runSpacing: 6,
+                                              children: [
+                                                Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 4,
+                                                      ),
+                                                  decoration: BoxDecoration(
+                                                    color: signalColor
+                                                        .withOpacity(0.18),
+                                                    border: Border.all(
+                                                      color: signalColor,
+                                                    ),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          4,
+                                                        ),
                                                   ),
-                                                  borderRadius:
-                                                      BorderRadius.circular(4),
-                                                ),
-                                                child: Text(
-                                                  signal,
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    color: isBullish
-                                                        ? Colors.green
-                                                        : Colors.red,
-                                                    fontSize: 11,
-                                                    fontWeight: FontWeight.bold,
+                                                  child: Text(
+                                                    signal,
+                                                    style: TextStyle(
+                                                      color: signalColor,
+                                                      fontSize: 11,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
+                                                Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 4,
+                                                      ),
+                                                  decoration: BoxDecoration(
+                                                    color: signalColor
+                                                        .withOpacity(0.12),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          4,
+                                                        ),
+                                                  ),
+                                                  child: Text(
+                                                    visiblePercentageLabel,
+                                                    style: TextStyle(
+                                                      color: signalColor,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      fontSize: 11,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
                                             ),
                                           ],
                                         ),
@@ -2780,84 +3005,81 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
-                                            SingleChildScrollView(
-                                              scrollDirection: Axis.horizontal,
-                                              child: Row(
-                                                children: [
-                                                  Text(
-                                                    symbol['category']!,
-                                                    style: const TextStyle(
-                                                        fontSize: 11),
+                                            Wrap(
+                                              spacing: 8,
+                                              runSpacing: 6,
+                                              children: [
+                                                Text(
+                                                  symbol['category']!,
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
                                                   ),
-                                                  const SizedBox(width: 8),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(
-                                                      horizontal: 6,
-                                                      vertical: 2,
-                                                    ),
-                                                    decoration: BoxDecoration(
-                                                      color: traditionalBucketColor.withOpacity(0.18),
-                                                      borderRadius: BorderRadius.circular(3),
-                                                      border: Border.all(
-                                                        color: traditionalBucketColor.withOpacity(0.4),
+                                                ),
+                                                Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 6,
+                                                        vertical: 2,
                                                       ),
-                                                    ),
-                                                    child: Text(
-                                                      traditionalBucket,
-                                                      style: TextStyle(
-                                                        fontSize: 9,
-                                                        color: traditionalBucketColor,
-                                                        fontWeight: FontWeight.w700,
-                                                      ),
+                                                  decoration: BoxDecoration(
+                                                    color:
+                                                        traditionalBucketColor
+                                                            .withOpacity(0.18),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          3,
+                                                        ),
+                                                    border: Border.all(
+                                                      color:
+                                                          traditionalBucketColor
+                                                              .withOpacity(0.4),
                                                     ),
                                                   ),
-                                                  const SizedBox(width: 8),
-                                                  Text(
-                                                    isBinanceSymbol
-                                                        ? '${edgePct.toStringAsFixed(1)}% edge • ${winRate.toStringAsFixed(0)}% win'
-                                                        : '${change > 0 ? '+' : ''}${change.toStringAsFixed(2)}%',
+                                                  child: Text(
+                                                    traditionalBucket,
                                                     style: TextStyle(
-                                                      color: isBinanceSymbol
-                                                          ? Colors.orangeAccent
-                                                          : change >= 0
-                                                              ? Colors.green
-                                                              : Colors.red,
+                                                      fontSize: 9,
+                                                      color:
+                                                          traditionalBucketColor,
                                                       fontWeight:
-                                                          FontWeight.bold,
-                                                      fontSize: 11,
+                                                          FontWeight.w700,
                                                     ),
                                                   ),
-                                                  const SizedBox(width: 8),
-                                                  Container(
-                                                    padding: const EdgeInsets
-                                                        .symmetric(
-                                                      horizontal: 6,
-                                                      vertical: 2,
-                                                    ),
-                                                    decoration: BoxDecoration(
-                                                      color: volatility == 'Low'
-                                                          ? Colors.blue
-                                                              .withOpacity(0.2)
-                                                          : volatility == 'High'
-                                                              ? Colors.orange
-                                                                  .withOpacity(
-                                                                      0.2)
-                                                              : Colors.grey
-                                                                  .withOpacity(
-                                                                      0.2),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              3),
-                                                    ),
-                                                    child: Text(
-                                                      volatility,
-                                                      style: const TextStyle(
-                                                        fontSize: 9,
+                                                ),
+                                                Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 6,
+                                                        vertical: 2,
                                                       ),
+                                                  decoration: BoxDecoration(
+                                                    color:
+                                                        volatility ==
+                                                                'Low risk' ||
+                                                            volatility == 'Low'
+                                                        ? Colors.blue
+                                                              .withOpacity(0.2)
+                                                        : volatility ==
+                                                                  'High risk' ||
+                                                              volatility ==
+                                                                  'High'
+                                                        ? Colors.orange
+                                                              .withOpacity(0.2)
+                                                        : Colors.grey
+                                                              .withOpacity(0.2),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          3,
+                                                        ),
+                                                  ),
+                                                  child: Text(
+                                                    volatility,
+                                                    style: const TextStyle(
+                                                      fontSize: 9,
                                                     ),
                                                   ),
-                                                ],
-                                              ),
+                                                ),
+                                              ],
                                             ),
                                             const SizedBox(height: 4),
                                             Text(
@@ -2889,7 +3111,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       },
                       title: const Text('Enable Volatility Filter'),
                       subtitle: const Text(
-                          'If disabled, bot will trade regardless of market volatility.'),
+                        'If disabled, bot will trade regardless of market volatility.',
+                      ),
                       contentPadding: EdgeInsets.zero,
                     ),
                     const SizedBox(height: 12),
@@ -2902,11 +3125,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                           colors: _intelligentScanner
                               ? [
                                   Colors.purple.withOpacity(0.2),
-                                  Colors.blue.withOpacity(0.2)
+                                  Colors.blue.withOpacity(0.2),
                                 ]
                               : [
                                   Colors.grey.withOpacity(0.1),
-                                  Colors.grey.withOpacity(0.1)
+                                  Colors.grey.withOpacity(0.1),
                                 ],
                         ),
                         borderRadius: BorderRadius.circular(12),
@@ -2962,9 +3185,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                         children: [
                           Text(
                             'Transaction Currency',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleSmall
+                            style: Theme.of(context).textTheme.titleSmall
                                 ?.copyWith(
                                   color: Colors.blue[200],
                                   fontWeight: FontWeight.bold,
@@ -3004,8 +3225,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        border:
-                            Border.all(color: Colors.green.withOpacity(0.5)),
+                        border: Border.all(
+                          color: Colors.green.withOpacity(0.5),
+                        ),
                         borderRadius: BorderRadius.circular(12),
                         color: Colors.green.withOpacity(0.05),
                       ),
@@ -3014,8 +3236,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                         children: [
                           Row(
                             children: [
-                              const Icon(Icons.security,
-                                  color: Colors.green, size: 24),
+                              const Icon(
+                                Icons.security,
+                                color: Colors.green,
+                                size: 24,
+                              ),
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Column(
@@ -3035,8 +3260,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     Text(
                                       'Bot automatically calculates lot sizes, SL/TP levels, and enforces trading limits',
                                       style: TextStyle(
-                                          fontSize: 11,
-                                          color: Colors.grey[400]),
+                                        fontSize: 11,
+                                        color: Colors.grey[400],
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -3050,9 +3276,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                             children: [
                               Text(
                                 '🧠 Assisted Management Profile',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium
+                                style: Theme.of(context).textTheme.bodyMedium
                                     ?.copyWith(fontWeight: FontWeight.bold),
                               ),
                               const SizedBox(height: 8),
@@ -3084,10 +3308,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                         _managementProfile == 'fast_growth',
                                     onSelected: (_) =>
                                         _applyManagementProfile('fast_growth'),
-                                    backgroundColor:
-                                        Colors.orange.withOpacity(0.15),
-                                    labelStyle:
-                                        const TextStyle(color: Colors.orange),
+                                    backgroundColor: Colors.orange.withOpacity(
+                                      0.15,
+                                    ),
+                                    labelStyle: const TextStyle(
+                                      color: Colors.orange,
+                                    ),
                                   ),
                                   if (_selectedPreset != null)
                                     ChoiceChip(
@@ -3096,11 +3322,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           _managementProfile == 'small_account',
                                       onSelected: (_) =>
                                           _applyManagementProfile(
-                                              'small_account'),
-                                      backgroundColor:
-                                          Colors.amber.withOpacity(0.15),
-                                      labelStyle:
-                                          const TextStyle(color: Colors.amber),
+                                            'small_account',
+                                          ),
+                                      backgroundColor: Colors.amber.withOpacity(
+                                        0.15,
+                                      ),
+                                      labelStyle: const TextStyle(
+                                        color: Colors.amber,
+                                      ),
                                     ),
                                 ],
                               ),
@@ -3109,15 +3338,16 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                 _managementProfile == 'beginner'
                                     ? 'Recommended for inexperienced clients: fewer trades, stricter signals, and low-volatility execution only.'
                                     : _managementProfile == 'balanced'
-                                        ? 'Moderate automation: controlled stacking with medium-volatility access.'
-                                        : _managementProfile == 'fast_growth'
-                                          ? 'Quick Profit: Faster entries with stricter signal quality, tighter drawdown limits, and stronger profit lock behavior.'
-                                            : _managementProfile ==
-                                                    'small_account'
-                                            ? r'Small Account: Optimized for $10-$1000. Micro lots, swing entries, and controlled volatility.'
-                                                : 'Keeps intelligent protections on while allowing broader execution settings.',
+                                    ? 'Moderate automation: controlled stacking with medium-volatility access.'
+                                    : _managementProfile == 'fast_growth'
+                                    ? 'Quick Profit: Faster entries with stricter signal quality, tighter drawdown limits, and stronger profit lock behavior.'
+                                    : _managementProfile == 'small_account'
+                                    ? r'Small Account: Optimized for $10-$1000. Micro lots, swing entries, and controlled volatility.'
+                                    : 'Keeps intelligent protections on while allowing broader execution settings.',
                                 style: TextStyle(
-                                    fontSize: 11, color: Colors.grey[400]),
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
+                                ),
                               ),
                             ],
                           ),
@@ -3126,7 +3356,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                           // Trade Amount Input
                           Builder(
                             builder: (context) {
-                              final currLabel = _activeAccountCurrencyCode(context);
+                              final currLabel = _activeAccountCurrencyCode(
+                                context,
+                              );
                               final prefix = _currencyPrefixForCode(currLabel);
                               final selectedTradeAmount = double.tryParse(
                                 _investmentAmountController.text.trim(),
@@ -3147,14 +3379,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     onChanged: (_) => setState(() {}),
                                     keyboardType:
                                         const TextInputType.numberWithOptions(
-                                            decimal: true),
+                                          decimal: true,
+                                        ),
                                     decoration: InputDecoration(
                                       hintText:
-                                        'Optional fixed amount per trade in $currLabel',
+                                          'Optional fixed amount per trade in $currLabel',
                                       prefixText: prefix,
                                       border: OutlineInputBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(8)),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
                                       filled: true,
                                     ),
                                   ),
@@ -3162,7 +3395,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   Text(
                                     'This follows the selected broker account currency. Demo USD accounts use dollars, live ZAR accounts use rands. Leave it empty to size trades from Risk % instead.',
                                     style: TextStyle(
-                                        fontSize: 11, color: Colors.grey[400]),
+                                      fontSize: 11,
+                                      color: Colors.grey[400],
+                                    ),
                                   ),
                                   const SizedBox(height: 8),
                                   Wrap(
@@ -3172,11 +3407,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       for (final amount in _tradeAmountPresets)
                                         ChoiceChip(
                                           label: Text(
-                                            _formatPresetTradeAmount(amount, currLabel),
+                                            _formatPresetTradeAmount(
+                                              amount,
+                                              currLabel,
+                                            ),
                                           ),
-                                          selected: selectedTradeAmount != null &&
-                                              (selectedTradeAmount - amount).abs() < 0.0001,
-                                          onSelected: (_) => _applyTradeAmountPreset(amount),
+                                          selected:
+                                              selectedTradeAmount != null &&
+                                              (selectedTradeAmount - amount)
+                                                      .abs() <
+                                                  0.0001,
+                                          onSelected: (_) =>
+                                              _applyTradeAmountPreset(amount),
                                         ),
                                       ActionChip(
                                         label: const Text('Clear'),
@@ -3187,25 +3429,38 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       ),
                                     ],
                                   ),
-                                  if (_fixedTradeAmountWarningData(context) case final warning?) ...[
+                                  if (_fixedTradeAmountWarningData(context)
+                                      case final warning?) ...[
                                     const SizedBox(height: 8),
                                     Container(
                                       padding: const EdgeInsets.all(10),
                                       decoration: BoxDecoration(
                                         color: Colors.orange.withOpacity(0.10),
-                                        border: Border.all(color: Colors.orange.withOpacity(0.45)),
+                                        border: Border.all(
+                                          color: Colors.orange.withOpacity(
+                                            0.45,
+                                          ),
+                                        ),
                                         borderRadius: BorderRadius.circular(8),
                                       ),
                                       child: Row(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
                                         children: [
-                                          const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 18),
+                                          const Icon(
+                                            Icons.warning_amber_rounded,
+                                            color: Colors.orange,
+                                            size: 18,
+                                          ),
                                           const SizedBox(width: 8),
                                           Expanded(
                                             child: Text(
                                               'Entered amount looks low for ${warning['symbols']}. Estimated minimum is about '
                                               '${(warning['minimum'] as double).toStringAsFixed(2)} ${warning['currency']}.',
-                                              style: TextStyle(fontSize: 11, color: Colors.grey[300]),
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.grey[300],
+                                              ),
                                             ),
                                           ),
                                         ],
@@ -3233,7 +3488,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   ),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: Colors.green.withOpacity(0.2),
                                       borderRadius: BorderRadius.circular(4),
@@ -3241,8 +3498,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     child: Text(
                                       '${_riskPercent.toStringAsFixed(2)}%',
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.green),
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.green,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -3260,7 +3518,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               Text(
                                 'Amount risked per trade relative to account balance. Conservative: 1-2%, Moderate: 2-3%, Aggressive: 3-5%',
                                 style: TextStyle(
-                                    fontSize: 11, color: Colors.grey[400]),
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
+                                ),
                               ),
                             ],
                           ),
@@ -3283,7 +3543,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   ),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: Colors.blue.withOpacity(0.2),
                                       borderRadius: BorderRadius.circular(4),
@@ -3291,8 +3553,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     child: Text(
                                       '$_maxOpenTrades trades',
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.blue),
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -3304,13 +3567,16 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                 max: 20,
                                 divisions: 19,
                                 onChanged: (value) => setState(
-                                    () => _maxOpenTrades = value.toInt()),
+                                  () => _maxOpenTrades = value.toInt(),
+                                ),
                                 label: '$_maxOpenTrades',
                               ),
                               Text(
                                 'Limits total simultaneous positions. Lower = less risk, Higher = more diversification. Recommended: 2-3',
                                 style: TextStyle(
-                                    fontSize: 11, color: Colors.grey[400]),
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
+                                ),
                               ),
                             ],
                           ),
@@ -3333,7 +3599,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   ),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: Colors.purple.withOpacity(0.2),
                                       borderRadius: BorderRadius.circular(4),
@@ -3341,8 +3609,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     child: Text(
                                       '${_maxDrawdownPercent.toStringAsFixed(1)}%',
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.purple),
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.purple,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -3361,7 +3630,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               Text(
                                 'Trading pauses when account loses this %. Allows system recovery before resuming. Recommended: 15-20%',
                                 style: TextStyle(
-                                    fontSize: 11, color: Colors.grey[400]),
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
+                                ),
                               ),
                             ],
                           ),
@@ -3372,18 +3643,24 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               color: Colors.blue.withOpacity(0.1),
                               borderRadius: BorderRadius.circular(6),
                               border: Border.all(
-                                  color: Colors.blue.withOpacity(0.3)),
+                                color: Colors.blue.withOpacity(0.3),
+                              ),
                             ),
                             child: Row(
                               children: [
-                                const Icon(Icons.info,
-                                    color: Colors.blue, size: 18),
+                                const Icon(
+                                  Icons.info,
+                                  color: Colors.blue,
+                                  size: 18,
+                                ),
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
                                     'These settings are used for automatic lot sizing. No manual position entry needed!',
                                     style: TextStyle(
-                                        fontSize: 11, color: Colors.blue[200]),
+                                      fontSize: 11,
+                                      color: Colors.blue[200],
+                                    ),
                                   ),
                                 ),
                               ],
@@ -3407,14 +3684,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                         children: [
                           Row(
                             children: [
-                              const Icon(Icons.shield_outlined,
-                                  color: Colors.teal, size: 24),
+                              const Icon(
+                                Icons.shield_outlined,
+                                color: Colors.teal,
+                                size: 24,
+                              ),
                               const SizedBox(width: 12),
                               Text(
                                 'Profit Protection',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleMedium
+                                style: Theme.of(context).textTheme.titleMedium
                                     ?.copyWith(color: Colors.teal),
                               ),
                             ],
@@ -3497,8 +3775,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                             SwitchListTile(
                               value: _profitProtectionSwitchOnReversal,
                               onChanged: (value) {
-                                setState(() =>
-                                    _profitProtectionSwitchOnReversal = value);
+                                setState(
+                                  () =>
+                                      _profitProtectionSwitchOnReversal = value,
+                                );
                               },
                               title: const Text('Close On Signal Reversal'),
                               subtitle: const Text(
@@ -3562,13 +3842,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                           )
                         : const Icon(Icons.add_circle),
                     label: Text(
-                        _isCreating
-                            ? (_isEditMode ? 'Saving Bot Changes...' : 'Creating & Starting Bot...')
-                            : (_isEditMode
+                      _isCreating
+                          ? (_isEditMode
+                                ? 'Saving Bot Changes...'
+                                : 'Creating & Starting Bot...')
+                          : (_isEditMode
                                 ? 'Save Bot Changes'
-                          : (_isCloneMode
-                            ? (widget.promoteToLive ? 'Promote To Live Bot' : 'Create Cloned Bot')
-                            : 'Create & Start Bot'))),
+                                : (_isCloneMode
+                                      ? (widget.promoteToLive
+                                            ? 'Promote To Live Bot'
+                                            : 'Create Cloned Bot')
+                                      : 'Create & Start Bot')),
+                    ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       padding: const EdgeInsets.symmetric(
@@ -3613,12 +3898,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           } else if (index == 1) {
             Navigator.of(context).push(
               MaterialPageRoute(
-                  builder: (context) => const BotDashboardScreen()),
+                builder: (context) => const BotDashboardScreen(),
+              ),
             );
           } else if (index == 2) {
             Navigator.of(context).push(
               MaterialPageRoute(
-                  builder: (context) => const ConsolidatedReportsScreen()),
+                builder: (context) => const ConsolidatedReportsScreen(),
+              ),
             );
           }
         },
@@ -3627,9 +3914,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   void _triggerFundTransfer(
-      String fromAccount, String toAccount, double amount) async {
-    final success =
-        await _fundService.transferFunds(fromAccount, toAccount, amount);
+    String fromAccount,
+    String toAccount,
+    double amount,
+  ) async {
+    final success = await _fundService.transferFunds(
+      fromAccount,
+      toAccount,
+      amount,
+    );
     if (success) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Funds transferred successfully!')),
