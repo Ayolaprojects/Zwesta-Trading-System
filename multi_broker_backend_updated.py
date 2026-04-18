@@ -10001,6 +10001,41 @@ def evaluate_real_trade_signal(symbol: str, market_data: Dict) -> Dict:
         elif volatility == 'LOW':
             strength += 10
             entry_reason.append('Low volatility - favorable conditions')
+
+        # Confidence scaling: only amplify setups that already have stacked confirmation.
+        # This lifts high-quality signals into a more useful visible range without broadly
+        # weakening the underlying entry filters.
+        if signal != 'NEUTRAL':
+            confirmation_count = 0
+            if rsi_strength >= 20:
+                confirmation_count += 1
+            if macd_signal == signal:
+                confirmation_count += 1
+            if (signal == 'BUY' and trend == 'UP') or (signal == 'SELL' and trend == 'DOWN'):
+                confirmation_count += 1
+            if strong_trend:
+                confirmation_count += 1
+            if volatility == 'LOW':
+                confirmation_count += 1
+
+            if strong_trend:
+                trend_bonus = 8 if trend_gap_pct >= 0.35 else 4
+                strength += trend_bonus
+                entry_reason.append(f'Trend separation bonus (+{trend_bonus})')
+
+            if abs(ma_diff_pct) >= 0.35:
+                strength += 4
+                entry_reason.append('Price extended away from trend base')
+
+            if confirmation_count >= 4:
+                strength = (strength * 1.18) + 6
+                entry_reason.append('Stacked confirmations boosted confidence')
+            elif confirmation_count == 3:
+                strength = (strength * 1.10) + 4
+                entry_reason.append('Multi-factor confirmation boosted confidence')
+            elif confirmation_count == 2 and strength >= 35:
+                strength += 3
+                entry_reason.append('Dual confirmation support')
         
         # Final strength bounds
         strength = min(100, max(0, strength))

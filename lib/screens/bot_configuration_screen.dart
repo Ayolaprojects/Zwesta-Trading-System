@@ -467,7 +467,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   double _milestoneTwoWithdrawPercent = 50;
 
   // Currency & Settings
-  String _currencyChoice = 'USD'; // 'USD' or 'ZAR' (Rand)
+  String _currencyChoice = 'USD';
 
   // Small Account Presets
   String? _selectedPreset;
@@ -476,8 +476,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     'crypto': {
       'name': 'Crypto',
       'icon': '₿',
-      'description':
-          r'DCA into BTC/ETH with swing trend entries. Best for $10-$1000 crypto accounts.',
+      'description': 'DCA into BTC/ETH with swing trend entries.',
+      'recommendedMinUsd': 10.0,
+      'recommendedMaxUsd': 1000.0,
+      'accountLabel': 'crypto accounts',
       'intelligentScanner': true,
       'symbols': ['BTCUSD', 'ETHUSD'],
       'strategy': 'Swing Trend DCA',
@@ -498,7 +500,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'name': 'Forex',
       'icon': '💱',
       'description':
-          r'Swing trend following on major pairs with micro lots. Best for $10-$1000 forex accounts.',
+          'Swing trend following on major pairs with micro lots.',
+      'recommendedMinUsd': 10.0,
+      'recommendedMaxUsd': 1000.0,
+      'accountLabel': 'forex accounts',
       'intelligentScanner': true,
       'symbols': ['EURUSD'],
       'strategy': 'Swing Trend DCA',
@@ -518,8 +523,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     'stocks': {
       'name': 'Stocks',
       'icon': '📈',
-      'description':
-          r'Swing pullback entries on blue-chip stocks/ETFs. Best for $50-$1000 stock accounts.',
+      'description': 'Swing pullback entries on blue-chip stocks/ETFs.',
+      'recommendedMinUsd': 50.0,
+      'recommendedMaxUsd': 1000.0,
+      'accountLabel': 'stock accounts',
       'intelligentScanner': true,
       'symbols': ['NVDA', 'AAPL', 'MSFT'],
       'strategy': 'Swing Trend DCA',
@@ -539,8 +546,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     'commodities': {
       'name': 'Gold',
       'icon': '🥇',
-      'description':
-          r'Swing trend following on gold (XAU/USD). Best for $100-$1000 commodity accounts.',
+      'description': 'Swing trend following on gold (XAU/USD).',
+      'recommendedMinUsd': 100.0,
+      'recommendedMaxUsd': 1000.0,
+      'accountLabel': 'commodity accounts',
       'intelligentScanner': true,
       'symbols': ['XAUUSD'],
       'strategy': 'Swing Trend DCA',
@@ -561,7 +570,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'name': 'Mixed',
       'icon': '🎯',
       'description':
-          r'Diversified swing trading across forex, crypto, and gold. Best all-rounder for $100-$1000.',
+          'Diversified swing trading across forex, crypto, and gold.',
+      'recommendedMinUsd': 100.0,
+      'recommendedMaxUsd': 1000.0,
+      'accountLabel': 'mixed-market accounts',
       'intelligentScanner': true,
       'symbols': ['EURUSD', 'BTCUSD', 'XAUUSD'],
       'strategy': 'Swing Trend DCA',
@@ -980,7 +992,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     if (credentialCurrency != null && credentialCurrency.trim().isNotEmpty) {
       return credentialCurrency.trim().toUpperCase();
     }
+    if (_currencyChoice.trim().isNotEmpty) {
+      return _currencyChoice.trim().toUpperCase();
+    }
     return _currencyCode(context.read<CurrencyProvider>().currency);
+  }
+
+  bool get _hasLinkedAccountCurrency {
+    final credentialCurrency = _brokerService.activeCredential?.accountCurrency;
+    return credentialCurrency != null && credentialCurrency.trim().isNotEmpty;
   }
 
   String _currencyPrefixForCode(String currencyCode) {
@@ -1004,6 +1024,44 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     final prefix = _currencyPrefixForCode(currencyCode);
     final wholeAmount = amount == amount.roundToDouble();
     return '$prefix${wholeAmount ? amount.toStringAsFixed(0) : amount.toStringAsFixed(2)}';
+  }
+
+  String _currencyUnitName(String currencyCode) {
+    switch (currencyCode.toUpperCase()) {
+      case 'ZAR':
+        return 'rands';
+      case 'GBP':
+        return 'pounds';
+      case 'EUR':
+        return 'euros';
+      default:
+        return 'dollars';
+    }
+  }
+
+  String _formatPresetRange(
+    double minimumUsd,
+    double maximumUsd,
+    String currencyCode,
+  ) {
+    final rate = _usdToAccountCurrencyRate(currencyCode);
+    final minimum = minimumUsd * rate;
+    final maximum = maximumUsd * rate;
+    return '${_formatPresetTradeAmount(minimum, currencyCode)} - ${_formatPresetTradeAmount(maximum, currencyCode)}';
+  }
+
+  String _presetRecommendedRangeText(String presetKey, String currencyCode) {
+    final preset = _smallAccountPresets[presetKey];
+    if (preset == null) {
+      return '';
+    }
+    final minimumUsd = (preset['recommendedMinUsd'] as num?)?.toDouble();
+    final maximumUsd = (preset['recommendedMaxUsd'] as num?)?.toDouble();
+    if (minimumUsd == null || maximumUsd == null) {
+      return '';
+    }
+    final accountLabel = (preset['accountLabel'] as String?) ?? 'accounts';
+    return 'Best for ${_formatPresetRange(minimumUsd, maximumUsd, currencyCode)} $accountLabel.';
   }
 
   void _applyTradeAmountPreset(double amount) {
@@ -2304,50 +2362,60 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.rocket_launch,
-                        color: Colors.amber,
-                        size: 22,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Small Account Presets',
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.amber,
-                              ),
-                            ),
-                            Text(
-                              r'One-tap setup for $10 - $1,000 accounts',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Colors.grey[400],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      if (_selectedPreset != null)
-                        IconButton(
-                          icon: const Icon(
-                            Icons.clear,
-                            size: 18,
-                            color: Colors.grey,
+                  Builder(
+                    builder: (context) {
+                      final currencyCode = _activeAccountCurrencyCode(context);
+                      final starterRange = _formatPresetRange(
+                        10,
+                        1000,
+                        currencyCode,
+                      );
+                      return Row(
+                        children: [
+                          const Icon(
+                            Icons.rocket_launch,
+                            color: Colors.amber,
+                            size: 22,
                           ),
-                          onPressed: () =>
-                              setState(() => _selectedPreset = null),
-                          tooltip: 'Clear preset',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                        ),
-                    ],
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Small Account Presets',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.amber,
+                                  ),
+                                ),
+                                Text(
+                                  'One-tap setup for $starterRange starter accounts',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.grey[400],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (_selectedPreset != null)
+                            IconButton(
+                              icon: const Icon(
+                                Icons.clear,
+                                size: 18,
+                                color: Colors.grey,
+                              ),
+                              onPressed: () =>
+                                  setState(() => _selectedPreset = null),
+                              tooltip: 'Clear preset',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                            ),
+                        ],
+                      );
+                    },
                   ),
                   const SizedBox(height: 12),
                   Wrap(
@@ -2395,13 +2463,38 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            _smallAccountPresets[_selectedPreset]!['description']
-                                as String,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.white70,
-                            ),
+                          Builder(
+                            builder: (context) {
+                              final currencyCode = _activeAccountCurrencyCode(
+                                context,
+                              );
+                              final selectedPreset =
+                                  _smallAccountPresets[_selectedPreset]!;
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    selectedPreset['description'] as String,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    _presetRecommendedRangeText(
+                                      _selectedPreset!,
+                                      currencyCode,
+                                    ),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.amber[200],
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
                           ),
                           const SizedBox(height: 8),
                           ...(_smallAccountPresets[_selectedPreset]!['tips']
@@ -3173,48 +3266,76 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     ),
                     const SizedBox(height: 16),
                     // Currency Selection
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.withOpacity(0.1),
-                        border: Border.all(color: Colors.blue.withOpacity(0.5)),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Transaction Currency',
-                            style: Theme.of(context).textTheme.titleSmall
-                                ?.copyWith(
-                                  color: Colors.blue[200],
-                                  fontWeight: FontWeight.bold,
-                                ),
+                    Builder(
+                      builder: (context) {
+                        final activeCurrencyCode = _activeAccountCurrencyCode(
+                          context,
+                        );
+                        final currencyLocked = _hasLinkedAccountCurrency;
+                        return Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.1),
+                            border: Border.all(
+                              color: Colors.blue.withOpacity(0.5),
+                            ),
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                          const SizedBox(height: 12),
-                          Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                child: ChoiceChip(
-                                  label: const Text(r'$ USD'),
-                                  selected: _currencyChoice == 'USD',
-                                  onSelected: (_) =>
-                                      setState(() => _currencyChoice = 'USD'),
+                              Text(
+                                currencyLocked
+                                    ? 'Broker Account Currency'
+                                    : 'Preset Currency Preview',
+                                style: Theme.of(context).textTheme.titleSmall
+                                    ?.copyWith(
+                                      color: Colors.blue[200],
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                currencyLocked
+                                    ? 'Preset labels follow the linked broker account currency automatically.'
+                                    : 'No broker account currency is locked yet, so preset labels follow this preview selection.',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: ChoiceChip(
-                                  label: const Text('R ZAR (Rand)'),
-                                  selected: _currencyChoice == 'ZAR',
-                                  onSelected: (_) =>
-                                      setState(() => _currencyChoice = 'ZAR'),
-                                ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ChoiceChip(
+                                      label: const Text(r'$ USD'),
+                                      selected: activeCurrencyCode == 'USD',
+                                      onSelected: currencyLocked
+                                          ? null
+                                          : (_) => setState(
+                                                () => _currencyChoice = 'USD',
+                                              ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: ChoiceChip(
+                                      label: const Text('R ZAR (Rand)'),
+                                      selected: activeCurrencyCode == 'ZAR',
+                                      onSelected: currencyLocked
+                                          ? null
+                                          : (_) => setState(
+                                                () => _currencyChoice = 'ZAR',
+                                              ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
-                        ],
-                      ),
+                        );
+                      },
                     ),
                     const SizedBox(height: 16),
 
@@ -3334,20 +3455,40 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                 ],
                               ),
                               const SizedBox(height: 8),
-                              Text(
-                                _managementProfile == 'beginner'
-                                    ? 'Recommended for inexperienced clients: fewer trades, stricter signals, and low-volatility execution only.'
-                                    : _managementProfile == 'balanced'
-                                    ? 'Moderate automation: controlled stacking with medium-volatility access.'
-                                    : _managementProfile == 'fast_growth'
-                                    ? 'Quick Profit: Faster entries with stricter signal quality, tighter drawdown limits, and stronger profit lock behavior.'
-                                    : _managementProfile == 'small_account'
-                                    ? r'Small Account: Optimized for $10-$1000. Micro lots, swing entries, and controlled volatility.'
-                                    : 'Keeps intelligent protections on while allowing broader execution settings.',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.grey[400],
-                                ),
+                              Builder(
+                                builder: (context) {
+                                  final currencyCode =
+                                      _activeAccountCurrencyCode(context);
+                                  final selectedPreset = _selectedPreset == null
+                                      ? null
+                                      : _smallAccountPresets[_selectedPreset!];
+                                  final smallAccountRange = _formatPresetRange(
+                                    ((selectedPreset?['recommendedMinUsd']
+                                                    as num?)
+                                                ?.toDouble() ??
+                                            10.0),
+                                    ((selectedPreset?['recommendedMaxUsd']
+                                                    as num?)
+                                                ?.toDouble() ??
+                                            1000.0),
+                                    currencyCode,
+                                  );
+                                  return Text(
+                                    _managementProfile == 'beginner'
+                                        ? 'Recommended for inexperienced clients: fewer trades, stricter signals, and low-volatility execution only.'
+                                        : _managementProfile == 'balanced'
+                                        ? 'Moderate automation: controlled stacking with medium-volatility access.'
+                                        : _managementProfile == 'fast_growth'
+                                        ? 'Quick Profit: Faster entries with stricter signal quality, tighter drawdown limits, and stronger profit lock behavior.'
+                                        : _managementProfile == 'small_account'
+                                        ? 'Small Account: Optimized for $smallAccountRange. Micro lots, swing entries, and controlled volatility in ${_currencyUnitName(currencyCode)}.'
+                                        : 'Keeps intelligent protections on while allowing broader execution settings.',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[400],
+                                    ),
+                                  );
+                                },
                               ),
                             ],
                           ),
