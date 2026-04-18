@@ -744,6 +744,59 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return normalized;
   }
 
+  static const Set<String> _primaryCryptoSymbols = {
+    'BTCUSD',
+    'ETHUSD',
+    'BTCUSDT',
+    'ETHUSDT',
+  };
+
+  static const Set<String> _safeCryptoStrategies = {
+    'Trend Following',
+    'Swing Trend DCA',
+  };
+
+  Set<String> get _selectedBaseSymbols => _selectedSymbols
+      .map(_normalizeSymbolBase)
+      .where((symbol) => symbol.isNotEmpty)
+      .toSet();
+
+  bool get _isCryptoOnlySelection {
+    final symbols = _selectedBaseSymbols;
+    return symbols.isNotEmpty &&
+        symbols.every((symbol) => _primaryCryptoSymbols.contains(symbol));
+  }
+
+  List<String> get _availableStrategies {
+    if (_isCryptoOnlySelection) {
+      return strategies
+          .where((strategy) => _safeCryptoStrategies.contains(strategy))
+          .toList();
+    }
+    return strategies;
+  }
+
+  List<int> get _availableSignalThresholds {
+    if (_isCryptoOnlySelection) {
+      return const [70];
+    }
+    return const [30, 45, 60, 70];
+  }
+
+  void _applyCryptoSelectionSafetyDefaults() {
+    if (!_isCryptoOnlySelection) {
+      return;
+    }
+
+    if (!_safeCryptoStrategies.contains(_selectedStrategy)) {
+      _selectedStrategy = 'Swing Trend DCA';
+    }
+
+    if (_manualSignalThreshold != null && _manualSignalThreshold! < 70) {
+      _manualSignalThreshold = 70;
+    }
+  }
+
   List<String> _remapSelectedSymbolsToAvailable(List<String> availableSymbols) {
     if (_selectedSymbols.isEmpty || availableSymbols.isEmpty) {
       return List<String>.from(_selectedSymbols);
@@ -1246,6 +1299,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   int _defaultSignalThresholdForProfile(String profile) {
+    if (_isCryptoOnlySelection) {
+      return 70;
+    }
+
     switch (profile) {
       case 'small_account':
         return 30;
@@ -1563,6 +1620,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                   (tradeAmount as num).toDouble().roundToDouble())
             ? (tradeAmount as num).toDouble().toStringAsFixed(0)
             : (tradeAmount as num).toDouble().toStringAsFixed(2);
+          _applyCryptoSelectionSafetyDefaults();
       });
     } catch (e) {
       setState(() {
@@ -1598,6 +1656,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
               .map((p) => p['symbol'] as String)
               .toList();
         }
+        _applyCryptoSelectionSafetyDefaults();
         _isLoadingData = false;
       });
       return;
@@ -1630,6 +1689,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 .whereType<String>()
                 .toList(),
           );
+          _applyCryptoSelectionSafetyDefaults();
           _isLoadingData = false;
         });
       }
@@ -2853,11 +2913,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                             value: _selectedStrategy,
                             decoration: InputDecoration(
                               labelText: 'Strategy',
+                              helperText: _isCryptoOnlySelection
+                                  ? 'Crypto-only baskets stay on slower trend or swing strategies.'
+                                  : null,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(8),
                               ),
                             ),
-                            items: strategies
+                            items: _availableStrategies
                                 .map(
                                   (strategy) => DropdownMenuItem(
                                     value: strategy,
@@ -2867,7 +2930,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                 .toList(),
                             onChanged: (value) {
                               if (value != null) {
-                                setState(() => _selectedStrategy = value);
+                                setState(() {
+                                  _selectedStrategy = value;
+                                  _applyCryptoSelectionSafetyDefaults();
+                                });
                               }
                             },
                           ),
@@ -3051,6 +3117,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                                     ),
                                               );
                                             }
+                                            _applyCryptoSelectionSafetyDefaults();
                                           });
                                         },
                                         title: Column(
@@ -3528,7 +3595,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                'Auto lets the backend choose the threshold from the profile and adaptive logic. Pick a value only when you want to force the minimum signal strength.',
+                                _isCryptoOnlySelection
+                                    ? 'Crypto-only baskets keep a stricter 70 signal floor unless you switch back to a mixed basket.'
+                                    : 'Auto lets the backend choose the threshold from the profile and adaptive logic. Pick a value only when you want to force the minimum signal strength.',
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: Colors.grey[400],
@@ -3546,14 +3615,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       () => _manualSignalThreshold = null,
                                     ),
                                   ),
-                                  for (final threshold in const [30, 45, 60, 70])
+                                  for (final threshold in _availableSignalThresholds)
                                     ChoiceChip(
                                       label: Text('$threshold'),
                                       selected:
                                           _manualSignalThreshold == threshold,
-                                      onSelected: (_) => setState(
-                                        () => _manualSignalThreshold = threshold,
-                                      ),
+                                      onSelected: (_) => setState(() {
+                                        _manualSignalThreshold = threshold;
+                                        _applyCryptoSelectionSafetyDefaults();
+                                      }),
                                     ),
                                 ],
                               ),
