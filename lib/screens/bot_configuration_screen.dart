@@ -776,9 +776,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return strategies;
   }
 
+  int get _cryptoOnlyAutoThreshold =>
+      _selectedBaseSymbols.contains('BTCUSD') ? 50 : 45;
+
   List<int> get _availableSignalThresholds {
     if (_isCryptoOnlySelection) {
-      return const [70];
+      return const [45, 50];
     }
     return const [30, 45, 60, 70];
   }
@@ -792,8 +795,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       _selectedStrategy = 'Swing Trend DCA';
     }
 
-    if (_manualSignalThreshold != null && _manualSignalThreshold! < 70) {
-      _manualSignalThreshold = 70;
+    if (_manualSignalThreshold != null && _manualSignalThreshold! < 45) {
+      _manualSignalThreshold = 45;
     }
   }
 
@@ -1300,7 +1303,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   int _defaultSignalThresholdForProfile(String profile) {
     if (_isCryptoOnlySelection) {
-      return 70;
+      return _cryptoOnlyAutoThreshold;
     }
 
     switch (profile) {
@@ -3596,7 +3599,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               const SizedBox(height: 8),
                               Text(
                                 _isCryptoOnlySelection
-                                    ? 'Crypto-only baskets keep a stricter 70 signal floor unless you switch back to a mixed basket.'
+                                    ? 'Crypto-only baskets default to 50 when BTC is selected and 45 for ETH-only baskets.'
                                     : 'Auto lets the backend choose the threshold from the profile and adaptive logic. Pick a value only when you want to force the minimum signal strength.',
                                 style: TextStyle(
                                   fontSize: 11,

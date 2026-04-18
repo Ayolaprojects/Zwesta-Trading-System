@@ -9575,7 +9575,7 @@ SYMBOL_PARAMETERS = {
         'stop_loss_pips': 1200,
         'take_profit_pips': 3600,
         'max_slippage': 0.002,
-        'min_signal_strength': 70,  # Stricter live filtering after stop-loss-heavy crypto runs
+        'min_signal_strength': 50,  # Lowered to match current BTC signal quality while keeping safer strategy guards
         'volatility_high': 5.0,
         'volatility_low': 1.0,
         'max_hold_minutes': 90,
@@ -9585,7 +9585,7 @@ SYMBOL_PARAMETERS = {
         'stop_loss_pips': 160,
         'take_profit_pips': 480,
         'max_slippage': 0.002,
-        'min_signal_strength': 68,
+        'min_signal_strength': 45,
         'volatility_high': 4.0,
         'volatility_low': 1.0,
         'max_hold_minutes': 90,
@@ -16274,6 +16274,17 @@ def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
     return 30
 
 
+def _crypto_only_signal_threshold(symbols: List[Any]) -> Optional[int]:
+    base_symbols = {
+        _normalize_symbol_base(symbol)
+        for symbol in (symbols or [])
+        if _normalize_symbol_base(symbol)
+    }
+    if not base_symbols or not base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
+        return None
+    return 50 if 'BTCUSD' in base_symbols else 45
+
+
 def _resolve_runtime_trade_cadence(
     bot_config: Dict[str, Any],
     strategy_name: str,
@@ -18000,6 +18011,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
     guarded_small_live = _is_guarded_small_live_account(bot_config, 2.0)
     defaults = BOT_MANAGEMENT_PROFILES.get(profile, BOT_MANAGEMENT_PROFILES['beginner'])
     adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
+    crypto_only_threshold = _crypto_only_signal_threshold(bot_config.get('symbols') or [])
     signal_threshold_mode = str(bot_config.get('signalThresholdMode') or 'auto').lower()
     effective = {
         'profile': profile,
@@ -18014,7 +18026,8 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
         effective['maxOpenPositions'] = min(effective['maxOpenPositions'], defaults['maxOpenPositions'])
         effective['maxPositionsPerSymbol'] = min(effective['maxPositionsPerSymbol'], defaults['maxPositionsPerSymbol'])
         if signal_threshold_mode == 'auto':
-            effective['signalThreshold'] = max(effective['signalThreshold'], defaults['signalThreshold'])
+            target_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
+            effective['signalThreshold'] = max(adaptive_floor, int(target_threshold))
         effective['allowedVolatility'] = [
             level for level in effective['allowedVolatility'] if level in defaults['allowedVolatility']
         ] or list(defaults['allowedVolatility'])
@@ -18023,7 +18036,8 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
             effective['maxOpenPositions'] = 1
             effective['maxPositionsPerSymbol'] = 1
             if signal_threshold_mode == 'auto':
-                effective['signalThreshold'] = max(effective['signalThreshold'], defaults['signalThreshold'])
+                target_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
+                effective['signalThreshold'] = max(adaptive_floor, int(target_threshold))
             effective['allowedVolatility'] = [
                 level for level in effective['allowedVolatility'] if level in ['Very Low', 'Low', 'Medium']
             ] or ['Very Low', 'Low', 'Medium']
@@ -18032,7 +18046,8 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
             effective['maxOpenPositions'] = min(effective['maxOpenPositions'], 2)
             effective['maxPositionsPerSymbol'] = 1
             if signal_threshold_mode == 'auto':
-                effective['signalThreshold'] = max(effective['signalThreshold'], defaults['signalThreshold'])
+                target_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
+                effective['signalThreshold'] = max(adaptive_floor, int(target_threshold))
             effective['allowedVolatility'] = [
                 level for level in effective['allowedVolatility'] if level in ['Low', 'Medium']
             ] or ['Low', 'Medium']
@@ -18083,7 +18098,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
                 idle_minutes = (datetime.now() - latest_trade_dt).total_seconds() / 60.0
                 if idle_minutes >= 30:
                     bot_config['managementState'] = 'normal'
-                    relaxed_threshold = defaults['signalThreshold']
+                    relaxed_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
                     if guarded_small_live:
                         relaxed_threshold = max(relaxed_threshold, 65)
                     effective['signalThreshold'] = min(effective['signalThreshold'], relaxed_threshold)
@@ -18216,6 +18231,8 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
         signal_threshold_mode = 'auto'
         warnings.append('signalThresholdMode defaulted to auto')
 
+    crypto_only_threshold = _crypto_only_signal_threshold(data.get('symbols') or [])
+
     if signal_threshold_mode == 'manual':
         signal_threshold = _clamp_int_value(
             'signalThreshold',
@@ -18226,7 +18243,7 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
             warnings,
         )
     else:
-        signal_threshold = int(profile_defaults['signalThreshold'])
+        signal_threshold = int(crypto_only_threshold if crypto_only_threshold is not None else profile_defaults['signalThreshold'])
 
     allowed_volatility = data.get('allowedVolatility') or profile_defaults['allowedVolatility']
     if not isinstance(allowed_volatility, list):
@@ -18276,7 +18293,8 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
         max_open_positions = min(max_open_positions, profile_defaults['maxOpenPositions'])
         max_positions_per_symbol = min(max_positions_per_symbol, profile_defaults['maxPositionsPerSymbol'])
         if signal_threshold_mode == 'auto':
-            signal_threshold = max(signal_threshold, profile_defaults['signalThreshold'])
+            target_threshold = crypto_only_threshold if crypto_only_threshold is not None else profile_defaults['signalThreshold']
+            signal_threshold = max(signal_threshold, int(target_threshold))
         allowed_volatility = [level for level in allowed_volatility if level in profile_defaults['allowedVolatility']] or list(profile_defaults['allowedVolatility'])
 
     display_currency = str(account_currency).upper()  # Use actual account currency (USD, ZAR, etc.)
