@@ -15525,12 +15525,12 @@ BOT_RISK_LIMITS = {
 ADAPTIVE_SIGNAL_THRESHOLD_STEP = 5
 ADAPTIVE_SIGNAL_THRESHOLD_LOW_SIGNAL_STEP = 5
 ADAPTIVE_SIGNAL_THRESHOLD_MAX_REDUCTION = 70
-ADAPTIVE_SIGNAL_THRESHOLD_MIN = 60
+ADAPTIVE_SIGNAL_THRESHOLD_MIN = 35
 ADAPTIVE_SCANNER_TRIGGER_MISSES = 1
-ADAPTIVE_STRATEGY_MIN_SIGNAL_REDUCTION_MAX = 25
+ADAPTIVE_STRATEGY_MIN_SIGNAL_REDUCTION_MAX = 35
 ADAPTIVE_FORCED_SCANNER_IDLE_CYCLES = 3
 ADAPTIVE_FORCED_SCANNER_THRESHOLD_REDUCTION = 20
-ADAPTIVE_FALLBACK_MIN_STRENGTH = 60
+ADAPTIVE_FALLBACK_MIN_STRENGTH = 45
 UNIVERSAL_ADAPTATION_MIN_SAMPLE_TRADES = 6
 UNIVERSAL_ADAPTATION_RECENT_TRADE_WINDOW = 8
 UNIVERSAL_ADAPTATION_COOLDOWN_MINUTES = 30
@@ -15812,14 +15812,14 @@ def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
     }
 
     if base_symbols and base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
-        return 35
+        return 30
     if strategy_name in {'scalping', 'momentum trading'}:
-        return 35
+        return 30
     if strategy_name in {'trend following', 'swing trend dca'}:
-        return 40
+        return 35
     if _normalize_management_profile(bot_config.get('managementProfile')) == 'small_account':
-        return 40
-    return 35
+        return 35
+    return 30
 
 
 def _resolve_runtime_trade_cadence(
@@ -17754,7 +17754,7 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
     signal_threshold = _clamp_int_value(
         'signalThreshold',
         data.get('signalThreshold', profile_defaults['signalThreshold']),
-        55,
+        ADAPTIVE_SIGNAL_THRESHOLD_MIN,
         90,
         profile_defaults['signalThreshold'],
         warnings,
@@ -18546,7 +18546,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         # Get trading mode configuration
         trading_mode = bot_config.get('tradingMode', 'interval')  # 'interval' or 'signal-driven'
         trading_interval = bot_config.get('tradingInterval', 300)  # Default 5 minutes for time-based
-        signal_threshold = max(int(bot_config.get('signalThreshold', ADAPTIVE_SIGNAL_THRESHOLD_MIN) or ADAPTIVE_SIGNAL_THRESHOLD_MIN), ADAPTIVE_SIGNAL_THRESHOLD_MIN)    # 0-100, minimum signal strength
+        runtime_signal_floor = _adaptive_signal_threshold_floor(bot_config)
+        signal_threshold = max(
+            int(bot_config.get('signalThreshold', runtime_signal_floor) or runtime_signal_floor),
+            runtime_signal_floor,
+        )    # 0-100, minimum signal strength
         poll_interval = bot_config.get('pollInterval', 15)          # Check signals every N seconds in signal-driven mode
         
         if trading_mode == 'signal-driven':
