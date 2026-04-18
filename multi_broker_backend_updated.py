@@ -11406,7 +11406,8 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
             break
         fallback_eval = evaluate_real_trade_signal(s, _enrich_market_data_with_bot_context(bot_config, s))
         fallback_strength = _safe_float(fallback_eval.get('strength'), 0.0)
-        fallback_min_strength = max(ADAPTIVE_SIGNAL_THRESHOLD_MIN, min(signal_threshold, ADAPTIVE_FALLBACK_MIN_STRENGTH))
+        adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
+        fallback_min_strength = max(adaptive_floor, min(signal_threshold, ADAPTIVE_FALLBACK_MIN_STRENGTH))
         if (
             s not in cycle_symbols
             and _is_symbol_tradeable_now(s)
@@ -13354,11 +13355,43 @@ def should_trade_today(bot_config, symbol):
         try:
             drawdown_pause_until = datetime.fromisoformat(drawdown_pause_until_raw)
             if now < drawdown_pause_until:
-                logger.info(
-                    f"[RISK] Bot {bot_config.get('botId')} is in drawdown cooldown until "
-                    f"{drawdown_pause_until.isoformat()}, skipping {symbol}."
+                remaining_minutes = max(0.0, (drawdown_pause_until - now).total_seconds() / 60.0)
+                open_positions = bot_config.get('open_positions', {}) or {}
+                recent_trade_at = _extract_latest_trade_timestamp(bot_config.get('tradeHistory') or [])
+                idle_minutes = None
+                if recent_trade_at is not None:
+                    if getattr(recent_trade_at, 'tzinfo', None) is not None:
+                        recent_trade_at = recent_trade_at.replace(tzinfo=None)
+                    idle_minutes = max(0.0, (now - recent_trade_at).total_seconds() / 60.0)
+
+                stale_release_minutes = max(45.0, min(120.0, drawdown_pause_hours * 60.0 * 0.35))
+                near_expiry_release = max(20.0, min(45.0, drawdown_pause_hours * 60.0 * 0.2))
+                can_release_stale_cooldown = (
+                    not open_positions
+                    and (
+                        (idle_minutes is not None and idle_minutes >= stale_release_minutes)
+                        or remaining_minutes <= near_expiry_release
+                    )
                 )
-                return False
+                if can_release_stale_cooldown:
+                    current_total_profit = bot_config.get('totalProfit', 0.0) or 0.0
+                    bot_config['drawdownPauseUntil'] = None
+                    bot_config['maxDrawdown'] = 0.0
+                    bot_config['peakProfit'] = current_total_profit
+                    logger.info(
+                        f"[RISK] Bot {bot_config.get('botId')} released stale drawdown cooldown early "
+                        f"after {idle_minutes:.0f} idle minute(s) with no open positions; "
+                        f"resuming from baseline profit ${current_total_profit:.2f}."
+                        if idle_minutes is not None
+                        else f"[RISK] Bot {bot_config.get('botId')} released near-expiry drawdown cooldown early; "
+                             f"resuming from baseline profit ${current_total_profit:.2f}."
+                    )
+                else:
+                    logger.info(
+                        f"[RISK] Bot {bot_config.get('botId')} is in drawdown cooldown until "
+                        f"{drawdown_pause_until.isoformat()}, skipping {symbol}."
+                    )
+                    return False
 
             current_total_profit = bot_config.get('totalProfit', 0.0) or 0.0
             bot_config['drawdownPauseUntil'] = None
@@ -19097,7 +19130,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 scanner_threshold = signal_threshold
                 if forced_scanner_fallback:
                     scanner_threshold = max(
-                        ADAPTIVE_SIGNAL_THRESHOLD_MIN,
+                        adaptive_threshold_floor,
                         signal_threshold - ADAPTIVE_FORCED_SCANNER_THRESHOLD_REDUCTION,
                     )
                     logger.info(
@@ -19173,12 +19206,25 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     symbol_info = mt5_api.symbol_info(symbol)
                                     min_volume = float(getattr(symbol_info, 'volume_min', 0.0) or 0.0) if symbol_info else 0.0
                                     if min_volume > 0 and fixed_trade_volume < min_volume:
-                                        logger.warning(
-                                            f"⏭️ Bot {bot_id}: Skipping {symbol} - configured trade amount "
-                                            f"would require {fixed_trade_volume:.4f} lots, below broker minimum {min_volume:.4f}. "
-                                            f"Refusing to auto-upsize risk."
-                                        )
-                                        continue
+                                        if bot_config.get('dynamicSizing', True):
+                                            logger.warning(
+                                                f"↩️ Bot {bot_id}: Fixed trade amount for {symbol} would require "
+                                                f"{fixed_trade_volume:.4f} lots, below broker minimum {min_volume:.4f}. "
+                                                f"Falling back to risk-based sizing instead of auto-upsizing risk."
+                                            )
+                                            fixed_trade_amount = None
+                                            fixed_trade_volume = None
+                                            position_size = position_sizer.calculate_position_size(
+                                                bot_config,
+                                                volatility_level=bot_config.get('volatilityLevel', 'Medium')
+                                            )
+                                        else:
+                                            logger.warning(
+                                                f"⏭️ Bot {bot_id}: Skipping {symbol} - configured trade amount "
+                                                f"would require {fixed_trade_volume:.4f} lots, below broker minimum {min_volume:.4f}. "
+                                                f"Dynamic sizing is disabled, so the bot will not auto-upsize risk."
+                                            )
+                                            continue
                                 except Exception as volume_guard_error:
                                     logger.warning(
                                         f"Bot {bot_id}: Could not validate broker minimum volume for {symbol}: {volume_guard_error}"
