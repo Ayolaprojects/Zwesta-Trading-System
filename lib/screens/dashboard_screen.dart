@@ -56,6 +56,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Timer? _refreshTimer;
   int _refreshFailureCount = 0;
   String _preferredBrokerDisplay = 'Exness';
+  String _reportingCurrency = 'USD';
+
+  static const Map<String, double> _currencyToZarRates = {
+    'ZAR': 1.0,
+    'USD': 18.5,
+    'USDT': 18.5,
+    'GBP': 24.0,
+    'EUR': 20.0,
+    'AUD': 12.0,
+    'CAD': 13.5,
+    'JPY': 0.12,
+    'CHF': 20.5,
+  };
 
   /// Convert currency code to symbol (e.g., ZAR → R, USD → $, EUR → €)
   String _currencySymbol(String code) {
@@ -77,6 +90,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   String _formatCurrencyAmount(double amount, String currency, {int decimals = 2}) {
     return '${_currencySymbol(currency)}${amount.toStringAsFixed(decimals)}';
+  }
+
+  double _convertAmount(double amount, String sourceCurrency, [String? targetCurrency]) {
+    final from = _normalizeCurrency(sourceCurrency);
+    final to = _normalizeCurrency(targetCurrency ?? _reportingCurrency);
+    if (from == to) {
+      return amount;
+    }
+
+    final fromRate = _currencyToZarRates[from] ?? _currencyToZarRates['USD']!;
+    final toRate = _currencyToZarRates[to] ?? _currencyToZarRates['USD']!;
+    final amountInZar = amount * fromRate;
+    return amountInZar / toRate;
+  }
+
+  String _formatReportedAmount(double amount, String sourceCurrency, {int decimals = 2}) {
+    final target = _normalizeCurrency(_reportingCurrency);
+    final converted = _convertAmount(amount, sourceCurrency, target);
+    return _formatCurrencyAmount(converted, target, decimals: decimals);
   }
 
   String _truncateLabel(String value, {int maxLength = 64}) {
@@ -213,6 +245,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       totals[currency] = (totals[currency] ?? 0.0) + amount;
     }
     return totals;
+  }
+
+  List<Map<String, dynamic>> _connectedAccountsFor([String? mode]) {
+    return _filteredBrokerAccounts(mode)
+        .where((account) => account['connected'] == true)
+        .cast<Map<String, dynamic>>()
+        .toList();
   }
 
   Map<String, double> _aggregateBotValues(String field) {
@@ -417,14 +456,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   String _formatCurrencyBreakdown(Map<String, double> totals, {int decimals = 2}) {
+    final target = _normalizeCurrency(_reportingCurrency);
     if (totals.isEmpty) {
-      return _formatCurrencyAmount(0, _preferredProfitCurrency(), decimals: decimals);
+      return _formatCurrencyAmount(0, target, decimals: decimals);
     }
-    final entries = totals.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    return entries
-        .map((entry) => _formatCurrencyAmount(entry.value, entry.key, decimals: decimals))
-        .join(' • ');
+    final convertedTotal = totals.entries.fold<double>(
+      0.0,
+      (sum, entry) => sum + _convertAmount(entry.value, entry.key, target),
+    );
+    return _formatCurrencyAmount(convertedTotal, target, decimals: decimals);
   }
 
   // Broker account balances
@@ -460,12 +500,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _loadPreferredBrokerDisplay() async {
     final prefs = await SharedPreferences.getInstance();
     final selected = prefs.getString('preferred_broker_display') ?? prefs.getString('broker') ?? 'Exness';
+    final savedReportingCurrency = _normalizeCurrency(
+      prefs.getString('reporting_currency') ??
+          ((prefs.getString('trading_mode') ?? 'DEMO').toUpperCase() == 'LIVE' ? 'ZAR' : 'USD'),
+    );
     if (!mounted) {
       return;
     }
     setState(() {
       _preferredBrokerDisplay = _normalizeBrokerDisplayName(selected);
       _portfolioBrokerFilter = _preferredBrokerDisplay;
+      _reportingCurrency = savedReportingCurrency == 'ZAR' ? 'ZAR' : 'USD';
+    });
+  }
+
+  Future<void> _setReportingCurrency(String currency) async {
+    final normalized = _normalizeCurrency(currency) == 'ZAR' ? 'ZAR' : 'USD';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('reporting_currency', normalized);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _reportingCurrency = normalized;
     });
   }
 
@@ -694,10 +751,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   /// Build the connected broker account card showing balance and withdrawals
   Widget _buildConnectedBrokerCard() {
-    final allConnectedAccounts = _filteredBrokerAccounts()
-        .where((account) => account['connected'] == true)
-        .cast<Map<String, dynamic>>()
-        .toList();
+    final allConnectedAccounts = _connectedAccountsFor();
 
     if (allConnectedAccounts.isEmpty) {
       return const SizedBox.shrink();
@@ -722,10 +776,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             .where((account) => (account['broker'] ?? '').toString().trim().toLowerCase() == selectedBrokerFilter.toLowerCase())
             .toList();
 
-    final selectedBalance = selectedAccounts.fold<double>(
-      0.0,
-      (sum, account) => sum + ((account['balance'] as num?)?.toDouble() ?? 0.0),
-    );
+    final selectedBalanceBreakdown = _aggregateAccountBalances(selectedAccounts);
+    final selectedCurrency = selectedAccounts.isNotEmpty
+      ? _accountCurrency(selectedAccounts.first)
+      : _reportingCurrency;
 
     final selectedWithdrawals = _recentWithdrawals.where((withdrawal) {
       if (selectedBrokerFilter == 'All') {
@@ -796,7 +850,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Expanded(
                     child: _buildMetricCard(
                       'Portfolio Balance',
-                      '\$${selectedBalance.toStringAsFixed(2)}',
+                      _formatCurrencyBreakdown(selectedBalanceBreakdown),
                       Colors.white,
                       const Color(0xFF00E5FF),
                     ),
@@ -805,7 +859,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Expanded(
                     child: _buildMetricCard(
                       'Withdrawals',
-                      '\$${selectedWithdrawnTotal.toStringAsFixed(2)}',
+                      _formatReportedAmount(selectedWithdrawnTotal, selectedCurrency),
                       Colors.white,
                       const Color(0xFFFFB74D),
                     ),
@@ -863,7 +917,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
                   Row(
                     children: [
                       Container(
@@ -925,17 +978,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     mainAxisSpacing: 12,
                     crossAxisSpacing: 12,
                     children: [
-                      _buildMetricCard('Balance', '${_currencySymbol(currency)}${balance.toStringAsFixed(2)}', Colors.white, const Color(0xFF00E5FF)),
-                      _buildMetricCard('Equity', '${_currencySymbol(currency)}${equity.toStringAsFixed(2)}', Colors.white, const Color(0xFF69F0AE)),
+                      _buildMetricCard('Balance', _formatReportedAmount(balance, currency), Colors.white, const Color(0xFF00E5FF)),
+                      _buildMetricCard('Equity', _formatReportedAmount(equity, currency), Colors.white, const Color(0xFF69F0AE)),
                       _buildMetricCard(
                         'Free Margin',
-                        '${_currencySymbol(currency)}${((connected['free_margin'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)}',
+                        _formatReportedAmount(((connected['free_margin'] as num?)?.toDouble() ?? 0.0), currency),
                         Colors.white,
                         const Color(0xFF81C784),
                       ),
                       _buildMetricCard(
                         'Margin Used',
-                        '${_currencySymbol(currency)}${((connected['margin'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)}',
+                        _formatReportedAmount(((connected['margin'] as num?)?.toDouble() ?? 0.0), currency),
                         Colors.white,
                         const Color(0xFFFFB74D),
                       ),
@@ -947,7 +1000,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                       _buildMetricCard(
                         'Total P/L',
-                        '${_currencySymbol(currency)}${((connected['total_pl'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)}',
+                        _formatReportedAmount(((connected['total_pl'] as num?)?.toDouble() ?? 0.0), currency),
                         ((connected['total_pl'] as num?)?.toDouble() ?? 0.0) >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
                         ((connected['total_pl'] as num?)?.toDouble() ?? 0.0) >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
                       ),
@@ -976,7 +1029,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               style: GoogleFonts.poppins(color: Colors.white60, fontSize: 11),
                             ),
                             Text(
-                              '${_currencySymbol(currency)}${balanceChange.abs().toStringAsFixed(2)}',
+                              _formatReportedAmount(balanceChange.abs(), currency),
                               style: GoogleFonts.poppins(
                                 color: isIncreasing ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
                                 fontSize: 14,
@@ -995,7 +1048,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       children: [
                         Text('Recent Withdrawals', style: GoogleFonts.poppins(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w500)),
                         Text(
-                          'Total: ${_currencySymbol(currency)}${totalWithdrawn.toStringAsFixed(2)}',
+                          'Total: ${_formatReportedAmount(totalWithdrawn, currency)}',
                           style: GoogleFonts.poppins(color: const Color(0xFFFFB74D), fontSize: 12, fontWeight: FontWeight.w600),
                         ),
                       ],
@@ -1018,7 +1071,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '${_currencySymbol(currency)}${amount.toStringAsFixed(2)}',
+                                    _formatReportedAmount(amount, currency),
                                     style: GoogleFonts.poppins(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
                                   ),
                                   Text(
@@ -1082,7 +1135,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final activeBots = _activeBotsFor();
     final liveActiveBots = _activeBotsFor('live');
     final demoActiveBots = _activeBotsFor('demo');
-    if (activeBots.isEmpty) {
+    final finishedBots = _finishedBotsFor();
+    if (activeBots.isEmpty && finishedBots.isEmpty) {
       return _glassCard(
         child: Column(
           children: [
@@ -1211,7 +1265,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                         Text(
-                          '${_currencySymbol(botCurrency)}${profit.toStringAsFixed(2)}',
+                          _formatReportedAmount(profit, botCurrency),
                           style: GoogleFonts.poppins(
                             color: isProfitable ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
                             fontSize: 13,
@@ -1479,8 +1533,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             );
           }),
+          if (activeBots.isEmpty) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white.withOpacity(0.08)),
+              ),
+              child: Text(
+                'No active bots right now. Showing recently finished bots below.',
+                style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12),
+              ),
+            ),
+          ],
           ...(() {
-            final finishedBots = _finishedBotsFor();
             if (finishedBots.isEmpty) return <Widget>[];
             return [
               const SizedBox(height: 20),
@@ -1518,6 +1586,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 final fTrades = bot['totalTrades']?.toString() ?? '0';
                 final fStrategy = bot['strategy']?.toString() ?? 'Unknown';
                 final stopReason = bot['stopReason']?.toString();
+                final fCurrency = _botCurrency(bot);
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Container(
@@ -1566,7 +1635,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             Text(
-                              '${fProfit >= 0 ? '+' : ''}${fProfit.toStringAsFixed(2)}',
+                              '${fProfit >= 0 ? '+' : '-'}${_formatReportedAmount(fProfit.abs(), fCurrency)}',
                               style: GoogleFonts.poppins(
                                 color: fProfit >= 0
                                     ? const Color(0xFF69F0AE)
@@ -1975,12 +2044,53 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
               const SizedBox(height: 12),
+              Row(
+                children: [
+                  Text(
+                    'Report In',
+                    style: GoogleFonts.poppins(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(width: 10),
+                  ChoiceChip(
+                    label: const Text(r'$ USD'),
+                    selected: _reportingCurrency == 'USD',
+                    onSelected: (_) => _setReportingCurrency('USD'),
+                    selectedColor: const Color(0xFF00E5FF),
+                    backgroundColor: Colors.white.withOpacity(0.10),
+                    labelStyle: GoogleFonts.poppins(
+                      color: _reportingCurrency == 'USD' ? const Color(0xFF0A0E21) : Colors.white70,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('R ZAR'),
+                    selected: _reportingCurrency == 'ZAR',
+                    onSelected: (_) => _setReportingCurrency('ZAR'),
+                    selectedColor: const Color(0xFF00E5FF),
+                    backgroundColor: Colors.white.withOpacity(0.10),
+                    labelStyle: GoogleFonts.poppins(
+                      color: _reportingCurrency == 'ZAR' ? const Color(0xFF0A0E21) : Colors.white70,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
               // ── Total Portfolio Balance ──
               Builder(
                 builder: (context) {
-                  final filtered = _filteredBrokerAccounts();
-                  final liveAccounts = _filteredBrokerAccounts('live');
-                  final demoAccounts = _filteredBrokerAccounts('demo');
+                  final filteredAll = _filteredBrokerAccounts();
+                  final liveAllAccounts = _filteredBrokerAccounts('live');
+                  final demoAllAccounts = _filteredBrokerAccounts('demo');
+                  final filteredConnected = _connectedAccountsFor();
+                  final liveConnectedAccounts = _connectedAccountsFor('live');
+                  final demoConnectedAccounts = _connectedAccountsFor('demo');
+                  final filtered = filteredConnected.isNotEmpty ? filteredConnected : filteredAll;
+                  final liveAccounts = liveConnectedAccounts.isNotEmpty ? liveConnectedAccounts : liveAllAccounts;
+                  final demoAccounts = demoConnectedAccounts.isNotEmpty ? demoConnectedAccounts : demoAllAccounts;
                   final filteredTotals = _aggregateAccountBalances(filtered);
                   final connectedCount = filtered.where((a) => a['connected'] == true).length;
 
@@ -2017,7 +2127,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           Padding(
                             padding: const EdgeInsets.only(top: 4),
                             child: Text(
-                              '$connectedCount ${_balanceMode == 'all' ? 'connected' : _balanceMode} account${connectedCount == 1 ? '' : 's'}',
+                              '$connectedCount ${_balanceMode == 'all' ? 'connected' : _balanceMode} account${connectedCount == 1 ? '' : 's'} • reporting in $_reportingCurrency',
                               style: GoogleFonts.poppins(color: Colors.white38, fontSize: 11),
                             ),
                           ),
@@ -2098,7 +2208,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final error = account['error']?.toString();
             final warning = account['warning']?.toString();
             final acctCurrency = (account['currency'] as String? ?? 'USD').toUpperCase();
-            final acctSymbol = acctCurrency == 'ZAR' ? 'R' : (acctCurrency == 'GBP' ? '£' : r'$');
 
             return Container(
               margin: const EdgeInsets.only(bottom: 10),
@@ -2165,10 +2274,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Text('$acctSymbol${balance.toStringAsFixed(2)} $acctCurrency',
+                        Text(_formatReportedAmount(balance, acctCurrency),
                           style: GoogleFonts.poppins(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
                         ),
-                        Text('Equity: $acctSymbol${equity.toStringAsFixed(2)}',
+                        Text('Equity: ${_formatReportedAmount(equity, acctCurrency)}',
                           style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10)),
                       ],
                     ),

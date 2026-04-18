@@ -8630,9 +8630,22 @@ def get_account_detailed():
                         mt5_conn.connected = True
                         account_info = mt5_conn.get_account_info()
                         if account_info:
-                            account_info['broker'] = broker_name
-                            account_info['credential_id'] = cred['credential_id']
-                            logger.info(f"✅ Fetched account details from {broker_name} {account_num}")
+                            fetched_account = str(
+                                account_info.get('accountNumber')
+                                or account_info.get('account_id')
+                                or account_info.get('login')
+                                or ''
+                            ).strip()
+                            if fetched_account != str(account_num).strip():
+                                logger.warning(
+                                    f"⚠️ Skipping mismatched {broker_name} snapshot for credential {cred['credential_id']}: "
+                                    f"requested {account_num}, active MT5 session returned {fetched_account or 'unknown'}"
+                                )
+                                account_info = None
+                            else:
+                                account_info['broker'] = broker_name
+                                account_info['credential_id'] = cred['credential_id']
+                                logger.info(f"✅ Fetched account details from {broker_name} {account_num}")
                 
                 # ==================== BINANCE ====================
                 elif broker_name == 'Binance':
