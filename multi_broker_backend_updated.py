@@ -1053,6 +1053,9 @@ def _get_effective_symbol_params(symbol: str, market_data: Optional[Dict[str, An
         except (TypeError, ValueError):
             adaptive_reduction = 0
 
+    if symbol_key in SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS:
+        adaptive_reduction = min(adaptive_reduction, 5)
+
     params['effective_min_signal_strength'] = max(20, int(params['min_signal_strength']) - max(0, adaptive_reduction))
     return params
 
@@ -9569,22 +9572,23 @@ SYMBOL_PARAMETERS = {
     # CRYPTOCURRENCIES - Extreme volatility
     'BTCUSD': {
         'atr_multiplier': 2.0,
-        'stop_loss_pips': 200,  # Reduced from 50000 - crypto pips are 0.01 USD
-        'take_profit_pips': 600,  # Reduced from 100000 - more realistic targets
+        'stop_loss_pips': 1200,
+        'take_profit_pips': 3600,
         'max_slippage': 0.002,
         'min_signal_strength': 70,  # Stricter live filtering after stop-loss-heavy crypto runs
         'volatility_high': 5.0,
         'volatility_low': 1.0,
+        'max_hold_minutes': 90,
     },
     'ETHUSD': {
         'atr_multiplier': 1.8,
-        'stop_loss_pips': 40,  # Faster ETH exit range for more frequent turnarounds
-        'take_profit_pips': 120,  # Faster ETH TP scaling for quicker crypto exits
+        'stop_loss_pips': 160,
+        'take_profit_pips': 480,
         'max_slippage': 0.002,
-        'min_signal_strength': 65,  # ETH needed tighter gating in live history
+        'min_signal_strength': 68,
         'volatility_high': 4.0,
         'volatility_low': 1.0,
-        'max_hold_minutes': 60,  # Close ETH positions after 1 hour to prevent holding too long in volatile crypto
+        'max_hold_minutes': 90,
     },
 }
 
@@ -10314,6 +10318,9 @@ def scalping_strategy(symbol, account_id, risk_amount, market_data=None):
     """
     if market_data is None:
         market_data = commodity_market_data.get(symbol, {})
+
+    if _normalize_symbol_base(symbol) in SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS:
+        return None
     
     signal_eval = evaluate_real_trade_signal(symbol, market_data)
     params = _get_effective_symbol_params(symbol, market_data)
@@ -10372,6 +10379,9 @@ def high_volatility_upswing_strategy(symbol, account_id, risk_amount, market_dat
     """
     if market_data is None:
         market_data = commodity_market_data.get(symbol, {})
+
+    if _normalize_symbol_base(symbol) in SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS:
+        return None
     
     signal_eval = evaluate_micro_volatility_signal(symbol, market_data)
     micro_signal = signal_eval.get('micro_signal', 'HOLD')
@@ -10421,6 +10431,9 @@ def momentum_strategy(symbol, account_id, risk_amount, market_data=None):
     """
     if market_data is None:
         market_data = commodity_market_data.get(symbol, {})
+
+    if _normalize_symbol_base(symbol) in SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS:
+        return None
     
     signal_eval = evaluate_real_trade_signal(symbol, market_data)
     params = _get_effective_symbol_params(symbol, market_data)
@@ -10480,7 +10493,7 @@ def trend_following_strategy(symbol, account_id, risk_amount, market_data=None):
     )
     allow_extreme_crypto_reversal = (
         symbol_base in SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS
-        and signal_eval['strength'] >= max(min_signal_strength, 60)
+        and signal_eval['strength'] >= max(min_signal_strength, 75)
         and signal_eval.get('volatility') in {'LOW', 'MEDIUM'}
         and (
             (order_type == 'BUY' and _safe_float(signal_eval.get('rsi'), 50.0) <= 32.0)
@@ -10910,7 +10923,8 @@ def _choose_strategy_for_cycle(
         if _normalize_symbol_base(symbol)
     }
     if configured_base_symbols and configured_base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
-        return current_strategy if current_strategy in STRATEGY_MAP else 'Swing Trend DCA'
+        allowed_crypto_strategies = {'Swing Trend DCA', 'Trend Following'}
+        return current_strategy if current_strategy in allowed_crypto_strategies else 'Swing Trend DCA'
 
     if not _coerce_bool(bot_config.get('autoSwitch', True), True):
         return current_strategy
