@@ -991,7 +991,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Use your FXCM Trading Station username and password for the easiest client onboarding. API token login remains available as a fallback.',
+                    'Use your FXCM Trading Station username and password only when the backend has ForexConnect installed. API token login works without ForexConnect and is the safer fallback in this environment.',
                     style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: Colors.white70,
@@ -1072,7 +1072,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.vpn_key),
                 hintText: 'Only needed if you prefer token auth',
-                helperText: 'Leave this blank for the normal username/password route',
+                helperText: 'Provide this to use REST API mode and bypass the ForexConnect dependency',
                 helperMaxLines: 2,
               ),
             ),

@@ -342,25 +342,77 @@ trade_router = init_trade_router(
     socket_bridge_manager=socket_bridge_manager if socket_bridge_manager.enabled else None,
 )
 
-# MT5 Credentials - environment-aware startup defaults
-# Exness MT5 Configuration Only (NO standalone MT5 fallback)
-_exness_demo_account = (os.getenv('EXNESS_DEMO_ACCOUNT', '298997455') or '298997455').strip()
-_exness_demo_password = (os.getenv('EXNESS_DEMO_PASSWORD', 'Zwesta@1985') or 'Zwesta@1985').strip()
-_exness_demo_server = (os.getenv('EXNESS_DEMO_SERVER', 'Exness-MT5Trial9') or 'Exness-MT5Trial9').strip()
-_exness_live_account = (os.getenv('EXNESS_ACCOUNT', '') or '').strip()
-_exness_live_password = (os.getenv('EXNESS_PASSWORD', '') or '').strip()
-_exness_live_server = (os.getenv('EXNESS_SERVER', 'Exness-MT5Real27') or 'Exness-MT5Real27').strip()
 
-_use_live_startup_mt5 = ENVIRONMENT == 'LIVE' and bool(_exness_live_account) and bool(_exness_live_password)
-
-MT5_CONFIG = {
+# --- Exness Single Live & Demo Account Only ---
+EXNESS_DEMO = {
     'broker': 'Exness',
-    'account': int(_exness_live_account) if _use_live_startup_mt5 else int(_exness_demo_account),
-    'password': _exness_live_password if _use_live_startup_mt5 else _exness_demo_password,
-    'server': _exness_live_server if _use_live_startup_mt5 else _exness_demo_server,
-    'path': None,
-    'is_live': _use_live_startup_mt5,
+    'account': int(os.getenv('EXNESS_DEMO_ACCOUNT', '298997455').strip()),
+    'password': os.getenv('EXNESS_DEMO_PASSWORD', 'Zwesta@1985').strip(),
+    'server': os.getenv('EXNESS_DEMO_SERVER', 'Exness-MT5Trial9').strip(),
+    'is_live': False,
 }
+EXNESS_LIVE = {
+    'broker': 'Exness',
+    'account': int(os.getenv('EXNESS_ACCOUNT', '295677214').strip()),
+    'password': os.getenv('EXNESS_PASSWORD', '').strip(),
+    'server': os.getenv('EXNESS_SERVER', 'Exness-MT5Real27').strip(),
+    'is_live': True,
+}
+
+# Only these two will be used for Exness
+MT5_CONFIG = EXNESS_LIVE if ENVIRONMENT == 'LIVE' else EXNESS_DEMO
+# ==================== FXCM CONNECTION PLACEHOLDER ====================
+FXCM_CONFIG = {
+    'broker': 'FXCM',
+    'token': os.getenv('FXCM_TOKEN', ''),
+    'is_live': True,
+}
+
+def connect_fxcm():
+    """Establish a connection to FXCM using fxcmpy (placeholder)."""
+    try:
+        import fxcmpy
+    except ImportError:
+        logger.error("fxcmpy not installed. Install with: pip install fxcmpy")
+        return None
+    token = FXCM_CONFIG['token']
+    if not token:
+        logger.error("FXCM token not set in environment.")
+        return None
+    try:
+        con = fxcmpy.fxcmpy(access_token=token, log_level='error', server='real')
+        logger.info("Connected to FXCM successfully.")
+        return con
+    except Exception as e:
+        logger.error(f"FXCM connection failed: {e}")
+        return None
+
+# ==================== API ENDPOINT: DASHBOARD ACCOUNTS ====================
+@app.route('/api/dashboard/accounts', methods=['GET'])
+def get_dashboard_accounts():
+    """Return only 1 live and 1 demo Exness account for dashboard, plus FXCM config."""
+    exness_demo = {
+        'broker': EXNESS_DEMO['broker'],
+        'account': EXNESS_DEMO['account'],
+        'is_live': False,
+        'server': EXNESS_DEMO['server'],
+    }
+    exness_live = {
+        'broker': EXNESS_LIVE['broker'],
+        'account': EXNESS_LIVE['account'],
+        'is_live': True,
+        'server': EXNESS_LIVE['server'],
+    }
+    fxcm = {
+        'broker': FXCM_CONFIG['broker'],
+        'is_live': FXCM_CONFIG['is_live'],
+        'token_set': bool(FXCM_CONFIG['token']),
+    }
+    return jsonify({
+        'success': True,
+        'accounts': [exness_live, exness_demo],
+        'fxcm': fxcm,
+    })
 
 # ==================== DUAL EXNESS TERMINAL PATHS ====================
 EXNESS_DEMO_PATH = os.getenv('EXNESS_DEMO_PATH', r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe').strip()
@@ -3184,7 +3236,13 @@ class MT5Connection(BrokerConnection):
                                             'currency': self.account_info.get('currency', 'USD'),
                                             'timestamp': time.time()
                                         }
-                                        logger.info(f"  💾 [BOT CACHE] Key='{cache_key}' Balance=${balance:.2f} Equity=${balance_cache[cache_key]['equity']:.2f} MarginFree=${balance_cache[cache_key]['marginFree']:.2f} (Total cache entries: {len(balance_cache)})")
+                                        cache_currency = str(balance_cache[cache_key].get('currency', 'USD') or 'USD').upper()
+                                        logger.info(
+                                            f"  💾 [BOT CACHE] Key='{cache_key}' Balance={balance:.2f} {cache_currency} "
+                                            f"Equity={balance_cache[cache_key]['equity']:.2f} {cache_currency} "
+                                            f"MarginFree={balance_cache[cache_key]['marginFree']:.2f} {cache_currency} "
+                                            f"(Total cache entries: {len(balance_cache)})"
+                                        )
                             except Exception as e:
                                 logger.warning(f"  ⚠️  Failed to cache balance after login: {e}")
                             
@@ -3351,7 +3409,11 @@ class MT5Connection(BrokerConnection):
                     time.sleep(check_interval)
                     continue
                 
-                logger.debug(f"  Attempt {attempt} [{elapsed:.0f}s]: account_info OK (balance=${account_info.balance})")
+                account_currency = str(getattr(account_info, 'currency', 'USD') or 'USD').upper()
+                logger.debug(
+                    f"  Attempt {attempt} [{elapsed:.0f}s]: account_info OK "
+                    f"(balance={float(account_info.balance):.2f} {account_currency})"
+                )
                 
                 # STEP 2: Check symbol availability and data
                 ready_symbols = get_mt5_ready_symbols_for_broker(self.mt5_broker)
@@ -3506,6 +3568,7 @@ class MT5Connection(BrokerConnection):
             used_margin = round(float(info.margin), 2)
             free_margin = round(float(info.margin_free), 2)
             margin_percentage = (used_margin / (used_margin + free_margin) * 100) if (used_margin + free_margin) > 0 else 0
+            account_currency = str(getattr(info, 'currency', 'USD') or 'USD').upper()
             
             # Comprehensive account data
             self.account_info = {
@@ -3513,8 +3576,8 @@ class MT5Connection(BrokerConnection):
                 'accountNumber': info.login,
                 'broker': info.server,
                 'company': info.company if hasattr(info, 'company') else 'Exness',
-                'currency': info.currency if hasattr(info, 'currency') else 'USD',
-                'displayCurrency': info.currency if hasattr(info, 'currency') else 'USD',
+                'currency': account_currency,
+                'displayCurrency': account_currency,
                 
                 # === BALANCE & EQUITY ===
                 'balance': round(float(info.balance), 2),
@@ -4824,7 +4887,12 @@ class FXCMConnection(BrokerConnection):
 
     def connect(self) -> bool:
         try:
-            if self._has_forexconnect_credentials():
+            login_mode = str(self.credentials.get('fxcm_login_mode') or '').strip().lower()
+            use_forexconnect = login_mode == 'username' or (
+                not self.credentials.get('api_key') and self._has_forexconnect_credentials()
+            )
+
+            if use_forexconnect:
                 return self._login_forexconnect()
 
             if not self.credentials.get('api_key'):
@@ -7587,7 +7655,8 @@ def get_account_balances():
         
         # Get active broker credentials for this user, optionally scoped to one mode.
         credentials_query = '''
-            SELECT credential_id, broker_name, account_number, is_live, api_key, username, password, server, account_currency, mt5_terminal_path
+            SELECT credential_id, broker_name, account_number, is_live, api_key, username, password, server, account_currency, mt5_terminal_path,
+                   updated_at, created_at
             FROM broker_credentials 
             WHERE user_id = ? AND is_active = 1
         '''
@@ -7595,9 +7664,20 @@ def get_account_balances():
         if requested_mode in ['LIVE', 'DEMO']:
             credentials_query += ' AND is_live = ?'
             credentials_params.append(1 if requested_mode == 'LIVE' else 0)
+        credentials_query += ' ORDER BY COALESCE(updated_at, created_at, \'\') DESC, credential_id DESC'
         cursor.execute(credentials_query, credentials_params)
-        
-        credentials = [dict(row) for row in cursor.fetchall()]
+
+        raw_credentials = [dict(row) for row in cursor.fetchall()]
+        deduped_credentials = {}
+        for row in raw_credentials:
+            broker_name = canonicalize_broker_name(row['broker_name'])
+            account_number = str(row['account_number'] or '').strip()
+            normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, row['is_live'], row.get('server')))
+            dedupe_key = (broker_name, account_number, normalized_is_live)
+            if dedupe_key not in deduped_credentials:
+                deduped_credentials[dedupe_key] = row
+
+        credentials = list(deduped_credentials.values())
         
         # CRITICAL FIX: Fetch cached balances for fallback on timeout
         cached_query = '''
@@ -7982,7 +8062,10 @@ def get_account_balances():
             accounts_summary['accounts'].append(account_entry)
         
         _by_cur_str = ', '.join(f"{c}: {v:.2f}" for c, v in accounts_summary['totalByCurrency'].items())
-        logger.info(f"✅ Fetched account balances for user {user_id}: {len(accounts_summary['accounts'])} accounts | {_by_cur_str}")
+        logger.info(
+            f"✅ Fetched account balances for user {user_id}: {len(accounts_summary['accounts'])} accounts "
+            f"from {len(credentials)} unique credentials | {_by_cur_str}"
+        )
         
         return jsonify(accounts_summary)
     
@@ -15299,7 +15382,8 @@ def save_broker_credentials():
             server = (server or data.get('market') or 'spot').lower()
             account_number = account_number or server.upper()
         elif broker_name in ['FXCM']:
-            if fxcm_login_mode == 'username' or username:
+            use_username_mode = fxcm_login_mode == 'username' or (not (token or api_key) and username)
+            if use_username_mode:
                 if not username or not password:
                     return jsonify({
                         'success': False,
@@ -15316,7 +15400,7 @@ def save_broker_credentials():
                     'error': 'FXCM requires either token or username/password'
                 }), 400
             account_number = account_number or 'FXCM'
-            if username:
+            if use_username_mode:
                 server = server or 'http://www.fxcorporate.com/Hosts.jsp'
             else:
                 server = server or ('REST-API-LIVE' if is_live else 'REST-API-DEMO')
@@ -15580,6 +15664,8 @@ def test_broker_connection():
             username = data.get('username')
             password = data.get('password')
             token = data.get('token') or data.get('api_key')
+            fxcm_login_mode = str(data.get('fxcm_login_mode') or '').strip().lower()
+            use_username_mode = fxcm_login_mode == 'username' or (not token and username)
             account_id = data.get('account_number') or 'FXCM'
             if not ((username and password) or token):
                 return jsonify({'success': False, 'error': 'Missing FXCM fields: provide token or username/password'}), 400
@@ -15588,8 +15674,9 @@ def test_broker_connection():
                 'api_key': token,
                 'username': username,
                 'password': password,
+                'fxcm_login_mode': 'username' if use_username_mode else 'token',
                 'account_number': data.get('account_number', ''),
-                'server': data.get('server') or 'http://www.fxcorporate.com/Hosts.jsp',
+                'server': data.get('server') or ('http://www.fxcorporate.com/Hosts.jsp' if use_username_mode else ('REST-API-LIVE' if is_live else 'REST-API-DEMO')),
                 'connection': 'Real' if is_live else 'Demo',
                 'is_live': is_live,
             })
@@ -15612,14 +15699,14 @@ def test_broker_connection():
                 user_id,
                 'FXCM',
                 account_id,
-                password or '',
-                (data.get('server') or 'http://www.fxcorporate.com/Hosts.jsp') if username else ('REST-API-LIVE' if is_live else 'REST-API-DEMO'),
+                (password or '') if use_username_mode else '',
+                (data.get('server') or 'http://www.fxcorporate.com/Hosts.jsp') if use_username_mode else ('REST-API-LIVE' if is_live else 'REST-API-DEMO'),
                 int(is_live),
                 token or '',
                 datetime.now().isoformat(),
                 datetime.now().isoformat(),
             ))
-            if username:
+            if use_username_mode and username:
                 cursor.execute('UPDATE broker_credentials SET username = ? WHERE credential_id = ?', (username, credential_id))
             conn.commit()
             conn.close()
@@ -15762,7 +15849,6 @@ def test_broker_connection():
                 else:
                     quick_error_code = quick_test_conn.last_error_code
                     quick_error_message = quick_test_conn.last_error or 'Unable to verify Exness credentials right now.'
-                    skip_exness_warmup = True
 
                     if quick_error_code == 'AUTH_FAILED':
                         return jsonify({

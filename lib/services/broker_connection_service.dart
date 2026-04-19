@@ -106,13 +106,15 @@ class BrokerConnectionService {
           'is_live': isLive,
         };
       } else if (normalizedBroker == 'fxcm' || normalizedBroker == 'fxm') {
+        final hasApiToken = apiKey != null && apiKey.trim().isNotEmpty;
+        final hasUsername = username != null && username.trim().isNotEmpty;
         payload = {
           'broker': 'FXCM',
           'api_key': apiKey,
           'token': apiKey,
           'username': username,
           'password': password,
-          'fxcm_login_mode': (username != null && username.isNotEmpty) ? 'username' : 'token',
+          'fxcm_login_mode': hasApiToken ? 'token' : (hasUsername ? 'username' : 'token'),
           'account_number': accountNumber,
           'server': server,
           'is_live': isLive,

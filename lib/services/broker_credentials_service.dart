@@ -265,6 +265,11 @@ class BrokerCredentialsService extends ChangeNotifier {
       if (apiKey != null) body['api_key'] = apiKey;
       if (apiSecret != null) body['api_secret'] = apiSecret;
       if (username != null) body['username'] = username;
+      if (normalizedBroker == 'fxcm' || normalizedBroker == 'fxm') {
+        final hasApiToken = apiKey != null && apiKey.trim().isNotEmpty;
+        final hasUsername = username != null && username.trim().isNotEmpty;
+        body['fxcm_login_mode'] = hasApiToken ? 'token' : (hasUsername ? 'username' : 'token');
+      }
 
       final response = await http.post(
         Uri.parse('$_apiUrl/api/broker/credentials'),
@@ -332,7 +337,9 @@ class BrokerCredentialsService extends ChangeNotifier {
           'password': password,
           'api_key': apiKey,
           'username': username,
-          'fxcm_login_mode': (broker.toLowerCase() == 'fxcm' && username != null && username.isNotEmpty) ? 'username' : null,
+          'fxcm_login_mode': ((broker.toLowerCase() == 'fxcm' || broker.toLowerCase() == 'fxm') && apiKey != null && apiKey.trim().isNotEmpty)
+              ? 'token'
+              : (((broker.toLowerCase() == 'fxcm' || broker.toLowerCase() == 'fxm') && username != null && username.isNotEmpty) ? 'username' : null),
           'server': server,
           'is_live': isLive,
         }),
