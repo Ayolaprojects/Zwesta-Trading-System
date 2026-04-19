@@ -1,14 +1,19 @@
 import json
 import socket
+import sys
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
 def main() -> int:
-    project_root = Path(__file__).resolve().parents[1]
-    load_dotenv(project_root / '.env')
+    load_dotenv(PROJECT_ROOT / '.env')
 
     import fxcm_service
     import multi_broker_backend_updated as backend
