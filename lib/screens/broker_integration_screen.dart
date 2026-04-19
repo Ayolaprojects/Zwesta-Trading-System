@@ -155,6 +155,17 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   String _modePrefKey(String baseKey, bool isLive) => '${baseKey}_${isLive ? 'live' : 'demo'}';
 
+  String _effectiveAccountNumber() {
+    if (_isFxcmBroker) {
+      final explicitAccount = _accountController.text.trim();
+      if (explicitAccount.isNotEmpty) {
+        return explicitAccount;
+      }
+      return _usernameController.text.trim();
+    }
+    return _accountController.text.trim();
+  }
+
   Future<void> _persistModeScopedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_modePrefKey('mt5_account', _isLiveMode), _accountController.text);
@@ -275,12 +286,13 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       return;
     }
 
+    final effectiveAccountNumber = _effectiveAccountNumber();
     final missingMt5 = _isMt5Broker && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
     final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
     final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
-    final missingFxcm = _isFxcmBroker && !hasFxcmUsernamePassword && !hasFxcmToken;
+    final missingFxcm = _isFxcmBroker && (effectiveAccountNumber.isEmpty || (!hasFxcmUsernamePassword && !hasFxcmToken));
 
     if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -315,7 +327,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       final brokerService = Provider.of<BrokerCredentialsService>(context, listen: false);
       final success = await brokerService.saveCredential(
         broker: _selectedBroker,
-        accountNumber: _accountController.text,
+        accountNumber: effectiveAccountNumber,
         password: _passwordController.text,
         server: _serverController.text,
         isLive: _isLiveMode,
@@ -340,7 +352,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       final tradingService = Provider.of<TradingService>(context, listen: false);
       await tradingService.syncBrokerAccount(
         brokerName: _selectedBroker,
-        accountNumber: _accountController.text,
+        accountNumber: effectiveAccountNumber,
         server: _serverController.text,
       );
     }
@@ -455,12 +467,13 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       }
     }
 
+    final effectiveAccountNumber = _effectiveAccountNumber();
     final missingMt5 = (_isMt5Broker || _isExnessBroker) && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
     final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
     final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
-    final missingFxcm = _isFxcmBroker && !hasFxcmUsernamePassword && !hasFxcmToken;
+    final missingFxcm = _isFxcmBroker && (effectiveAccountNumber.isEmpty || (!hasFxcmUsernamePassword && !hasFxcmToken));
 
     if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -494,7 +507,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     try {
       final result = await BrokerConnectionService.testConnection(
         broker: _selectedBroker,
-        accountNumber: _accountController.text,
+        accountNumber: effectiveAccountNumber,
         password: _isOandaBroker ? '' : _passwordController.text,
         server: _serverController.text,
         apiKey: (_isBinanceBroker || _isOandaBroker || _isFxcmBroker)
@@ -502,7 +515,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
             : null,
         apiSecret: _isBinanceBroker ? _passwordController.text : null,
         username: _usernameController.text.isEmpty ? null : _usernameController.text,
-        accountId: _accountController.text,
+        accountId: effectiveAccountNumber,
         market: _isBinanceBroker ? _serverController.text : null,
         isLive: _isLiveMode,
       );
@@ -586,7 +599,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
           if (isConnected) {
             await tradingService.syncBrokerAccount(
               brokerName: _selectedBroker,
-              accountNumber: _accountController.text,
+              accountNumber: effectiveAccountNumber,
               server: _serverController.text,
             );
           }
@@ -991,10 +1004,20 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Enter your FXCM Login ID and API Access Token.\n\nTo get your API token:\n1. Log into FXCM Trading Station\n2. Go to Settings (gear icon)\n3. Click "Generate API Token"\n4. Copy and paste the token below',
+                    'Use one of these FXCM login methods:\n\n1. Login ID + Password\n   Use this when the backend supports ForexConnect.\n\n2. Login ID + API Access Token\n   Use a token generated inside FXCM Trading Station.\n\nTo get your API token:\n1. Log into FXCM Trading Station\n2. Open Settings\n3. Click "Generate API Token"\n4. Copy the token into the optional field below',
                     style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: Colors.white70,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'If you see "failed to resolve api.fxcm.com", your backend VPS cannot resolve FXCM hosts. That is a DNS/network problem on the server, not a bad FXCM login.',
+                    style: GoogleFonts.poppins(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 11,
+                      color: Colors.orange.shade200,
                       height: 1.4,
                     ),
                   ),
@@ -1025,7 +1048,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
             TextField(
               controller: _usernameController,
               decoration: const InputDecoration(
-                labelText: 'FXCM Login ID',
+                labelText: 'FXCM Login ID / Account ID',
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.person),
                 hintText: 'e.g. D291208899',
@@ -1033,7 +1056,21 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
             ),
             const SizedBox(height: 24),
 
-            Text('API Access Token', style: Theme.of(context).textTheme.titleMedium),
+            Text('Password', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passwordController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'FXCM Trading Station Password',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.lock),
+                hintText: 'Required for Login ID + Password mode',
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            Text('API Access Token (Optional)', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             TextField(
               controller: _apiKeyController,
@@ -1041,7 +1078,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 labelText: 'FXCM API Token',
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.vpn_key),
-                hintText: 'Paste token from Trading Station Settings',
+                hintText: 'Paste token from Trading Station if using token auth',
               ),
             ),
             const SizedBox(height: 24),

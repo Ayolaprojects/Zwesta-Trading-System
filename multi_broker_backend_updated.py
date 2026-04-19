@@ -5228,6 +5228,25 @@ class FXCMConnection(BrokerConnection):
                     return value
         return []
 
+    def _is_dns_resolution_error(self, raw_error) -> bool:
+        message = str(raw_error or '').lower()
+        return (
+            'nameresolutionerror' in message or
+            'failed to resolve' in message or
+            'getaddrinfo failed' in message or
+            'temporary failure in name resolution' in message
+        )
+
+    def _format_connectivity_error(self, prefix: str, errors: List[str]) -> str:
+        if any(self._is_dns_resolution_error(err) for err in errors):
+            return (
+                'FXCM host DNS lookup failed on the backend. '
+                'The server cannot resolve api.fxcm.com/api-demo.fxcm.com right now. '
+                'This is a VPS/network DNS problem, not a bad FXCM login. '
+                'Fix the server DNS or outbound access, then retry.'
+            )
+        return prefix + ' | '.join(errors)
+
     def _request(self, method: str, path: str, *, params: Dict = None, json: Dict = None, timeout: int = 15) -> Optional[Dict]:
         try:
             import requests
@@ -5259,7 +5278,10 @@ class FXCMConnection(BrokerConnection):
                 except Exception as e:
                     errors.append(f"{base_url}: {e}")
 
-            self.last_error = 'FXCM request failed for all configured hosts: ' + ' | '.join(errors)
+            self.last_error = self._format_connectivity_error(
+                'FXCM request failed for all configured hosts: ',
+                errors,
+            )
             logger.error(f"Error calling FXCM endpoint {path}: {self.last_error}")
             return None
         except Exception as e:
@@ -5307,7 +5329,10 @@ class FXCMConnection(BrokerConnection):
                 logger.warning(f"[FXCM] Socket.IO REST auth failed for {base_url}: {e}")
 
         if errors:
-            self.last_error = 'FXCM Socket.IO handshake failed for all configured hosts: ' + ' | '.join(errors)
+            self.last_error = self._format_connectivity_error(
+                'FXCM Socket.IO handshake failed for all configured hosts: ',
+                errors,
+            )
         return False
 
     def connect(self) -> bool:

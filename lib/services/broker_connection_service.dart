@@ -45,6 +45,18 @@ class BrokerConnectionService {
   static final Map<String, StreamController<ConnectionMetric>>
       _monitoringStreams = {};
 
+  static String _normalizeConnectionMessage(String message) {
+    final raw = message.trim();
+    final lower = raw.toLowerCase();
+    if (lower.contains('failed to resolve') ||
+        lower.contains('nameresolutionerror') ||
+        lower.contains('getaddrinfo failed') ||
+        lower.contains('dns lookup failed on the backend')) {
+      return 'FXCM host lookup failed on the backend VPS. This is a DNS/network problem on the server, not your credentials.';
+    }
+    return raw;
+  }
+
   /// Test connection with REAL backend broker API
   static Future<Map<String, dynamic>> testConnection({
     required String broker,
@@ -195,7 +207,7 @@ class BrokerConnectionService {
           return {
             'success': false,
             'connected': false,
-            'message': data['error'] ?? 'Connection failed',
+            'message': _normalizeConnectionMessage((data['error'] ?? 'Connection failed').toString()),
             'errorCode': 'BACKEND_ERROR',
           };
         }
@@ -236,7 +248,7 @@ class BrokerConnectionService {
         return {
           'success': false,
           'connected': false,
-          'message': data['error'] ?? 'Invalid request',
+          'message': _normalizeConnectionMessage((data['error'] ?? 'Invalid request').toString()),
           'errorCode': 'BAD_REQUEST',
         };
       } else {
@@ -253,7 +265,7 @@ class BrokerConnectionService {
       return {
         'success': false,
         'connected': false,
-        'message': 'Connection error: $e',
+        'message': _normalizeConnectionMessage('Connection error: $e'),
         'errorCode': 'CONNECTION_ERROR',
       };
     }
