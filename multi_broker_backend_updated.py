@@ -5068,30 +5068,71 @@ class FXCMConnection(BrokerConnection):
             logger.error(f"Error calling FXCM endpoint {path}: {e}")
             return None
 
+    def _connect_socketio_rest(self) -> bool:
+        """Authenticate via FXCM Socket.IO REST handshake (works for demo accounts).
+        
+        FXCM demo accounts use password as the access_token for Socket.IO.
+        The handshake returns a session ID used as bearer token.
+        """
+        import requests as _req
+
+        password = self.credentials.get('password', '')
+        token = self.credentials.get('api_key', '') or password
+        if not token:
+            return False
+
+        try:
+            handshake_url = f"{self.base_url}/socket.io/?EIO=3&transport=polling&access_token={token}"
+            resp = _req.get(handshake_url, timeout=15)
+            if resp.status_code == 200:
+                text = resp.text
+                json_start = text.find('{')
+                if json_start >= 0:
+                    import json as _json
+                    handshake_data = _json.loads(text[json_start:text.rfind('}') + 1])
+                    sid = handshake_data.get('sid', '')
+                    if sid:
+                        # Store the bearer token for future REST calls
+                        self.credentials['api_key'] = f"{sid}{token}"
+                        self.connected = True
+                        logger.info(f"[FXCM] ✅ Socket.IO REST auth succeeded ({self.base_url})")
+                        self.get_account_info()
+                        return True
+            logger.warning(f"[FXCM] Socket.IO handshake returned {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"[FXCM] Socket.IO REST auth failed: {e}")
+        return False
+
     def connect(self) -> bool:
         try:
             login_mode = str(self.credentials.get('fxcm_login_mode') or '').strip().lower()
             use_forexconnect = login_mode == 'username' or (
                 not self.credentials.get('api_key') and self._has_forexconnect_credentials()
+                and login_mode != 'rest'
             )
 
+            # Strategy 1: ForexConnect desktop SDK (username/password)
             if use_forexconnect:
-                return self._login_forexconnect()
+                if self._login_forexconnect():
+                    return True
+                logger.warning(f"[FXCM] ForexConnect login failed, trying REST auth...")
 
-            if not self.credentials.get('api_key'):
-                self.last_error = 'Missing API token'
-                logger.error('FXCM: Missing API token')
-                return False
+            # Strategy 2: API token-based REST auth
+            if self.credentials.get('api_key'):
+                payload = self._request('GET', '/trading/get_model', params={'models': 'Account'}, timeout=15)
+                if payload:
+                    self.connected = True
+                    self.get_account_info()
+                    return True
 
-            payload = self._request('GET', '/trading/get_model', params={'models': 'Account'}, timeout=15)
-            if not payload:
-                if not self.last_error:
-                    self.last_error = 'Authentication failed'
-                return False
+            # Strategy 3: Socket.IO REST handshake (demo accounts with password as token)
+            if self.credentials.get('password') or self.credentials.get('api_key'):
+                if self._connect_socketio_rest():
+                    return True
 
-            self.connected = True
-            self.get_account_info()
-            return True
+            self.last_error = self.last_error or 'All FXCM authentication strategies failed'
+            logger.error(f'[FXCM] {self.last_error}')
+            return False
         except Exception as e:
             self.last_error = str(e)
             logger.error(f"Error connecting to FXCM: {e}")
@@ -20476,14 +20517,53 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 # Detect broker type
                 broker_type = bot_config.get('broker_type', 'MT5')
                 is_ig = broker_type == 'IG Markets'
+                is_fxcm = broker_type in ['FXCM', 'fxcm', 'FXM']
                 is_mt5 = broker_type in ['MetaTrader 5', 'MetaQuotes', 'XM Global', 'XM', 'Exness', 'PXBT', 'MT5']
                 
                 mt5_conn = None
                 ig_conn = None
+                fxcm_conn = None
                 active_conn = None
                 use_rest_trading = False  # True when MetaAPI REST is used instead of local MT5
                 
-                if is_ig:
+                if is_fxcm:
+                    # FXCM broker - use REST API via FXCMConnection
+                    try:
+                        fxcm_conn = bot_config.get('broker_conn')
+                        if fxcm_conn is None or not getattr(fxcm_conn, 'connected', False):
+                            credential_id = bot_config.get('credentialId')
+                            if credential_id:
+                                broker_type_new, new_conn = get_broker_connection(credential_id, user_id, bot_id)
+                                if broker_type_new == 'FXCM' and hasattr(new_conn, 'connected') and new_conn.connected:
+                                    fxcm_conn = new_conn
+                                    bot_config['broker_conn'] = fxcm_conn
+                                else:
+                                    logger.error(f"Bot {bot_id}: FXCM reconnection failed")
+                                    time.sleep(trading_interval)
+                                    continue
+                            else:
+                                # Fallback: use global FXCM connection
+                                fxcm_conn = FXCMConnection(credentials={
+                                    'api_key': FXCM_CONFIG.get('token', ''),
+                                    'username': FXCM_CONFIG['login'],
+                                    'password': FXCM_CONFIG['password'],
+                                    'account_number': FXCM_CONFIG['login'],
+                                    'server': FXCM_CONFIG['server'],
+                                    'is_live': FXCM_CONFIG['is_live'],
+                                    'connection': 'Real' if FXCM_CONFIG['is_live'] else 'Demo',
+                                })
+                                if not fxcm_conn.connect():
+                                    logger.error(f"Bot {bot_id}: FXCM fallback connection failed: {fxcm_conn.last_error}")
+                                    time.sleep(trading_interval)
+                                    continue
+                                bot_config['broker_conn'] = fxcm_conn
+                        logger.info(f"Bot {bot_id}: Connected to FXCM for trading")
+                        active_conn = fxcm_conn
+                    except Exception as e:
+                        logger.error(f"Bot {bot_id}: FXCM connection exception: {e}")
+                        time.sleep(trading_interval)
+                        continue
+                elif is_ig:
                     # IG Markets broker - use REST API via IGConnection
                     try:
                         ig_conn = bot_config.get('broker_conn')
@@ -21150,6 +21230,29 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             except Exception as e:
                                 logger.error(f"Bot {bot_id}: IG place_order exception: {e}")
                                 order_result = {'success': False, 'error': str(e)}
+                        elif is_fxcm:
+                            # FXCM - place order via REST API (FXCMConnection)
+                            try:
+                                # Position limit check
+                                max_open = bot_config.get('effectiveMaxOpenPositions') or bot_config.get('maxOpenPositions') or 5
+                                existing_positions = fxcm_conn.get_positions() if fxcm_conn else []
+                                if len(existing_positions) >= int(max_open):
+                                    logger.info(f"⏸️ Bot {bot_id}: FXCM position limit reached ({len(existing_positions)}/{max_open})")
+                                    continue
+
+                                order_result = fxcm_conn.place_order(
+                                    symbol=symbol,
+                                    order_type=order_type,
+                                    volume=round(adjusted_volume, 2),
+                                )
+
+                                if order_result.get('success', False):
+                                    logger.info(f"✅ Bot {bot_id}: FXCM order placed on {order_result.get('symbol', symbol)}")
+                                else:
+                                    logger.warning(f"Bot {bot_id}: FXCM order failed on {symbol}: {order_result.get('error')}")
+                            except Exception as e:
+                                logger.error(f"Bot {bot_id}: FXCM place_order exception: {e}")
+                                order_result = {'success': False, 'error': str(e)}
                         elif is_mt5:
                             # MT5 - place order with retry/fallback logic
                             # ❌ FIX: Only try fallback for non-critical symbols
@@ -21409,6 +21512,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             positions = []
                             if is_ig and ig_conn:
                                 positions = ig_conn.get_positions()
+                            elif is_fxcm and fxcm_conn:
+                                positions = fxcm_conn.get_positions()
                             elif is_mt5 and mt5_conn:
                                 positions = mt5_conn.get_positions()
                             elif active_conn:

@@ -25,6 +25,7 @@ logger = logging.getLogger('trade_router')
 
 # Broker classification
 REST_CAPABLE_BROKERS = {'Exness', 'XM', 'XM Global', 'IG', 'IC Markets'}
+FXCM_BROKERS = {'FXCM', 'fxcm', 'FXM'}
 CRYPTO_BROKERS = {'Binance', 'binance'}
 MT5_ONLY_BROKERS = {'PXBT', 'PrimeXBT'}
 
@@ -36,6 +37,7 @@ class ExecutionMode:
     LOCAL_MT5 = 'local_mt5'   # Direct MT5 terminal on this machine
     WORKER = 'worker_pool'    # Worker subprocess with its own MT5
     BINANCE = 'binance_api'   # Binance REST API
+    FXCM = 'fxcm_api'        # FXCM REST API
     DEMO = 'demo'             # Demo/paper trading (no real execution)
 
 
@@ -93,6 +95,10 @@ class TradeRouter:
         broker_upper = broker.upper() if broker else ''
         broker_title = broker.title() if broker else ''
 
+        # FXCM → always FXCM REST API
+        if broker in FXCM_BROKERS or broker_upper == 'FXCM':
+            return ExecutionMode.FXCM
+
         # Binance → always REST API
         if broker in CRYPTO_BROKERS or broker_upper == 'BINANCE':
             return ExecutionMode.BINANCE
@@ -140,6 +146,8 @@ class TradeRouter:
             acct.connection = None  # Managed by worker
         elif mode == ExecutionMode.BINANCE:
             acct.connection = None  # Managed by binance_service
+        elif mode == ExecutionMode.FXCM:
+            acct.connection = None  # Will be set externally by bot loop (FXCMConnection)
         # LOCAL_MT5 and DEMO: connection will be set externally
 
         with self._lock:
@@ -248,6 +256,9 @@ class TradeRouter:
                 result = self._trade_binance(acct, symbol, order_type, volume,
                                              stop_loss, take_profit, comment,
                                              user_id, **kwargs)
+            elif acct.mode == ExecutionMode.FXCM:
+                result = self._trade_fxcm(acct, symbol, order_type, volume,
+                                          stop_loss, take_profit, comment)
             else:
                 result = {'success': False, 'comment': f'Unknown mode {acct.mode}',
                           'retcode': -1}
@@ -282,6 +293,9 @@ class TradeRouter:
                 return acct.connection.close_position(position_id)
             elif acct.mode == ExecutionMode.LOCAL_MT5 and acct.connection:
                 return acct.connection.close_position(position_id)
+            elif acct.mode == ExecutionMode.FXCM and acct.connection:
+                result = acct.connection.close_position(position_id)
+                return result.get('success', False) if isinstance(result, dict) else bool(result)
             elif acct.mode == ExecutionMode.WORKER and self.worker_manager:
                 # Send close command to worker
                 return self._worker_close(acct, position_id)
@@ -411,6 +425,32 @@ class TradeRouter:
         # Binance trading handled by existing binance_service.py
         return {'success': False, 'comment': 'Binance trades handled by binance_service',
                 'retcode': -1}
+
+    def _trade_fxcm(self, acct, symbol, order_type, volume, sl, tp, comment):
+        """Execute trade via FXCM REST API (FXCMConnection)."""
+        if not acct.connection:
+            return {'success': False, 'comment': 'No FXCM connection', 'retcode': -1}
+        try:
+            result = acct.connection.place_order(
+                symbol=symbol,
+                order_type=order_type,
+                volume=volume,
+            )
+            if result.get('success'):
+                return {
+                    'success': True,
+                    'ticket': result.get('orderId') or result.get('tradeId', ''),
+                    'comment': f"FXCM order placed: {result.get('symbol', symbol)}",
+                    'retcode': 0,
+                }
+            return {
+                'success': False,
+                'comment': result.get('error', 'FXCM order failed'),
+                'retcode': -1,
+            }
+        except Exception as e:
+            logger.error(f"FXCM trade error: {e}")
+            return {'success': False, 'comment': str(e), 'retcode': -1}
 
     def _worker_close(self, acct, position_id):
         """Send close command to worker via DB queue."""
