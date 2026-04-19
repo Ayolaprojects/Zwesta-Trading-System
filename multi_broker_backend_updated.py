@@ -5107,19 +5107,7 @@ class FXCMConnection(BrokerConnection):
 
     def connect(self) -> bool:
         try:
-            login_mode = str(self.credentials.get('fxcm_login_mode') or '').strip().lower()
-            use_forexconnect = login_mode == 'username' or (
-                not self.credentials.get('api_key') and self._has_forexconnect_credentials()
-                and login_mode != 'rest'
-            )
-
-            # Strategy 1: ForexConnect desktop SDK (username/password)
-            if use_forexconnect:
-                if self._login_forexconnect():
-                    return True
-                logger.warning(f"[FXCM] ForexConnect login failed, trying REST auth...")
-
-            # Strategy 2: API token-based REST auth
+            # Strategy 1: API token-based REST auth
             if self.credentials.get('api_key'):
                 payload = self._request('GET', '/trading/get_model', params={'models': 'Account'}, timeout=15)
                 if payload:
@@ -5127,12 +5115,20 @@ class FXCMConnection(BrokerConnection):
                     self.get_account_info()
                     return True
 
-            # Strategy 3: Socket.IO REST handshake (demo accounts with password as token)
+            # Strategy 2: Socket.IO REST handshake (primary method for demo/password accounts)
             if self.credentials.get('password') or self.credentials.get('api_key'):
                 if self._connect_socketio_rest():
                     return True
 
-            self.last_error = self.last_error or 'All FXCM authentication strategies failed'
+            # Strategy 3: ForexConnect desktop SDK (only if explicitly installed)
+            if self._has_forexconnect_credentials():
+                if self._login_forexconnect():
+                    return True
+                # Clear ForexConnect-specific error so it doesn't confuse users
+                if 'ForexConnect is not installed' in (self.last_error or ''):
+                    self.last_error = ''
+
+            self.last_error = self.last_error or 'All FXCM authentication strategies failed. Check your credentials.'
             logger.error(f'[FXCM] {self.last_error}')
             return False
         except Exception as e:
@@ -15910,9 +15906,9 @@ def test_broker_connection():
                 'api_key': token,
                 'username': username,
                 'password': password,
-                'fxcm_login_mode': 'username' if use_username_mode else 'token',
+                'fxcm_login_mode': 'rest',
                 'account_number': data.get('account_number', ''),
-                'server': data.get('server') or ('http://www.fxcorporate.com/Hosts.jsp' if use_username_mode else ('REST-API-LIVE' if is_live else 'REST-API-DEMO')),
+                'server': data.get('server') or ('REST-API-LIVE' if is_live else 'REST-API-DEMO'),
                 'connection': 'Real' if is_live else 'Demo',
                 'is_live': is_live,
             })
