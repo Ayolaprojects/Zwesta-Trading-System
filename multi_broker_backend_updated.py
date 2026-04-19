@@ -152,6 +152,8 @@ def should_log_session_event(event_key: str, interval_seconds: int = 30) -> bool
 # When balance API calls get MT5 lock timeout, return cached balance instead of default $10,000
 balance_cache = {}  # { f"{broker}:{account}": {'balance': X, 'equity': Y, 'timestamp': Z} }
 balance_cache_lock = threading.Lock()
+BALANCE_CACHE_TTL_LIVE = 5 * 60     # 5 minutes max age for live account cache
+BALANCE_CACHE_TTL_DEMO = 30 * 60    # 30 minutes max age for demo account cache
 logger.info("✅ Balance cache initialized - stores real balances from successful MT5 connections")
 
 # ==================== FAILED AUTH COOLDOWN ====================
@@ -166,7 +168,7 @@ logger.info("✅ Failed auth cooldown initialized - prevents repeated bad creden
 # Prevent the dashboard from stampeding MT5 with repeated live-balance probes.
 _balance_fallback_attempts = {}
 _balance_fallback_lock = threading.Lock()
-_BALANCE_FALLBACK_COOLDOWN = 45
+_BALANCE_FALLBACK_COOLDOWN = 15
 logger.info("✅ Balance fallback cooldown initialized - prevents repeated MT5 balance probes")
 
 
@@ -7867,8 +7869,6 @@ def get_account_balances():
         except Exception:
             return None
 
-    live_cache_stale_after_seconds = 15 * 60
-    
     try:
         user_id = request.user_id
         conn = get_db_connection()
@@ -8205,44 +8205,56 @@ def get_account_balances():
                 with balance_cache_lock:
                     if cache_key in balance_cache:
                         cached_info = balance_cache[cache_key]
-                        cached_balance = cached_info.get('balance', 0)
-                        cached_equity = cached_info.get('equity', cached_balance)
-                        cached_margin = cached_info.get('margin', 0)
-                        cached_margin_free = cached_info.get('marginFree', 0)
-                        cached_margin_level = cached_info.get('margin_level', 0)
-                        cached_profit = cached_info.get('total_pl', 0)
-                        # Use cache currency if available, otherwise use database account_currency
-                        if (not is_live) and 'currency' in cached_info:
-                            cached_currency = cached_info['currency']
-                        cache_source = 'memory_cache'
                         cache_snapshot_age = _cache_snapshot_age_seconds(cached_info.get('timestamp'))
-                        logger.info(f"✅ Balance cache hit for {cache_key}: {cached_balance:.2f} {cached_currency}")
+                        # Enforce TTL: skip stale in-memory cache entries
+                        ttl = BALANCE_CACHE_TTL_LIVE if is_live else BALANCE_CACHE_TTL_DEMO
+                        if cache_snapshot_age is not None and cache_snapshot_age > ttl:
+                            logger.info(f"⏳ Balance cache EXPIRED for {cache_key}: {cache_snapshot_age:.0f}s old (TTL={ttl}s)")
+                        else:
+                            cached_balance = cached_info.get('balance', 0)
+                            cached_equity = cached_info.get('equity', cached_balance)
+                            cached_margin = cached_info.get('margin', 0)
+                            cached_margin_free = cached_info.get('marginFree', 0)
+                            cached_margin_level = cached_info.get('margin_level', 0)
+                            cached_profit = cached_info.get('total_pl', 0)
+                            # Use cache currency if available, otherwise use database account_currency
+                            if (not is_live) and 'currency' in cached_info:
+                                cached_currency = cached_info['currency']
+                            cache_source = 'memory_cache'
+                            logger.info(f"✅ Balance cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={cache_snapshot_age:.0f}s)")
                 
                 # Fallback: try SQLite cached_balance column
                 if cached_balance == 0 and cred['credential_id'] in cached_data:
                     cache = dict(cached_data[cred['credential_id']])
-                    cached_balance = cache.get('cached_balance', 0) or 0
-                    cached_equity = cache.get('cached_equity', cached_balance) or 0
-                    cached_margin = cache.get('cached_margin', 0) or 0
-                    cached_margin_free = cache.get('cached_margin_free', 0) or 0
-                    cached_margin_level = cache.get('cached_margin_level', 0) or 0
-                    cached_profit = cache.get('cached_profit', 0) or 0
-                    cache_source = 'sqlite_cache'
-                    sqlite_cache_used = cached_balance > 0
-                    cache_snapshot_age = _cache_snapshot_age_seconds(cache.get('last_update'))
-                    if cached_balance > 0:
-                        logger.info(f"✅ SQLite cache hit for {cache_key}: {cached_balance:.2f} {cached_currency}")
+                    sqlite_age = _cache_snapshot_age_seconds(cache.get('last_update'))
+                    sqlite_ttl = BALANCE_CACHE_TTL_LIVE if is_live else BALANCE_CACHE_TTL_DEMO
+                    if sqlite_age is not None and sqlite_age > sqlite_ttl:
+                        logger.info(f"⏳ SQLite cache EXPIRED for {cache_key}: {sqlite_age:.0f}s old (TTL={sqlite_ttl}s)")
+                        cache_snapshot_age = sqlite_age
+                    else:
+                        cached_balance = cache.get('cached_balance', 0) or 0
+                        cached_equity = cache.get('cached_equity', cached_balance) or 0
+                        cached_margin = cache.get('cached_margin', 0) or 0
+                        cached_margin_free = cache.get('cached_margin_free', 0) or 0
+                        cached_margin_level = cache.get('cached_margin_level', 0) or 0
+                        cached_profit = cache.get('cached_profit', 0) or 0
+                        cache_source = 'sqlite_cache'
+                        sqlite_cache_used = cached_balance > 0
+                        cache_snapshot_age = sqlite_age
+                        if cached_balance > 0:
+                            logger.info(f"✅ SQLite cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={sqlite_age:.0f}s)")
                 
                 # If still $0 — account genuinely not connected / not funded
                 if cached_balance == 0:
                     logger.info(f"ℹ️  {cache_key}: No cached balance — showing $0")
                 
-                live_sqlite_cache_is_stale = bool(
-                    is_live and sqlite_cache_used and (
-                        cache_snapshot_age is None or cache_snapshot_age > live_cache_stale_after_seconds
+                # Staleness applies to ALL account types (live and demo)
+                cache_is_stale = bool(
+                    sqlite_cache_used and (
+                        cache_snapshot_age is None or cache_snapshot_age > (BALANCE_CACHE_TTL_LIVE if is_live else BALANCE_CACHE_TTL_DEMO)
                     )
                 )
-                has_cached_data = cached_balance > 0 and not live_sqlite_cache_is_stale
+                has_cached_data = cached_balance > 0 and not cache_is_stale
                 account_entry.update({
                     'balance': float(cached_balance if has_cached_data else 0),
                     'equity': float(cached_equity if has_cached_data else 0),
@@ -8253,11 +8265,11 @@ def get_account_balances():
                     'currency': cached_currency,
                     'displayCurrency': cached_currency,
                     'connected': bool(cache_source == 'memory_cache' and has_cached_data),
-                    'dataSource': cache_source if has_cached_data else ('stale_cache' if live_sqlite_cache_is_stale else 'not_connected'),
+                    'dataSource': cache_source if has_cached_data else ('stale_cache' if cache_is_stale else 'not_connected'),
                     'cacheAgeSeconds': cache_snapshot_age,
                 })
-                if live_sqlite_cache_is_stale:
-                    account_entry['warning'] = 'Live account balance snapshot is stale. Start a live bot or warm the live session to refresh it.'
+                if cache_is_stale:
+                    account_entry['warning'] = 'Account balance snapshot is stale. Start a bot or reconnect to refresh.'
                     account_entry['lastKnownBalance'] = float(cached_balance)
                     account_entry['lastKnownEquity'] = float(cached_equity)
                     account_entry['lastKnownCurrency'] = cached_currency
