@@ -25,6 +25,11 @@ requests==2.31.0
 python-dateutil==2.8.2
 pytz==2023.3
 
+# Optional FXCM desktop SDK fallback:
+# The official forexconnect package is not available on PyPI for this environment.
+# Install the vendor-provided ForexConnect wheel manually if you need backend
+# username/password login without the REST Socket.IO path.
+
 # Monitoring (optional)
 sentry-sdk==1.38.0
 

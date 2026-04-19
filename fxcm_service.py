@@ -1,8 +1,10 @@
 import os
 import logging
+import socket
 from flask import Blueprint, jsonify, request
 import requests
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,30 @@ def _normalize_server_mode(server_value=None):
     return 'real' if server in {'real', 'live', 'fxcm'} else 'demo'
 
 
-def _base_url(server_value=None):
-    return 'https://api.fxcm.com' if _normalize_server_mode(server_value) == 'real' else 'https://api-demo.fxcm.com'
+def _explicit_base_url(payload=None):
+    payload = payload or {}
+    return str(payload.get('base_url') or os.getenv('FXCM_BASE_URL', '')).strip().rstrip('/')
+
+
+def _candidate_base_urls(server_value=None, payload=None):
+    payload = payload or {}
+    urls = []
+    explicit_url = _explicit_base_url(payload)
+    if explicit_url:
+        urls.append(explicit_url)
+
+    defaults = ['https://api.fxcm.com'] if _normalize_server_mode(server_value or payload.get('server')) == 'real' else [
+        'https://api-demo.fxcm.com',
+        'https://api.fxcm.com',
+    ]
+    for url in defaults:
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _base_url(server_value=None, payload=None):
+    return _candidate_base_urls(server_value, payload)[0]
 
 
 def _resolve_fxcm_token(payload=None):
@@ -53,6 +77,30 @@ def _fxcm_headers(content_type=True, payload=None):
     return h
 
 
+def _fxcm_request(method, path, *, payload=None, params=None, json=None, timeout=15, content_type=None):
+    payload = payload or {}
+    headers = _fxcm_headers(
+        content_type=(json is not None if content_type is None else content_type),
+        payload=payload,
+    )
+    errors = []
+    for base_url in _candidate_base_urls(payload.get('server'), payload):
+        try:
+            response = requests.request(
+                method,
+                f"{base_url}{path}",
+                headers=headers,
+                params=params,
+                json=json,
+                timeout=timeout,
+            )
+            response.fxcm_base_url = base_url
+            return response
+        except requests.RequestException as exc:
+            errors.append(f"{base_url}: {exc}")
+    raise ConnectionError('FXCM request failed for all configured hosts: ' + ' | '.join(errors))
+
+
 def _get_account_id(payload=None):
     """Return configured FXCM account ID from query params or env."""
     payload = payload or {}
@@ -61,6 +109,65 @@ def _get_account_id(payload=None):
         or payload.get('account_id')
         or os.getenv('FXCM_ACCOUNT_ID', '')
     )
+
+
+@fxcm_api.route('/api/fxcm/health', methods=['GET', 'POST'])
+def api_fxcm_health():
+    """Return FXCM connectivity diagnostics for the active config."""
+    try:
+        data = request.json or {} if request.method == 'POST' else request.args.to_dict(flat=True)
+        candidates = _candidate_base_urls(data.get('server'), data)
+        dns_results = []
+        for base_url in candidates:
+            host = urlparse(base_url).netloc
+            try:
+                addresses = socket.gethostbyname_ex(host)[2]
+                dns_results.append({'base_url': base_url, 'host': host, 'resolved': True, 'addresses': addresses})
+            except Exception as exc:
+                dns_results.append({'base_url': base_url, 'host': host, 'resolved': False, 'error': str(exc)})
+
+        try:
+            import forexconnect  # type: ignore
+            forexconnect_installed = True
+            forexconnect_error = ''
+        except Exception as exc:
+            forexconnect_installed = False
+            forexconnect_error = str(exc)
+
+        rest_result = None
+        token = _resolve_fxcm_token(data)
+        if token:
+            try:
+                resp = _fxcm_request(
+                    'GET',
+                    '/trading/get_model',
+                    payload=data,
+                    params={'models': 'Account'},
+                    timeout=15,
+                    content_type=False,
+                )
+                rest_result = {
+                    'success': resp.status_code == 200,
+                    'status_code': resp.status_code,
+                    'base_url': getattr(resp, 'fxcm_base_url', None),
+                    'excerpt': resp.text[:300],
+                }
+            except Exception as exc:
+                rest_result = {'success': False, 'error': str(exc)}
+
+        return jsonify({
+            'success': True,
+            'server': _normalize_server_mode(data.get('server')),
+            'configured_base_url': _explicit_base_url(data) or None,
+            'candidate_base_urls': candidates,
+            'dns': dns_results,
+            'token_available': bool(token),
+            'forexconnect_installed': forexconnect_installed,
+            'forexconnect_error': forexconnect_error,
+            'rest_check': rest_result,
+        })
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
 
 
 # ==================== AUTH / STATUS ====================
@@ -75,11 +182,13 @@ def api_fxcm_login():
             return jsonify({"success": False, "error": "FXCM password or API token required"}), 400
 
         headers = _fxcm_headers(content_type=False, payload=data)
-        base_url = _base_url(data.get('server'))
-        resp = requests.get(
-            f"{base_url}/trading/get_model",
-            headers=headers, params={"models": "Account"},
+        resp = _fxcm_request(
+            'GET',
+            '/trading/get_model',
+            payload=data,
+            params={"models": "Account"},
             timeout=15,
+            content_type=False,
         )
         if resp.status_code == 200:
             result = resp.json()
@@ -90,6 +199,7 @@ def api_fxcm_login():
                 "success": True,
                 "message": "FXCM connected",
                 "server": _normalize_server_mode(data.get('server')),
+                "base_url": getattr(resp, 'fxcm_base_url', _base_url(data.get('server'), data)),
                 "accounts": accounts if isinstance(accounts, list) else [accounts],
             })
         return jsonify({"success": False, "error": resp.text}), resp.status_code
@@ -102,13 +212,7 @@ def api_fxcm_login():
 @fxcm_api.route('/api/fxcm/accounts', methods=['GET'])
 def api_fxcm_accounts():
     try:
-        headers = _fxcm_headers(content_type=False)
-        base_url = _base_url()
-        resp = requests.get(
-            f"{base_url}/trading/get_model",
-            headers=headers, params={"models": "Account"},
-            timeout=10,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "Account"}, timeout=10, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             accounts = data.get('accounts', [])
@@ -122,13 +226,7 @@ def api_fxcm_accounts():
 def api_fxcm_balance():
     try:
         account_id = _get_account_id()
-        headers = _fxcm_headers(content_type=False)
-        base_url = _base_url()
-        resp = requests.get(
-            f"{base_url}/trading/get_model",
-            headers=headers, params={"models": "Account"},
-            timeout=10,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "Account"}, timeout=10, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             accounts = data.get('accounts', [])
@@ -161,13 +259,7 @@ def api_fxcm_funds():
     """Alias for balance — matches IG/OANDA pattern."""
     try:
         account_id = _get_account_id()
-        headers = _fxcm_headers(content_type=False)
-        base_url = _base_url()
-        resp = requests.get(
-            f"{base_url}/trading/get_model",
-            headers=headers, params={"models": "Account"},
-            timeout=10,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "Account"}, timeout=10, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             accounts = data.get('accounts', [])
@@ -202,13 +294,7 @@ def api_fxcm_funds():
 def api_fxcm_positions():
     """Get all open positions."""
     try:
-        headers = _fxcm_headers(content_type=False)
-        base_url = _base_url()
-        resp = requests.get(
-            f"{base_url}/trading/get_model",
-            headers=headers, params={"models": "OpenPosition"},
-            timeout=10,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "OpenPosition"}, timeout=10, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             raw = data.get('open_positions', data.get('openPositions', []))
@@ -244,15 +330,9 @@ def api_fxcm_close_position():
         if not trade_id:
             return jsonify({"success": False, "error": "dealId/tradeId is required"}), 400
 
-        headers = _fxcm_headers()
-        base_url = _base_url(data.get('server'))
         payload = {"trade_id": str(trade_id)}
 
-        # Close via FXCM REST
-        resp = requests.post(
-            f"{base_url}/trading/close_trade",
-            headers=headers, json=payload, timeout=15,
-        )
+        resp = _fxcm_request('POST', '/trading/close_trade', payload=data, json=payload, timeout=15)
         if resp.status_code == 200:
             return jsonify({"success": True, "result": resp.json()})
         return jsonify({"success": False, "error": resp.text}), resp.status_code
@@ -265,13 +345,7 @@ def api_fxcm_close_position():
 def api_fxcm_close_all():
     """Close all open positions."""
     try:
-        headers = _fxcm_headers(content_type=False)
-        base_url = _base_url()
-        resp = requests.get(
-            f"{base_url}/trading/get_model",
-            headers=headers, params={"models": "OpenPosition"},
-            timeout=10,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "OpenPosition"}, timeout=10, content_type=False)
         if resp.status_code != 200:
             return jsonify({"success": False, "error": "Failed to fetch positions"}), 500
 
@@ -280,16 +354,11 @@ def api_fxcm_close_all():
         positions = raw if isinstance(raw, list) else []
 
         results = []
-        close_headers = _fxcm_headers()
+        base_url = getattr(resp, 'fxcm_base_url', _base_url())
 
         for p in positions:
             trade_id = p.get('tradeId', '')
-            close_resp = requests.post(
-                f"{base_url}/trading/close_trade",
-                headers=close_headers,
-                json={"trade_id": str(trade_id)},
-                timeout=15,
-            )
+            close_resp = requests.post(f"{base_url}/trading/close_trade", headers=_fxcm_headers(), json={"trade_id": str(trade_id)}, timeout=15)
             if close_resp.status_code == 200:
                 results.append({"tradeId": str(trade_id), "success": True})
             else:
@@ -314,7 +383,6 @@ def api_fxcm_place_order():
     """Place a market order on FXCM."""
     try:
         data = request.json or {}
-        headers = _fxcm_headers()
         account_id = _get_account_id()
 
         instrument = data.get('instrument') or data.get('epic') or data.get('symbol')
@@ -339,10 +407,7 @@ def api_fxcm_place_order():
         if data.get('trailingStep'):
             payload['trailing_step'] = float(data['trailingStep'])
 
-        resp = requests.post(
-            f"{BASE_URL}/trading/open_trade",
-            headers=headers, json=payload, timeout=15,
-        )
+        resp = _fxcm_request('POST', '/trading/open_trade', payload=data, json=payload, timeout=15)
         if resp.status_code == 200:
             result = resp.json()
             return jsonify({
@@ -363,12 +428,7 @@ def api_fxcm_place_order():
 def api_fxcm_pending_orders():
     """Get all pending (entry) orders."""
     try:
-        headers = _fxcm_headers(content_type=False)
-        resp = requests.get(
-            f"{BASE_URL}/trading/get_model",
-            headers=headers, params={"models": "Order"},
-            timeout=10,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "Order"}, timeout=10, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             orders = data.get('orders', [])
@@ -395,7 +455,6 @@ def api_fxcm_create_pending_order():
     """Create an entry (limit/stop) order."""
     try:
         data = request.json or {}
-        headers = _fxcm_headers()
         account_id = _get_account_id()
 
         instrument = data.get('instrument') or data.get('symbol')
@@ -419,10 +478,7 @@ def api_fxcm_create_pending_order():
         if data.get('limitPrice'):
             payload['limit'] = float(data['limitPrice'])
 
-        resp = requests.post(
-            f"{BASE_URL}/trading/create_entry_order",
-            headers=headers, json=payload, timeout=15,
-        )
+        resp = _fxcm_request('POST', '/trading/create_entry_order', payload=data, json=payload, timeout=15)
         if resp.status_code == 200:
             return jsonify({"success": True, "order": resp.json()})
         return jsonify({"success": False, "error": resp.text}), resp.status_code
@@ -434,12 +490,7 @@ def api_fxcm_create_pending_order():
 def api_fxcm_cancel_order(order_id):
     """Cancel a pending entry order."""
     try:
-        headers = _fxcm_headers()
-        resp = requests.post(
-            f"{BASE_URL}/trading/delete_order",
-            headers=headers, json={"order_id": str(order_id)},
-            timeout=10,
-        )
+        resp = _fxcm_request('POST', '/trading/delete_order', json={"order_id": str(order_id)}, timeout=10)
         if resp.status_code == 200:
             return jsonify({"success": True, "cancelled": resp.json()})
         return jsonify({"success": False, "error": resp.text}), resp.status_code
@@ -453,12 +504,7 @@ def api_fxcm_cancel_order(order_id):
 def api_fxcm_transactions():
     """Get closed trade history."""
     try:
-        headers = _fxcm_headers(content_type=False)
-        resp = requests.get(
-            f"{BASE_URL}/trading/get_model",
-            headers=headers, params={"models": "ClosedPosition"},
-            timeout=15,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "ClosedPosition"}, timeout=15, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             closed = data.get('closed_positions', data.get('closedPositions', []))
@@ -488,11 +534,7 @@ def api_fxcm_transactions():
 def api_fxcm_instruments():
     """Get available trading instruments/symbols."""
     try:
-        headers = _fxcm_headers(content_type=False)
-        resp = requests.get(
-            f"{BASE_URL}/trading/get_instruments",
-            headers=headers, timeout=15,
-        )
+        resp = _fxcm_request('GET', '/trading/get_instruments', timeout=15, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             instruments = data.get('data', {}).get('instrument', [])
@@ -523,18 +565,13 @@ def api_fxcm_instruments():
 def api_fxcm_pricing():
     """Get current prices for instruments. Query: instruments=EUR/USD,GBP/USD"""
     try:
-        headers = _fxcm_headers(content_type=False)
         instruments = request.args.get('instruments', '')
         if not instruments:
             return jsonify({"success": False, "error": "instruments param required (e.g. EUR/USD,GBP/USD)"}), 400
 
         # FXCM provides prices via their subscription model;
         # we fetch from the offers model
-        resp = requests.get(
-            f"{BASE_URL}/trading/get_model",
-            headers=headers, params={"models": "Offer"},
-            timeout=10,
-        )
+        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "Offer"}, timeout=10, content_type=False)
         if resp.status_code == 200:
             data = resp.json()
             offers = data.get('offers', [])

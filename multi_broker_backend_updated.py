@@ -4841,11 +4841,31 @@ class FXCMConnection(BrokerConnection):
             }
 
         super().__init__(BrokerType.FXM, credentials)
-        is_live = bool(credentials.get('is_live', False))
-        self.base_url = 'https://api.fxcm.com' if is_live else 'https://api-demo.fxcm.com'
+        self.base_url = self._candidate_base_urls()[0]
         self.last_error = ''
         self.forexconnect_client = None
         self.forexconnect_mode = False
+
+    def _server_mode(self) -> str:
+        server = str(self.credentials.get('server', '') or '').strip().lower()
+        if bool(self.credentials.get('is_live', False)) or server in {'real', 'live', 'fxcm'}:
+            return 'real'
+        return 'demo'
+
+    def _candidate_base_urls(self) -> List[str]:
+        urls = []
+        explicit_url = str(self.credentials.get('base_url') or os.getenv('FXCM_BASE_URL', '')).strip().rstrip('/')
+        if explicit_url:
+            urls.append(explicit_url)
+
+        defaults = ['https://api.fxcm.com'] if self._server_mode() == 'real' else [
+            'https://api-demo.fxcm.com',
+            'https://api.fxcm.com',
+        ]
+        for url in defaults:
+            if url not in urls:
+                urls.append(url)
+        return urls
 
     def _has_forexconnect_credentials(self) -> bool:
         return bool(self.credentials.get('username') and self.credentials.get('password'))
@@ -5079,28 +5099,37 @@ class FXCMConnection(BrokerConnection):
     def _request(self, method: str, path: str, *, params: Dict = None, json: Dict = None, timeout: int = 15) -> Optional[Dict]:
         try:
             import requests
+            errors = []
+            for base_url in self._candidate_base_urls():
+                try:
+                    response = requests.request(
+                        method,
+                        f"{base_url}{path}",
+                        headers=self._headers(content_type=json is not None),
+                        params=params,
+                        json=json,
+                        timeout=timeout,
+                    )
+                    self.base_url = base_url
+                    if response.status_code != 200:
+                        self.last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+                        logger.error(f"FXCM request failed for {path}: {self.last_error}")
+                        return None
 
-            response = requests.request(
-                method,
-                f"{self.base_url}{path}",
-                headers=self._headers(content_type=json is not None),
-                params=params,
-                json=json,
-                timeout=timeout,
-            )
-            if response.status_code != 200:
-                self.last_error = f"HTTP {response.status_code}: {response.text[:300]}"
-                logger.error(f"FXCM request failed for {path}: {self.last_error}")
-                return None
+                    payload = response.json()
+                    if isinstance(payload, dict) and payload.get('error'):
+                        self.last_error = str(payload.get('error'))
+                        logger.error(f"FXCM API returned error for {path}: {self.last_error}")
+                        return None
 
-            payload = response.json()
-            if isinstance(payload, dict) and payload.get('error'):
-                self.last_error = str(payload.get('error'))
-                logger.error(f"FXCM API returned error for {path}: {self.last_error}")
-                return None
+                    self.last_error = ''
+                    return payload if isinstance(payload, dict) else {}
+                except Exception as e:
+                    errors.append(f"{base_url}: {e}")
 
-            self.last_error = ''
-            return payload if isinstance(payload, dict) else {}
+            self.last_error = 'FXCM request failed for all configured hosts: ' + ' | '.join(errors)
+            logger.error(f"Error calling FXCM endpoint {path}: {self.last_error}")
+            return None
         except Exception as e:
             self.last_error = str(e)
             logger.error(f"Error calling FXCM endpoint {path}: {e}")
@@ -5120,26 +5149,33 @@ class FXCMConnection(BrokerConnection):
         if not token:
             return False
 
-        try:
-            handshake_url = f"{self.base_url}/socket.io/?EIO=3&transport=polling&access_token={token}"
-            resp = _req.get(handshake_url, timeout=15)
-            if resp.status_code == 200:
-                text = resp.text
-                json_start = text.find('{')
-                if json_start >= 0:
-                    import json as _json
-                    handshake_data = _json.loads(text[json_start:text.rfind('}') + 1])
-                    sid = handshake_data.get('sid', '')
-                    if sid:
-                        # Store the bearer token for future REST calls
-                        self.credentials['api_key'] = f"{sid}{token}"
-                        self.connected = True
-                        logger.info(f"[FXCM] ✅ Socket.IO REST auth succeeded ({self.base_url})")
-                        self.get_account_info()
-                        return True
-            logger.warning(f"[FXCM] Socket.IO handshake returned {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"[FXCM] Socket.IO REST auth failed: {e}")
+        errors = []
+        for base_url in self._candidate_base_urls():
+            try:
+                handshake_url = f"{base_url}/socket.io/?EIO=3&transport=polling&access_token={token}"
+                resp = _req.get(handshake_url, timeout=15)
+                if resp.status_code == 200:
+                    text = resp.text
+                    json_start = text.find('{')
+                    if json_start >= 0:
+                        import json as _json
+                        handshake_data = _json.loads(text[json_start:text.rfind('}') + 1])
+                        sid = handshake_data.get('sid', '')
+                        if sid:
+                            self.base_url = base_url
+                            self.credentials['api_key'] = f"{sid}{token}"
+                            self.connected = True
+                            self.last_error = ''
+                            logger.info(f"[FXCM] ✅ Socket.IO REST auth succeeded ({self.base_url})")
+                            self.get_account_info()
+                            return True
+                logger.warning(f"[FXCM] Socket.IO handshake returned {resp.status_code} ({base_url})")
+            except Exception as e:
+                errors.append(f"{base_url}: {e}")
+                logger.warning(f"[FXCM] Socket.IO REST auth failed for {base_url}: {e}")
+
+        if errors:
+            self.last_error = 'FXCM Socket.IO handshake failed for all configured hosts: ' + ' | '.join(errors)
         return False
 
     def connect(self) -> bool:
@@ -5147,10 +5183,12 @@ class FXCMConnection(BrokerConnection):
             # Strategy 1: Socket.IO REST handshake (primary method for all FXCM accounts)
             # FXCM REST API REQUIRES Socket.IO handshake first to obtain a session token.
             # The access_token (from FXCM Trading Station) is passed in the handshake URL.
+            socketio_error = ''
             token = self.credentials.get('api_key') or self.credentials.get('password')
             if token:
                 if self._connect_socketio_rest():
                     return True
+                socketio_error = self.last_error
 
             # Strategy 2: ForexConnect desktop SDK (only if explicitly installed)
             if self._has_forexconnect_credentials():
@@ -5158,7 +5196,7 @@ class FXCMConnection(BrokerConnection):
                     return True
                 # Clear ForexConnect-specific error so it doesn't confuse users
                 if 'ForexConnect is not installed' in (self.last_error or ''):
-                    self.last_error = ''
+                    self.last_error = socketio_error
 
             self.last_error = self.last_error or (
                 'FXCM authentication failed. '
