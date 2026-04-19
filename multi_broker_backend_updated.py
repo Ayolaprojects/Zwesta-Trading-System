@@ -370,8 +370,8 @@ MT5_CONFIG = EXNESS_LIVE if ENVIRONMENT == 'LIVE' else EXNESS_DEMO
 
 FXCM_CONFIG = {
     'broker': 'FXCM',
-    'login': os.getenv('FXCM_LOGIN', 'D291208900').strip(),
-    'password': os.getenv('FXCM_PASSWORD', 'zy7hD').strip(),
+    'login': os.getenv('FXCM_LOGIN', 'D291208899').strip(),
+    'password': os.getenv('FXCM_PASSWORD', 'Oaxm3').strip(),
     'token': os.getenv('FXCM_TOKEN', '').strip(),  # Optional pre-generated API token
     'server': os.getenv('FXCM_SERVER', 'demo').strip(),  # 'demo' or 'real'
     'is_live': os.getenv('FXCM_SERVER', 'demo').strip().lower() == 'real',
@@ -15614,29 +15614,17 @@ def save_broker_credentials():
             server = (server or data.get('market') or 'spot').lower()
             account_number = account_number or server.upper()
         elif broker_name in ['FXCM']:
-            use_username_mode = fxcm_login_mode == 'username' or (not (token or api_key) and username)
-            if use_username_mode:
-                if not username or not password:
-                    return jsonify({
-                        'success': False,
-                        'error': 'FXCM username mode requires: username, password'
-                    }), 400
-                api_key = token or api_key or ''
-                account_number = account_number or 'FXCM'
-                server = server or 'http://www.fxcorporate.com/Hosts.jsp'
-            else:
-                api_key = token or api_key or password
-            if not api_key and not username:
+            # FXCM REST API: password is the access token for Socket.IO auth
+            username = username or data.get('login_id') or account_number
+            if not ((username and password) or token or api_key):
                 return jsonify({
                     'success': False,
-                    'error': 'FXCM requires either token or username/password'
+                    'error': 'FXCM requires Login ID and Password'
                 }), 400
-            account_number = account_number or 'FXCM'
-            if use_username_mode:
-                server = server or 'http://www.fxcorporate.com/Hosts.jsp'
-            else:
-                server = server or ('REST-API-LIVE' if is_live else 'REST-API-DEMO')
-                password = ''
+            # For REST API, the password serves as the access token
+            api_key = token or api_key or password
+            account_number = account_number or username or 'FXCM'
+            server = server or ('REST-API-LIVE' if is_live else 'REST-API-DEMO')
         elif broker_name in ['OANDA']:
             if not api_key or not account_number:
                 return jsonify({
@@ -15893,21 +15881,20 @@ def test_broker_connection():
 
         # ==================== FXCM ====================
         elif broker == 'FXCM':
-            username = data.get('username')
+            login_id = data.get('username') or data.get('login_id') or data.get('account_number')
             password = data.get('password')
             token = data.get('token') or data.get('api_key')
-            fxcm_login_mode = str(data.get('fxcm_login_mode') or '').strip().lower()
-            use_username_mode = fxcm_login_mode == 'username' or (not token and username)
-            account_id = data.get('account_number') or 'FXCM'
-            if not ((username and password) or token):
-                return jsonify({'success': False, 'error': 'Missing FXCM fields: provide token or username/password'}), 400
+            account_id = data.get('account_number') or login_id or 'FXCM'
+            if not ((login_id and password) or token):
+                return jsonify({'success': False, 'error': 'Missing FXCM fields: provide Login ID and Password'}), 400
 
+            # For FXCM REST API: the password IS the access token for Socket.IO auth
             fxcm_conn = FXCMConnection(credentials={
-                'api_key': token,
-                'username': username,
+                'api_key': token or password,
+                'username': login_id,
                 'password': password,
                 'fxcm_login_mode': 'rest',
-                'account_number': data.get('account_number', ''),
+                'account_number': account_id,
                 'server': data.get('server') or ('REST-API-LIVE' if is_live else 'REST-API-DEMO'),
                 'connection': 'Real' if is_live else 'Demo',
                 'is_live': is_live,
