@@ -198,6 +198,63 @@ def record_balance_fallback_attempt(broker_name: str, account_id, status: str, r
                 'timestamp': time.time(),
             }
 
+
+def get_failed_auth_status(account_id):
+    """Return active MT5 auth cooldown metadata for an account, if any."""
+    if account_id in [None, '']:
+        return None
+
+    try:
+        normalized_account = int(str(account_id).strip())
+    except (TypeError, ValueError):
+        normalized_account = str(account_id).strip()
+
+    now_ts = time.time()
+    with _failed_auth_lock:
+        fail_info = _failed_auth_accounts.get(normalized_account)
+        if not fail_info:
+            return None
+
+        elapsed = now_ts - fail_info.get('timestamp', 0)
+        if elapsed >= _FAILED_AUTH_COOLDOWN:
+            _failed_auth_accounts.pop(normalized_account, None)
+            return None
+
+        return {
+            'elapsed': elapsed,
+            'remaining': max(0, _FAILED_AUTH_COOLDOWN - elapsed),
+            'error': fail_info.get('error', ''),
+        }
+
+
+def broker_uses_single_mode_slot(broker_name: str) -> bool:
+    """Return True when a broker should have only one active credential per mode per user."""
+    return canonicalize_broker_name(broker_name) == 'Exness'
+
+
+def deactivate_conflicting_broker_credentials(cursor, user_id: str, broker_name: str, is_live, keep_credential_id: str = None) -> int:
+    """Deactivate duplicate credentials for brokers that only support one live/demo slot per user."""
+    if not broker_uses_single_mode_slot(broker_name):
+        return 0
+
+    normalized_broker = canonicalize_broker_name(broker_name)
+    normalized_is_live = int(normalize_mt5_is_live_flag(normalized_broker, is_live, None))
+    params = [datetime.now().isoformat(), user_id, normalized_is_live, normalized_broker]
+    query = '''
+        UPDATE broker_credentials
+        SET is_active = 0, updated_at = ?
+        WHERE user_id = ?
+          AND is_active = 1
+          AND is_live = ?
+          AND LOWER(TRIM(broker_name)) = LOWER(TRIM(?))
+    '''
+    if keep_credential_id:
+        query += ' AND credential_id != ?'
+        params.append(keep_credential_id)
+
+    cursor.execute(query, tuple(params))
+    return cursor.rowcount or 0
+
 # ==================== MT5 TERMINAL STARTUP TRACKER ====================
 # Prevents duplicate MT5 terminal launches for the same configured path
 mt5_terminal_paths_started = set()
@@ -8039,13 +8096,35 @@ def get_account_balances():
 
         raw_credentials = [dict(row) for row in cursor.fetchall()]
         deduped_credentials = {}
+        duplicate_credential_ids = []
         for row in raw_credentials:
             broker_name = canonicalize_broker_name(row['broker_name'])
             account_number = str(row['account_number'] or '').strip()
             normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, row['is_live'], row.get('server')))
-            dedupe_key = (broker_name, account_number, normalized_is_live)
+            if broker_uses_single_mode_slot(broker_name):
+                dedupe_key = (broker_name, normalized_is_live)
+            else:
+                dedupe_key = (broker_name, account_number, normalized_is_live)
             if dedupe_key not in deduped_credentials:
                 deduped_credentials[dedupe_key] = row
+            elif broker_uses_single_mode_slot(broker_name):
+                duplicate_credential_ids.append(row['credential_id'])
+
+        if duplicate_credential_ids:
+            placeholders = ','.join('?' for _ in duplicate_credential_ids)
+            cursor.execute(
+                f'''
+                    UPDATE broker_credentials
+                    SET is_active = 0, updated_at = ?
+                    WHERE credential_id IN ({placeholders})
+                ''',
+                (datetime.now().isoformat(), *duplicate_credential_ids),
+            )
+            conn.commit()
+            logger.warning(
+                f"Deactivated {len(duplicate_credential_ids)} duplicate Exness credential(s) for user {user_id} "
+                f"to enforce one live slot and one demo slot."
+            )
 
         credentials = list(deduped_credentials.values())
         
@@ -8105,6 +8184,7 @@ def get_account_balances():
             account_info = None
             error_msg = None
             timed_out = False
+            failed_auth_status = get_failed_auth_status(account_num) if broker_name in ['Exness', 'XM', 'XM Global', 'PXBT'] else None
             
             try:
                 if broker_name in ['Exness', 'XM', 'XM Global', 'PXBT']:
@@ -8346,31 +8426,39 @@ def get_account_balances():
                 cache_source = 'not_connected'
                 cache_snapshot_age = None
                 sqlite_cache_used = False
+                suppress_cached_balance = bool(is_live and failed_auth_status)
+
+                if suppress_cached_balance:
+                    logger.warning(
+                        f"🚫 Suppressing cached balance for {cache_key}: account is in auth cooldown "
+                        f"({failed_auth_status['remaining']:.0f}s remaining)"
+                    )
                 
                 # Check in-memory cache (populated by bot trading loops)
-                with balance_cache_lock:
-                    if cache_key in balance_cache:
-                        cached_info = balance_cache[cache_key]
-                        cache_snapshot_age = _cache_snapshot_age_seconds(cached_info.get('timestamp'))
-                        # Enforce TTL: skip stale in-memory cache entries
-                        ttl = BALANCE_CACHE_TTL_LIVE if is_live else BALANCE_CACHE_TTL_DEMO
-                        if cache_snapshot_age is not None and cache_snapshot_age > ttl:
-                            logger.info(f"⏳ Balance cache EXPIRED for {cache_key}: {cache_snapshot_age:.0f}s old (TTL={ttl}s)")
-                        else:
-                            cached_balance = cached_info.get('balance', 0)
-                            cached_equity = cached_info.get('equity', cached_balance)
-                            cached_margin = cached_info.get('margin', 0)
-                            cached_margin_free = cached_info.get('marginFree', 0)
-                            cached_margin_level = cached_info.get('margin_level', 0)
-                            cached_profit = cached_info.get('total_pl', 0)
-                            # Use cache currency if available, otherwise use database account_currency
-                            if (not is_live) and 'currency' in cached_info:
-                                cached_currency = cached_info['currency']
-                            cache_source = 'memory_cache'
-                            logger.info(f"✅ Balance cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={cache_snapshot_age:.0f}s)")
+                if not suppress_cached_balance:
+                    with balance_cache_lock:
+                        if cache_key in balance_cache:
+                            cached_info = balance_cache[cache_key]
+                            cache_snapshot_age = _cache_snapshot_age_seconds(cached_info.get('timestamp'))
+                            # Enforce TTL: skip stale in-memory cache entries
+                            ttl = BALANCE_CACHE_TTL_LIVE if is_live else BALANCE_CACHE_TTL_DEMO
+                            if cache_snapshot_age is not None and cache_snapshot_age > ttl:
+                                logger.info(f"⏳ Balance cache EXPIRED for {cache_key}: {cache_snapshot_age:.0f}s old (TTL={ttl}s)")
+                            else:
+                                cached_balance = cached_info.get('balance', 0)
+                                cached_equity = cached_info.get('equity', cached_balance)
+                                cached_margin = cached_info.get('margin', 0)
+                                cached_margin_free = cached_info.get('marginFree', 0)
+                                cached_margin_level = cached_info.get('margin_level', 0)
+                                cached_profit = cached_info.get('total_pl', 0)
+                                # Use cache currency if available, otherwise use database account_currency
+                                if (not is_live) and 'currency' in cached_info:
+                                    cached_currency = cached_info['currency']
+                                cache_source = 'memory_cache'
+                                logger.info(f"✅ Balance cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={cache_snapshot_age:.0f}s)")
                 
                 # Fallback: try SQLite cached_balance column
-                if cached_balance == 0 and cred['credential_id'] in cached_data:
+                if (not suppress_cached_balance) and cached_balance == 0 and cred['credential_id'] in cached_data:
                     cache = dict(cached_data[cred['credential_id']])
                     sqlite_age = _cache_snapshot_age_seconds(cache.get('last_update'))
                     sqlite_ttl = BALANCE_CACHE_TTL_LIVE if is_live else BALANCE_CACHE_TTL_DEMO
@@ -8427,7 +8515,14 @@ def get_account_balances():
                     if cache_source == 'sqlite_cache':
                         account_entry['warning'] = 'Showing cached snapshot only. Open this mode or run a bot to refresh the balance.'
                 else:
-                    account_entry['warning'] = 'Account not connected — balance will update when bot runs'
+                    if failed_auth_status and is_live:
+                        account_entry['warning'] = (
+                            f"Account authentication failed recently — cached balance hidden for "
+                            f"{int(failed_auth_status['remaining'])}s"
+                        )
+                        account_entry['error'] = 'Authentication failed for this account. Check account number, password, and server.'
+                    else:
+                        account_entry['warning'] = 'Account not connected — balance will update when bot runs'
                 
                 # Add to broker group
                 if broker_name not in accounts_summary['brokers']:
@@ -25343,7 +25438,7 @@ def add_broker_credentials(user_id):
     """Add broker credentials for a user"""
     try:
         data = request.get_json()
-        broker_name = data.get('broker_name')
+        broker_name = canonicalize_broker_name(data.get('broker_name'))
         account_number = data.get('account_number')
         password = data.get('password')
         server = data.get('server')
@@ -25362,15 +25457,42 @@ def add_broker_credentials(user_id):
             conn.close()
             return jsonify({'success': False, 'error': 'User not found'}), 404
         
-        # Insert broker credentials
-        credential_id = str(uuid.uuid4())
         created_at = datetime.now().isoformat()
-        
-        cursor.execute('''
-            INSERT INTO broker_credentials 
-            (credential_id, user_id, broker_name, account_number, password, server, is_live, mt5_terminal_path, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (credential_id, user_id, broker_name, account_number, password, server, is_live, mt5_terminal_path, created_at, created_at))
+        normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, is_live, server))
+
+        if broker_uses_single_mode_slot(broker_name):
+            cursor.execute('''
+                SELECT credential_id FROM broker_credentials
+                WHERE user_id = ?
+                  AND is_live = ?
+                  AND LOWER(TRIM(broker_name)) = LOWER(TRIM(?))
+                ORDER BY COALESCE(updated_at, created_at, '') DESC, credential_id DESC
+                LIMIT 1
+            ''', (user_id, normalized_is_live, broker_name))
+            existing = cursor.fetchone()
+            if existing:
+                credential_id = existing['credential_id'] if isinstance(existing, sqlite3.Row) else existing[0]
+                deactivate_conflicting_broker_credentials(cursor, user_id, broker_name, normalized_is_live, keep_credential_id=credential_id)
+                cursor.execute('''
+                    UPDATE broker_credentials
+                    SET broker_name = ?, account_number = ?, password = ?, server = ?,
+                        is_live = ?, is_active = 1, mt5_terminal_path = ?, updated_at = ?
+                    WHERE credential_id = ?
+                ''', (broker_name, account_number, password, server, normalized_is_live, mt5_terminal_path, created_at, credential_id))
+            else:
+                credential_id = str(uuid.uuid4())
+                cursor.execute('''
+                    INSERT INTO broker_credentials 
+                    (credential_id, user_id, broker_name, account_number, password, server, is_live, mt5_terminal_path, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, mt5_terminal_path, created_at, created_at))
+        else:
+            credential_id = str(uuid.uuid4())
+            cursor.execute('''
+                INSERT INTO broker_credentials 
+                (credential_id, user_id, broker_name, account_number, password, server, is_live, mt5_terminal_path, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, mt5_terminal_path, created_at, created_at))
         
         conn.commit()
         conn.close()
@@ -26996,7 +27118,7 @@ def add_user_broker():
         user_id = request.user_id
         data = request.get_json()
         
-        broker_name = data.get('broker_name', '').strip()
+        broker_name = canonicalize_broker_name(data.get('broker_name', '').strip())
         account_number = data.get('account_number', '').strip()
         password = data.get('password', '').strip()
         server = data.get('server', 'MetaQuotes-Demo').strip()
@@ -27008,23 +27130,51 @@ def add_user_broker():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Check if already exists
-        cursor.execute('''
-            SELECT credential_id FROM broker_credentials
-            WHERE user_id = ? AND account_number = ? AND broker_name = ?
-        ''', (user_id, account_number, broker_name))
-        
-        if cursor.fetchone():
-            conn.close()
-            return jsonify({'success': False, 'error': 'Broker credential already exists'}), 409
-        
-        credential_id = str(uuid.uuid4())
-        
-        cursor.execute('''
-            INSERT INTO broker_credentials 
-            (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-        ''', (credential_id, user_id, broker_name, account_number, password, server, is_live, datetime.now().isoformat()))
+        normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, is_live, server))
+
+        if broker_uses_single_mode_slot(broker_name):
+            cursor.execute('''
+                SELECT credential_id FROM broker_credentials
+                WHERE user_id = ? AND is_live = ? AND LOWER(TRIM(broker_name)) = LOWER(TRIM(?))
+                ORDER BY COALESCE(updated_at, created_at, '') DESC, credential_id DESC
+                LIMIT 1
+            ''', (user_id, normalized_is_live, broker_name))
+            existing = cursor.fetchone()
+            now_iso = datetime.now().isoformat()
+            if existing:
+                credential_id = existing['credential_id'] if isinstance(existing, sqlite3.Row) else existing[0]
+                deactivate_conflicting_broker_credentials(cursor, user_id, broker_name, normalized_is_live, keep_credential_id=credential_id)
+                cursor.execute('''
+                    UPDATE broker_credentials
+                    SET broker_name = ?, account_number = ?, password = ?, server = ?,
+                        is_live = ?, is_active = 1, updated_at = ?
+                    WHERE credential_id = ?
+                ''', (broker_name, account_number, password, server, normalized_is_live, now_iso, credential_id))
+            else:
+                credential_id = str(uuid.uuid4())
+                cursor.execute('''
+                    INSERT INTO broker_credentials 
+                    (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, now_iso, now_iso))
+        else:
+            # Check if already exists
+            cursor.execute('''
+                SELECT credential_id FROM broker_credentials
+                WHERE user_id = ? AND account_number = ? AND broker_name = ?
+            ''', (user_id, account_number, broker_name))
+            
+            if cursor.fetchone():
+                conn.close()
+                return jsonify({'success': False, 'error': 'Broker credential already exists'}), 409
+            
+            credential_id = str(uuid.uuid4())
+            
+            cursor.execute('''
+                INSERT INTO broker_credentials 
+                (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, datetime.now().isoformat(), datetime.now().isoformat()))
         
         conn.commit()
         conn.close()

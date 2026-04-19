@@ -585,10 +585,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _loadPreferredBrokerDisplay() async {
     final prefs = await SharedPreferences.getInstance();
     final selected = prefs.getString('preferred_broker_display') ?? prefs.getString('broker') ?? 'Exness';
-    final savedReportingCurrency = _normalizeCurrency(
-      prefs.getString('reporting_currency') ??
-          ((prefs.getString('trading_mode') ?? 'DEMO').toUpperCase() == 'LIVE' ? 'ZAR' : 'USD'),
-    );
+    final savedReportingCurrency = _normalizeCurrency(prefs.getString('reporting_currency') ?? 'USD');
     if (!mounted) {
       return;
     }
