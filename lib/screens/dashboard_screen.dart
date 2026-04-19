@@ -227,14 +227,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   String _botCurrency(Map<String, dynamic> bot) {
     final rawCurrency = bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
-    if ((rawCurrency == null || rawCurrency.toString().trim().isEmpty) && _isLiveBot(bot)) {
-      return 'ZAR';
-    }
-    final normalized = _normalizeCurrency(rawCurrency);
-    if (_isLiveBot(bot) && normalized == 'USD' && bot['displayCurrency'] == null) {
-      return 'ZAR';
-    }
-    return normalized;
+    return _normalizeCurrency(rawCurrency);
   }
 
   Map<String, double> _aggregateAccountBalances(Iterable<Map<String, dynamic>> accounts) {
@@ -288,6 +281,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (lower == 'oanda') return 'OANDA';
     if (lower == 'ig markets' || lower == 'ig') return 'IG';
     return raw;
+  }
+
+  IconData _brokerIcon(String broker) {
+    switch (_normalizeBrokerDisplayName(broker).toLowerCase()) {
+      case 'exness':
+        return Icons.show_chart;
+      case 'fxcm':
+        return Icons.currency_exchange;
+      case 'binance':
+        return Icons.diamond;
+      case 'oanda':
+        return Icons.water_drop;
+      case 'ig':
+        return Icons.bar_chart;
+      case 'pxbt':
+        return Icons.bolt;
+      default:
+        return Icons.account_balance_wallet;
+    }
+  }
+
+  Color _brokerAccentColor(String broker) {
+    switch (_normalizeBrokerDisplayName(broker).toLowerCase()) {
+      case 'exness':
+        return const Color(0xFF00E5FF);
+      case 'fxcm':
+        return const Color(0xFF7C4DFF);
+      case 'binance':
+        return const Color(0xFFF0B90B);
+      case 'oanda':
+        return const Color(0xFF4CAF50);
+      case 'ig':
+        return const Color(0xFFFF5252);
+      case 'pxbt':
+        return const Color(0xFFFF6D00);
+      default:
+        return const Color(0xFF00E5FF);
+    }
+  }
+
+  String _formatAge(int seconds) {
+    if (seconds < 60) return '${seconds}s';
+    if (seconds < 3600) return '${seconds ~/ 60}m';
+    if (seconds < 86400) return '${seconds ~/ 3600}h ${(seconds % 3600) ~/ 60}m';
+    return '${seconds ~/ 86400}d';
   }
 
   Widget _buildDashboardSelectorPill({
@@ -800,8 +838,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return const SizedBox.shrink();
     }
 
-    final brokerOptions = <String>{'All', 'Exness', 'Binance', 'FXCM'};
-    for (final account in allConnectedAccounts) {
+    final brokerOptions = <String>{'All'};
+    // Add brokers from ALL accounts (not just connected), so FXCM/OANDA always appear
+    for (final account in _brokerAccounts) {
       final broker = _normalizeBrokerDisplayName((account['broker'] ?? '').toString());
       if (broker.isNotEmpty) {
         brokerOptions.add(broker);
@@ -814,8 +853,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       : (brokerOptions.contains(_preferredBrokerDisplay) ? _preferredBrokerDisplay : 'All');
 
     final selectedAccounts = selectedBrokerFilter == 'All'
-        ? allConnectedAccounts
-        : allConnectedAccounts
+        ? _applyPortfolioBrokerFilter(_filteredBrokerAccounts())
+        : _filteredBrokerAccounts()
         .where((account) => _normalizeBrokerDisplayName((account['broker'] ?? '').toString()).toLowerCase() == selectedBrokerFilter.toLowerCase())
             .toList();
 
@@ -941,6 +980,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             0,
             (sum, withdrawal) => sum + ((withdrawal['amount'] as num?)?.toDouble() ?? 0),
           );
+          final dataSource = (connected['dataSource'] ?? '').toString();
+          final isStale = dataSource == 'stale_cache';
+          final isNotConnected = dataSource == 'not_connected';
+          final cacheAgeSeconds = (connected['cacheAgeSeconds'] as num?)?.toInt();
+          final warningMsg = (connected['warning'] ?? '').toString();
+          final lastKnownBalance = (connected['lastKnownBalance'] as num?)?.toDouble();
+          final lastKnownCurrency = (connected['lastKnownCurrency'] ?? currency).toString();
           return Padding(
             padding: EdgeInsets.only(bottom: entry.key == selectedAccounts.length - 1 ? 0 : 16),
             child: _glassCard(
@@ -961,20 +1007,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         width: 48,
                         height: 48,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF00E5FF).withOpacity(0.15),
+                          color: _brokerAccentColor(broker.toString()).withOpacity(0.15),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(Icons.account_balance_wallet, color: Color(0xFF00E5FF), size: 28),
+                        child: Icon(_brokerIcon(broker.toString()), color: _brokerAccentColor(broker.toString()), size: 28),
                       ),
                       const SizedBox(width: 14),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    isStale ? '$broker (Stale)' : isNotConnected ? '$broker (Offline)' : 'Connected to $broker',
+                                    style: GoogleFonts.poppins(
+                                      color: isStale ? const Color(0xFFFFB74D) : isNotConnected ? Colors.white38 : Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                if (isStale) ...[
+                                  const SizedBox(width: 6),
+                                  const Icon(Icons.warning_amber_rounded, color: Color(0xFFFFB74D), size: 18),
+                                ],
+                              ],
+                            ),
                             Text(
-                              'Connected to $broker',
-                              style: GoogleFonts.poppins(
-                                color: Colors.white,
                                 fontSize: 16,
                                 fontWeight: FontWeight.w600,
                               ),
@@ -1007,6 +1068,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                   const SizedBox(height: 18),
+                  // ── Staleness / Cache Warning Banner ──
+                  if (isStale || isNotConnected || warningMsg.isNotEmpty) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: (isStale ? const Color(0xFFFFB74D) : const Color(0xFF78909C)).withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: (isStale ? const Color(0xFFFFB74D) : const Color(0xFF78909C)).withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isStale ? Icons.access_time : Icons.cloud_off,
+                            color: isStale ? const Color(0xFFFFB74D) : const Color(0xFF78909C),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  isStale
+                                      ? 'Stale data${cacheAgeSeconds != null ? ' (${_formatAge(cacheAgeSeconds)} old)' : ''}'
+                                      : 'Not connected',
+                                  style: GoogleFonts.poppins(
+                                    color: isStale ? const Color(0xFFFFB74D) : const Color(0xFF78909C),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                if (isStale && lastKnownBalance != null && lastKnownBalance > 0)
+                                  Text(
+                                    'Last known: ${_formatCurrencyAmount(lastKnownBalance, lastKnownCurrency)}',
+                                    style: GoogleFonts.poppins(color: Colors.white38, fontSize: 10),
+                                  ),
+                                if (warningMsg.isNotEmpty)
+                                  Text(
+                                    warningMsg,
+                                    style: GoogleFonts.poppins(color: Colors.white38, fontSize: 10),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   // Grid of account metrics (2x3)
                   GridView.count(
                     crossAxisCount: 2,
@@ -2233,6 +2345,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final error = account['error']?.toString();
             final warning = account['warning']?.toString();
             final acctCurrency = (account['currency'] as String? ?? 'USD').toUpperCase();
+            final dataSource = (account['dataSource'] ?? '').toString();
+            final isStale = dataSource == 'stale_cache';
+            final isNotConn = dataSource == 'not_connected';
+            final brokerColor = _brokerAccentColor(broker);
 
             return Container(
               margin: const EdgeInsets.only(bottom: 10),
@@ -2240,20 +2356,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.04),
                 borderRadius: BorderRadius.circular(12),
+                border: isStale
+                    ? Border.all(color: const Color(0xFFFFB74D).withOpacity(0.3))
+                    : null,
               ),
               child: Row(
                 children: [
                   Container(
                     width: 40, height: 40,
                     decoration: BoxDecoration(
-                      color: (connected || balance > 0)
-                          ? const Color(0xFF69F0AE).withOpacity(0.15)
-                          : const Color(0xFFFF8A80).withOpacity(0.15),
+                      color: isStale
+                          ? const Color(0xFFFFB74D).withOpacity(0.15)
+                          : (connected || balance > 0)
+                              ? brokerColor.withOpacity(0.15)
+                              : const Color(0xFFFF8A80).withOpacity(0.15),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Icon(
-                      (connected || balance > 0) ? Icons.account_balance_wallet : Icons.error_outline,
-                      color: (connected || balance > 0) ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                      isStale
+                          ? Icons.access_time
+                          : (connected || balance > 0) ? _brokerIcon(broker) : Icons.error_outline,
+                      color: isStale
+                          ? const Color(0xFFFFB74D)
+                          : (connected || balance > 0) ? brokerColor : const Color(0xFFFF8A80),
                       size: 20,
                     ),
                   ),
@@ -2300,10 +2425,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(_formatReportedAmount(balance, acctCurrency),
-                          style: GoogleFonts.poppins(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                          style: GoogleFonts.poppins(
+                            color: isStale ? const Color(0xFFFFB74D) : Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         Text('Equity: ${_formatReportedAmount(equity, acctCurrency)}',
                           style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10)),
+                        if (isStale)
+                          Text('STALE', style: GoogleFonts.poppins(color: const Color(0xFFFFB74D), fontSize: 9, fontWeight: FontWeight.w700)),
                       ],
                     ),
                 ],
