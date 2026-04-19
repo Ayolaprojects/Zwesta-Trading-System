@@ -540,6 +540,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (totals.isEmpty) {
       return _formatCurrencyAmount(0, target, decimals: decimals);
     }
+    if (totals.length == 1) {
+      final entry = totals.entries.first;
+      final currency = _normalizeCurrency(entry.key);
+      return _formatCurrencyAmount(entry.value, currency, decimals: decimals);
+    }
     final convertedTotal = totals.entries.fold<double>(
       0.0,
       (sum, entry) => sum + _convertAmount(entry.value, entry.key, target),
