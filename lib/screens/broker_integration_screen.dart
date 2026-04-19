@@ -991,7 +991,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Enter your FXCM Login ID and Password to connect. These are the same credentials you use to log into FXCM Trading Station.',
+                    'Enter your FXCM Login ID and API Access Token.\n\nTo get your API token:\n1. Log into FXCM Trading Station\n2. Go to Settings (gear icon)\n3. Click "Generate API Token"\n4. Copy and paste the token below',
                     style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: Colors.white70,
@@ -1033,16 +1033,15 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
             ),
             const SizedBox(height: 24),
 
-            Text('Password', style: Theme.of(context).textTheme.titleMedium),
+            Text('API Access Token', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             TextField(
-              controller: _passwordController,
-              obscureText: true,
+              controller: _apiKeyController,
               decoration: const InputDecoration(
-                labelText: 'FXCM Password',
+                labelText: 'FXCM API Token',
                 border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.lock),
-                hintText: 'Your Trading Station password',
+                prefixIcon: Icon(Icons.vpn_key),
+                hintText: 'Paste token from Trading Station Settings',
               ),
             ),
             const SizedBox(height: 24),
@@ -1458,7 +1457,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       : _isOandaBroker
                           ? '1. Go to oanda.com → My Account → Manage API Access\n2. Click "Generate" to create a Personal Access Token\n3. Copy the full token (shown once — save it!)\n4. Find your Account ID on the OANDA dashboard\n   (format: 001-001-XXXXXXX-001)\n5. Choose DEMO (fxpractice) or LIVE (fxtrade) mode'
                       : _isFxcmBroker
-                          ? '1. Use your FXCM Login ID (e.g. D291208899)\n2. Enter your FXCM password\n3. Select DEMO or LIVE to match your account\n4. That\'s it — we connect automatically'
+                          ? '1. Log into FXCM Trading Station (web or desktop)\n2. Go to Settings (gear icon)\n3. Click "Generate API Token"\n4. Copy the token and paste it below\n5. Enter your Login ID (e.g. D291208899)\n6. Select DEMO or LIVE to match your account'
                           : '1. Open your MetaTrader 5 terminal\n2. Login with your broker account\n3. Your account number appears at the top\n4. Use your MT5 login password\n5. Server will auto-populate',
                   style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
@@ -1488,7 +1487,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       Text(
                         _isBinanceBroker
                             ? 'Secret: paste this client\'s Binance API secret'
-                            : (_isFxcmBroker ? 'Password: your FXCM password' : 'Password: demo123'),
+                            : (_isFxcmBroker ? 'API Token: paste from Trading Station Settings' : 'Password: demo123'),
                         style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                       ),
                     ],

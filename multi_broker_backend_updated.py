@@ -5107,20 +5107,15 @@ class FXCMConnection(BrokerConnection):
 
     def connect(self) -> bool:
         try:
-            # Strategy 1: API token-based REST auth
-            if self.credentials.get('api_key'):
-                payload = self._request('GET', '/trading/get_model', params={'models': 'Account'}, timeout=15)
-                if payload:
-                    self.connected = True
-                    self.get_account_info()
-                    return True
-
-            # Strategy 2: Socket.IO REST handshake (primary method for demo/password accounts)
-            if self.credentials.get('password') or self.credentials.get('api_key'):
+            # Strategy 1: Socket.IO REST handshake (primary method for all FXCM accounts)
+            # FXCM REST API REQUIRES Socket.IO handshake first to obtain a session token.
+            # The access_token (from FXCM Trading Station) is passed in the handshake URL.
+            token = self.credentials.get('api_key') or self.credentials.get('password')
+            if token:
                 if self._connect_socketio_rest():
                     return True
 
-            # Strategy 3: ForexConnect desktop SDK (only if explicitly installed)
+            # Strategy 2: ForexConnect desktop SDK (only if explicitly installed)
             if self._has_forexconnect_credentials():
                 if self._login_forexconnect():
                     return True
@@ -5128,7 +5123,12 @@ class FXCMConnection(BrokerConnection):
                 if 'ForexConnect is not installed' in (self.last_error or ''):
                     self.last_error = ''
 
-            self.last_error = self.last_error or 'All FXCM authentication strategies failed. Check your credentials.'
+            self.last_error = self.last_error or (
+                'FXCM authentication failed. '
+                'Make sure you are using a valid FXCM API Access Token '
+                '(generate one from FXCM Trading Station > Settings > API Token). '
+                'The API token is NOT your account password.'
+            )
             logger.error(f'[FXCM] {self.last_error}')
             return False
         except Exception as e:
@@ -15883,14 +15883,16 @@ def test_broker_connection():
         elif broker == 'FXCM':
             login_id = data.get('username') or data.get('login_id') or data.get('account_number')
             password = data.get('password')
-            token = data.get('token') or data.get('api_key')
+            token = data.get('token') or data.get('api_key') or data.get('api_token')
             account_id = data.get('account_number') or login_id or 'FXCM'
-            if not ((login_id and password) or token):
-                return jsonify({'success': False, 'error': 'Missing FXCM fields: provide Login ID and Password'}), 400
+            if not (token or (login_id and password)):
+                return jsonify({'success': False, 'error': 'Missing FXCM fields: provide your FXCM API Access Token (from Trading Station > Settings)'}), 400
 
-            # For FXCM REST API: the password IS the access token for Socket.IO auth
+            # FXCM REST API uses the API Access Token for Socket.IO handshake.
+            # The token is NOT the account password — it's generated in FXCM Trading Station.
+            api_token = token or password  # Allow password field as fallback
             fxcm_conn = FXCMConnection(credentials={
-                'api_key': token or password,
+                'api_key': api_token,
                 'username': login_id,
                 'password': password,
                 'fxcm_login_mode': 'rest',
@@ -16046,7 +16048,7 @@ def test_broker_connection():
                     'server': server,
                     'is_live': is_live,
                     'is_manual_test': True,
-                    'lock_timeout': 2.5,
+                    'lock_timeout': 35,
                 })
 
                 if quick_test_conn.connect():

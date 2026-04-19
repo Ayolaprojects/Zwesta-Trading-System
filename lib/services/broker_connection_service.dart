@@ -134,7 +134,7 @@ class BrokerConnectionService {
       final isExness = normalizedBroker.contains('exness');
       final timeout = isExness
           ? const Duration(
-            seconds: 20) // Exness test should now complete quickly
+            seconds: 45) // Exness MT5 can take 30s+ when terminal is busy
           : const Duration(seconds: 45); // Other brokers need reasonable time
 
       final response = await http
