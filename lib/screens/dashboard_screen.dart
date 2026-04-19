@@ -219,12 +219,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return _normalizeCurrency(account['currency'] ?? account['account_currency']);
   }
 
-  bool _isLiveBot(Map<String, dynamic> bot) {
-    final mode = bot['mode']?.toString().trim().toLowerCase();
-    if (mode == 'live' || mode == 'real') return true;
-    return bot['is_live'] == true;
-  }
-
   String _botCurrency(Map<String, dynamic> bot) {
     final rawCurrency = bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
     return _normalizeCurrency(rawCurrency);
@@ -1034,11 +1028,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   const Icon(Icons.warning_amber_rounded, color: Color(0xFFFFB74D), size: 18),
                                 ],
                               ],
-                            ),
-                            Text(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
                             ),
                             Text(
                               'Account #$accountNum',
@@ -2347,7 +2336,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final acctCurrency = (account['currency'] as String? ?? 'USD').toUpperCase();
             final dataSource = (account['dataSource'] ?? '').toString();
             final isStale = dataSource == 'stale_cache';
-            final isNotConn = dataSource == 'not_connected';
             final brokerColor = _brokerAccentColor(broker);
 
             return Container(

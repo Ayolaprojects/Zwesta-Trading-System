@@ -1634,45 +1634,4 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       ],
     );
 
-  /// Helper widget for numbered guide steps
-  Widget _guideStep(String number, String text) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 24,
-            height: 24,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.blue.withOpacity(0.3),
-              border: Border.all(color: Colors.blue.withOpacity(0.6), width: 1.5),
-            ),
-            child: Center(
-              child: Text(
-                number,
-                style: GoogleFonts.poppins(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 11,
-                  color: Colors.blue.shade300,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              text,
-              style: GoogleFonts.poppins(
-                fontSize: 12,
-                color: Colors.white70,
-                height: 1.4,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
