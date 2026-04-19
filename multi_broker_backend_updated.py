@@ -5003,7 +5003,10 @@ class FXCMConnection(BrokerConnection):
         return bool(self.credentials.get('username') and self.credentials.get('password'))
 
     def _forexconnect_url(self) -> str:
-        return self.credentials.get('server') or 'http://www.fxcorporate.com/Hosts.jsp'
+        configured = str(self.credentials.get('server') or '').strip()
+        if configured.lower().startswith(('http://', 'https://')):
+            return configured
+        return 'https://www.fxcorporate.com/Hosts.jsp'
 
     def _forexconnect_connection_name(self) -> str:
         explicit = str(self.credentials.get('connection') or '').strip()
@@ -5337,29 +5340,28 @@ class FXCMConnection(BrokerConnection):
 
     def connect(self) -> bool:
         try:
-            # Strategy 1: Socket.IO REST handshake (primary method for all FXCM accounts)
-            # FXCM REST API REQUIRES Socket.IO handshake first to obtain a session token.
-            # The access_token (from FXCM Trading Station) is passed in the handshake URL.
+            # Strategy 1: ForexConnect SDK with Login ID + Password.
+            # This is the documented FXCM Trading Station path and does not depend on api.fxcm.com DNS.
+            if self._has_forexconnect_credentials():
+                if self._login_forexconnect():
+                    return True
+                forexconnect_error = self.last_error
+            else:
+                forexconnect_error = ''
+
+            # Strategy 2: Socket.IO REST handshake for token-based auth.
+            # FXCM REST API REQUIRES a Socket.IO handshake first to obtain a session token.
             socketio_error = ''
-            token = self.credentials.get('api_key') or self.credentials.get('password')
+            token = self.credentials.get('api_key') or self.credentials.get('token')
             if token:
                 if self._connect_socketio_rest():
                     return True
                 socketio_error = self.last_error
 
-            # Strategy 2: ForexConnect desktop SDK (only if explicitly installed)
-            if self._has_forexconnect_credentials():
-                if self._login_forexconnect():
-                    return True
-                # Clear ForexConnect-specific error so it doesn't confuse users
-                if 'ForexConnect is not installed' in (self.last_error or ''):
-                    self.last_error = socketio_error
-
-            self.last_error = self.last_error or (
+            self.last_error = socketio_error or forexconnect_error or (
                 'FXCM authentication failed. '
-                'Use Login ID + Password for demo connections. '
-                'If your FXCM account requires token auth, use the API token. '
-                'If you need desktop username/password auth on the backend, install ForexConnect.'
+                'Use Login ID + Password with ForexConnect, or use an API token for REST mode. '
+                'If the backend does not have ForexConnect installed, install the official forexconnect package.'
             )
             logger.error(f'[FXCM] {self.last_error}')
             return False

@@ -212,6 +212,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     if (_selectedBroker.toLowerCase() == 'exness') {
       return isLive ? 'Exness-MT5Real27' : 'Exness-MT5Trial9';
     }
+    if (_isFxcmBroker) {
+      return isLive ? 'real' : 'demo';
+    }
     return brokerServers[_selectedBroker] ?? '';
   }
 
