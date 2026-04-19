@@ -31,6 +31,11 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
   final _igRecCtrl = TextEditingController();
   bool _igEnabled = true;
 
+  // FXCM rates
+  final _fxcmDevCtrl = TextEditingController();
+  final _fxcmRecCtrl = TextEditingController();
+  bool _fxcmEnabled = true;
+
   // Multi-tier
   bool _multiTier = false;
   final _tier2Ctrl = TextEditingController();
@@ -52,6 +57,8 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
     _recruiterCtrl.dispose();
     _igDevCtrl.dispose();
     _igRecCtrl.dispose();
+    _fxcmDevCtrl.dispose();
+    _fxcmRecCtrl.dispose();
     _tier2Ctrl.dispose();
     _previewAmountCtrl.dispose();
     super.dispose();
@@ -59,11 +66,17 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
 
   String get _apiUrl => EnvironmentConfig.apiUrl;
 
+  Map<String, String> get _adminHeaders => {
+    ...EnvironmentConfig.getHeaders(),
+    'Content-Type': 'application/json',
+  };
+
   Future<void> _loadConfig() async {
     setState(() { _loading = true; _error = null; });
     try {
       final resp = await http.get(
         Uri.parse('$_apiUrl/api/admin/commission-config'),
+        headers: _adminHeaders,
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) {
@@ -76,6 +89,9 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
           _igDevCtrl.text = ((_config['ig_developer_rate'] ?? 0.20) * 100).toStringAsFixed(1);
           _igRecCtrl.text = ((_config['ig_recruiter_rate'] ?? 0.05) * 100).toStringAsFixed(1);
           _igEnabled = (_config['ig_commission_enabled'] ?? 1) == 1;
+          _fxcmDevCtrl.text = ((_config['fxcm_developer_rate'] ?? 0.20) * 100).toStringAsFixed(1);
+          _fxcmRecCtrl.text = ((_config['fxcm_recruiter_rate'] ?? 0.05) * 100).toStringAsFixed(1);
+          _fxcmEnabled = (_config['fxcm_commission_enabled'] ?? 1) == 1;
           _multiTier = (_config['multi_tier_enabled'] ?? 0) == 1;
           _tier2Ctrl.text = ((_config['tier2_rate'] ?? 0.02) * 100).toStringAsFixed(1);
         }
@@ -96,13 +112,16 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
         'ig_developer_rate': (double.tryParse(_igDevCtrl.text) ?? 20) / 100,
         'ig_recruiter_rate': (double.tryParse(_igRecCtrl.text) ?? 5) / 100,
         'ig_commission_enabled': _igEnabled ? 1 : 0,
+        'fxcm_developer_rate': (double.tryParse(_fxcmDevCtrl.text) ?? 20) / 100,
+        'fxcm_recruiter_rate': (double.tryParse(_fxcmRecCtrl.text) ?? 5) / 100,
+        'fxcm_commission_enabled': _fxcmEnabled ? 1 : 0,
         'multi_tier_enabled': _multiTier ? 1 : 0,
         'tier2_rate': (double.tryParse(_tier2Ctrl.text) ?? 2) / 100,
       };
 
       final resp = await http.post(
         Uri.parse('$_apiUrl/api/admin/commission-config'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _adminHeaders,
         body: jsonEncode(body),
       ).timeout(const Duration(seconds: 10));
 
@@ -124,7 +143,7 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
       final profit = double.tryParse(_previewAmountCtrl.text) ?? 1000;
       final resp = await http.post(
         Uri.parse('$_apiUrl/api/admin/commission-config/preview'),
-        headers: {'Content-Type': 'application/json'},
+        headers: _adminHeaders,
         body: jsonEncode({
           'profit_amount': profit,
           'has_referrer': hasReferrer,
@@ -184,6 +203,16 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
                   _rateRow('IG Developer Rate', _igDevCtrl, 'Developer % on IG profits'),
                   const SizedBox(height: 10),
                   _rateRow('IG Recruiter Rate', _igRecCtrl, 'Recruiter % on IG profits'),
+
+                  const SizedBox(height: 24),
+
+                  _sectionHeader('FXCM Rates', Icons.bar_chart, const Color(0xFF7C4DFF)),
+                  const SizedBox(height: 12),
+                  _toggleRow('FXCM Commission Enabled', _fxcmEnabled, (v) => setState(() => _fxcmEnabled = v)),
+                  const SizedBox(height: 10),
+                  _rateRow('FXCM Developer Rate', _fxcmDevCtrl, 'Developer % on FXCM profits'),
+                  const SizedBox(height: 10),
+                  _rateRow('FXCM Recruiter Rate', _fxcmRecCtrl, 'Recruiter % on FXCM profits'),
 
                   const SizedBox(height: 24),
 
@@ -356,6 +385,18 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _previewButton('FXCM (Referred)', () => _runPreview(source: 'FXCM', hasReferrer: true)),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _previewButton('FXCM (Direct)', () => _runPreview(source: 'FXCM', hasReferrer: false)),
+              ),
+            ],
+          ),
           if (_preview != null) ...[
             const SizedBox(height: 16),
             _buildPreviewResult(),
@@ -396,11 +437,19 @@ class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: source == 'IG' ? Colors.orange.withOpacity(0.2) : const Color(0xFF00E5FF).withOpacity(0.2),
+                  color: source == 'IG'
+                      ? Colors.orange.withOpacity(0.2)
+                      : source == 'FXCM'
+                          ? const Color(0xFF7C4DFF).withOpacity(0.2)
+                          : const Color(0xFF00E5FF).withOpacity(0.2),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(source, style: GoogleFonts.poppins(
-                  color: source == 'IG' ? Colors.orangeAccent : const Color(0xFF00E5FF),
+                  color: source == 'IG'
+                      ? Colors.orangeAccent
+                      : source == 'FXCM'
+                          ? const Color(0xFFB388FF)
+                          : const Color(0xFF00E5FF),
                   fontSize: 11, fontWeight: FontWeight.bold)),
               ),
               const SizedBox(width: 8),

@@ -259,7 +259,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     final missingIg = _isIgBroker && (_apiKeyController.text.isEmpty || _usernameController.text.isEmpty || _passwordController.text.isEmpty || _accountController.text.isEmpty);
     final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
     final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
-    final missingFxcm = _isFxcmBroker && _apiKeyController.text.isEmpty;
+    final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
+    final hasFxcmToken = _apiKeyController.text.isNotEmpty;
+    final missingFxcm = _isFxcmBroker && !hasFxcmUsernamePassword && !hasFxcmToken;
 
     if (missingMt5 || missingIg || missingBinance || missingOanda || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -471,7 +473,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       final result = await BrokerConnectionService.testConnection(
         broker: _selectedBroker,
         accountNumber: _accountController.text,
-        password: (_isOandaBroker || _isFxcmBroker) ? '' : _passwordController.text,
+        password: _isOandaBroker ? '' : _passwordController.text,
         server: _serverController.text,
         apiKey: (_isIgBroker || _isBinanceBroker || _isOandaBroker || _isFxcmBroker)
             ? (_apiKeyController.text.isEmpty ? null : _apiKeyController.text)
@@ -823,7 +825,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 : _isOandaBroker
                     ? 'OANDA API Connection'
                 : _isFxcmBroker
-                  ? 'FXCM API Connection'
+                  ? 'FXCM Connection'
                     : _isIgBroker
                         ? 'IG Markets API Connection'
                         : 'MT5 Broker Connection',
@@ -836,7 +838,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 : _isOandaBroker
                     ? 'Connect your OANDA account — trade Forex, Gold, Oil and Indices'
                 : _isFxcmBroker
-                  ? 'Connect your FXCM account via REST API token (no MT5 terminal needed)'
+                  ? 'Connect your FXCM Trading Station account for dashboards and account analytics'
                     : _isIgBroker
                         ? 'Connect your IG Markets account with the official API credentials'
                         : 'Connect your MetaTrader 5 account for automated trading',
@@ -1009,7 +1011,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '🌐 FXCM REST API Connection',
+                    '🌐 FXCM Trading Station Connection',
                     style: GoogleFonts.poppins(
                       fontWeight: FontWeight.w700,
                       fontSize: 14,
@@ -1018,7 +1020,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'FXCM uses a REST API token for secure connectivity. No MT5 terminal installation required.',
+                    'Use your FXCM Trading Station username and password for the easiest client onboarding. API token login remains available as a fallback.',
                     style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: Colors.white70,
@@ -1047,59 +1049,63 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
               ),
             ),
             
-            // How to Get API Token Instructions
-            Text('Getting Your API Token', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.withOpacity(0.2)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _guideStep('1', 'Log in to your FXCM trading account at my.fxcm.com'),
-                  _guideStep('2', 'Navigate to Settings → API Authentication'),
-                  _guideStep('3', 'Generate a new API token (or copy existing one)'),
-                  _guideStep('4', 'Copy the full token and paste it below'),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-            
-            // API Token Input
-            Text('FXCM API Token', style: Theme.of(context).textTheme.titleMedium),
+            Text('FXCM Username', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             TextField(
-              controller: _apiKeyController,
-              obscureText: true,
-              decoration: InputDecoration(
-                labelText: 'Paste your API token here',
-                border: const OutlineInputBorder(),
-                prefixIcon: const Icon(Icons.vpn_key),
-                hintText: 'xxxx-xxxx-xxxx-xxxx-xxxx...',
-                helperText: 'Your token is kept secure and never shared',
-                helperMaxLines: 2,
+              controller: _usernameController,
+              decoration: const InputDecoration(
+                labelText: 'FXCM username / login',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person),
+                hintText: 'Trading Station username',
               ),
             ),
             const SizedBox(height: 24),
-            
-            // Optional Account ID
+
+            Text('FXCM Password', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passwordController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'FXCM password',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.lock),
+                hintText: 'Trading Station password',
+              ),
+            ),
+            const SizedBox(height: 24),
+
             Text('Account Number (Optional)', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             TextField(
               controller: _accountController,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'Account Number (auto-detect if blank)',
-                border: const OutlineInputBorder(),
-                prefixIcon: const Icon(Icons.account_circle),
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.account_circle),
                 hintText: 'E.g., D291208900 or leave blank',
-                helperText: 'Leave blank to auto-detect your connected account',
+                helperText: 'Leave blank to auto-detect your connected FXCM account',
                 helperMaxLines: 2,
               ),
             ),
+            const SizedBox(height: 24),
+
+            Text('Advanced: API Token Fallback (Optional)', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _apiKeyController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'FXCM API token',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.vpn_key),
+                hintText: 'Only needed if you prefer token auth',
+                helperText: 'Leave this blank for the normal username/password route',
+                helperMaxLines: 2,
+              ),
+            ),
+            const SizedBox(height: 24),
           ],
           if (_isBinanceBroker) ...[
             Text('Binance API Key', style: Theme.of(context).textTheme.titleMedium),

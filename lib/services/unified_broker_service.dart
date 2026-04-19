@@ -1,17 +1,29 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/environment_config.dart';
 
 /// Service for unified broker portfolio + crypto strategies.
 class UnifiedBrokerService {
   static String get _baseUrl => EnvironmentConfig.apiUrl;
 
+  static Future<Map<String, String>> _authHeaders() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionToken = prefs.getString('auth_token') ?? '';
+    return {
+      'Content-Type': 'application/json',
+      if (sessionToken.isNotEmpty) 'X-Session-Token': sessionToken,
+    };
+  }
+
   // ==================== PORTFOLIO ====================
 
   static Future<Map<String, dynamic>> getPortfolio() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/unified/portfolio'),
+        headers: headers,
       ).timeout(const Duration(seconds: 30));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -25,8 +37,10 @@ class UnifiedBrokerService {
 
   static Future<Map<String, dynamic>> getAllPositions() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/unified/positions'),
+        headers: headers,
       ).timeout(const Duration(seconds: 30));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -40,9 +54,10 @@ class UnifiedBrokerService {
 
   static Future<Map<String, dynamic>> closeAllPositions() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/unified/close-all'),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: jsonEncode({}),
       ).timeout(const Duration(seconds: 45));
 

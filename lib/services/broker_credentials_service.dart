@@ -80,7 +80,7 @@ class BrokerCredentialsService extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
 
-  static const List<String> _brokerPriority = ['exness', 'binance', 'oanda'];
+  static const List<String> _brokerPriority = ['exness', 'binance', 'fxcm', 'oanda'];
 
   List<BrokerCredential> _rankCredentials(Iterable<BrokerCredential> credentials) {
     final ranked = credentials.toList();
@@ -303,6 +303,8 @@ class BrokerCredentialsService extends ChangeNotifier {
     required String password,
     required String server,
     required bool isLive,
+    String? apiKey,
+    String? username,
   }) async {
     try {
       print('🔌 Testing connection to: $broker | Account: $accountNumber');
@@ -314,6 +316,9 @@ class BrokerCredentialsService extends ChangeNotifier {
           'broker': broker,
           'account_number': accountNumber,
           'password': password,
+          'api_key': apiKey,
+          'username': username,
+          'fxcm_login_mode': (broker.toLowerCase() == 'fxcm' && username != null && username.isNotEmpty) ? 'username' : null,
           'server': server,
           'is_live': isLive,
         }),

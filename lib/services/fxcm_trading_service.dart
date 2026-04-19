@@ -1,11 +1,24 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/environment_config.dart';
 
 /// Service for FXCM API operations from Flutter.
 /// Calls backend endpoints in fxcm_service.py.
 class FxcmTradingService {
   static String get _baseUrl => EnvironmentConfig.apiUrl;
+
+  static Future<Map<String, String>> _authHeaders({bool jsonContent = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionToken = prefs.getString('auth_token') ?? '';
+    final headers = <String, String>{
+      if (sessionToken.isNotEmpty) 'X-Session-Token': sessionToken,
+    };
+    if (jsonContent) {
+      headers['Content-Type'] = 'application/json';
+    }
+    return headers;
+  }
 
   // ==================== LOGIN ====================
 
@@ -256,12 +269,12 @@ class FxcmTradingService {
     bool autoClose = true,
   }) async {
     try {
+      final headers = await _authHeaders(jsonContent: true);
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/fxcm/profit-check'),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: jsonEncode({
           'target_profit': targetProfit,
-          'user_id': userId,
           'auto_close': autoClose,
         }),
       ).timeout(const Duration(seconds: 30));
@@ -277,8 +290,10 @@ class FxcmTradingService {
 
   static Future<Map<String, dynamic>> getWithdrawalNotifications(String userId) async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/withdrawal-notifications?user_id=$userId'),
+        Uri.parse('$_baseUrl/api/fxcm/withdrawal-notifications'),
+        headers: headers,
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -295,11 +310,11 @@ class FxcmTradingService {
     required double balanceAvailable,
   }) async {
     try {
+      final headers = await _authHeaders(jsonContent: true);
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/fxcm/withdrawal-notifications'),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: jsonEncode({
-          'user_id': userId,
           'realized_profit': realizedProfit,
           'positions_closed': positionsClosed,
           'balance_available': balanceAvailable,

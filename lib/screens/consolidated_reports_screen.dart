@@ -53,6 +53,46 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
     return entries.map((entry) => _formatMoney(entry.value, entry.key)).join(' • ');
   }
 
+  String _reportKey(String broker, String accountNumber) {
+    final normalizedBroker = broker.trim().isEmpty ? 'Unknown' : broker.trim();
+    final normalizedAccount = accountNumber.trim().isEmpty ? 'N/A' : accountNumber.trim();
+    return '$normalizedBroker|$normalizedAccount';
+  }
+
+  Map<String, dynamic> _createEmptyReport(String broker, String accountNumber, String currency) {
+    return {
+      'broker': broker,
+      'accountNumber': accountNumber,
+      'currency': _normalizeCurrency(currency),
+      'totalTrades': 0,
+      'winningTrades': 0,
+      'losingTrades': 0,
+      'winRate': 0.0,
+      'totalProfit': 0.0,
+      'totalLoss': 0.0,
+      'netProfit': 0.0,
+      'largestWin': 0.0,
+      'largestLoss': 0.0,
+    };
+  }
+
+  void _applyTradeToReport(Map<String, dynamic> report, Map<String, dynamic> trade) {
+    final profit = ((trade['profit'] ?? 0) as num).toDouble();
+    report['totalTrades'] = (report['totalTrades'] as int) + 1;
+    report['netProfit'] = (report['netProfit'] as double) + profit;
+
+    if (profit > 0) {
+      report['winningTrades'] = (report['winningTrades'] as int) + 1;
+      report['totalProfit'] = (report['totalProfit'] as double) + profit;
+      report['largestWin'] = profit > (report['largestWin'] as double) ? profit : report['largestWin'];
+    } else {
+      final loss = profit.abs();
+      report['losingTrades'] = (report['losingTrades'] as int) + 1;
+      report['totalLoss'] = (report['totalLoss'] as double) + loss;
+      report['largestLoss'] = loss > (report['largestLoss'] as double) ? loss : report['largestLoss'];
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -113,51 +153,64 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
         final accountData = jsonDecode(accountResponse.body) as Map<String, dynamic>;
         final tradesData = jsonDecode(tradesResponse.body) as Map<String, dynamic>;
         final account = accountData['account'] as Map<String, dynamic>? ?? {};
+        final allAccounts = (accountData['allAccounts'] as List? ?? [])
+            .map((entry) => Map<String, dynamic>.from(entry as Map))
+            .toList();
         final trades = (tradesData['trades'] as List? ?? [])
             .map((entry) => Map<String, dynamic>.from(entry as Map))
             .toList();
 
-        final winningTrades = trades.where((trade) => ((trade['profit'] ?? 0) as num).toDouble() > 0).length;
-        final losingTrades = trades.where((trade) => ((trade['profit'] ?? 0) as num).toDouble() <= 0).length;
-        final totalProfit = trades.fold<double>(0, (sum, trade) {
-          final profit = ((trade['profit'] ?? 0) as num).toDouble();
-          return sum + (profit > 0 ? profit : 0);
-        });
-        final totalLoss = trades.fold<double>(0, (sum, trade) {
-          final profit = ((trade['profit'] ?? 0) as num).toDouble();
-          return sum + (profit < 0 ? profit.abs() : 0);
-        });
-        final netProfit = trades.fold<double>(0, (sum, trade) => sum + ((trade['profit'] ?? 0) as num).toDouble());
-        final largestWin = trades.fold<double>(0, (best, trade) {
-          final profit = ((trade['profit'] ?? 0) as num).toDouble();
-          return profit > best ? profit : best;
-        });
-        final largestLoss = trades.fold<double>(0, (worst, trade) {
-          final profit = ((trade['profit'] ?? 0) as num).toDouble();
-          final loss = profit < 0 ? profit.abs() : 0.0;
-          return loss > worst ? loss : worst;
-        });
-        final accountKey = '${_selectedMode} ${account['accountNumber'] ?? 'Account'}';
+        final accounts = allAccounts.isNotEmpty
+            ? allAccounts
+            : [if (account.isNotEmpty) account];
+        final reports = <String, Map<String, dynamic>>{};
+        final brokerAccountCounts = <String, int>{};
+
+        for (final accountEntry in accounts) {
+          final broker = (accountEntry['broker'] ?? 'Unknown').toString();
+          final accountNumber = (accountEntry['accountNumber'] ?? accountEntry['account_number'] ?? 'N/A').toString();
+          final currency = (accountEntry['currency'] ?? 'USD').toString();
+          final key = _reportKey(broker, accountNumber);
+          reports[key] = _createEmptyReport(broker, accountNumber, currency);
+          brokerAccountCounts[broker] = (brokerAccountCounts[broker] ?? 0) + 1;
+        }
+
+        for (final trade in trades) {
+          final broker = (trade['broker'] ?? trade['source'] ?? account['broker'] ?? 'Unknown').toString();
+          final explicitAccountNumber = (trade['accountNumber'] ?? trade['account_number'] ?? trade['account'] ?? '').toString();
+          String accountNumber = explicitAccountNumber;
+
+          if (accountNumber.trim().isEmpty && (brokerAccountCounts[broker] ?? 0) == 1) {
+            final matchingAccount = accounts.firstWhere(
+              (entry) => (entry['broker'] ?? '').toString() == broker,
+              orElse: () => <String, dynamic>{},
+            );
+            accountNumber = (matchingAccount['accountNumber'] ?? matchingAccount['account_number'] ?? 'N/A').toString();
+          }
+
+          final key = _reportKey(broker, accountNumber);
+          reports.putIfAbsent(
+            key,
+            () => _createEmptyReport(
+              broker,
+              accountNumber.isEmpty ? 'N/A' : accountNumber,
+              (trade['currency'] ?? account['currency'] ?? 'USD').toString(),
+            ),
+          );
+          _applyTradeToReport(reports[key]!, trade);
+        }
+
+        for (final report in reports.values) {
+          final totalTrades = report['totalTrades'] as int;
+          report['winRate'] = totalTrades == 0
+              ? 0.0
+              : ((report['winningTrades'] as int) / totalTrades) * 100;
+        }
 
         setState(() {
           _reportData = {
             'success': true,
-            'reports': {
-              accountKey: {
-                'broker': account['broker'] ?? 'Unknown',
-                'accountNumber': account['accountNumber'] ?? 'N/A',
-                'currency': account['currency'] ?? 'USD',
-                'totalTrades': trades.length,
-                'winningTrades': winningTrades,
-                'losingTrades': losingTrades,
-                'winRate': trades.isEmpty ? 0.0 : (winningTrades / trades.length) * 100,
-                'totalProfit': totalProfit,
-                'totalLoss': totalLoss,
-                'netProfit': netProfit,
-                'largestWin': largestWin,
-                'largestLoss': largestLoss,
-              },
-            },
+            'reports': reports,
           };
         });
       } else {
@@ -417,8 +470,10 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
     );
 
   List<Widget> _buildAccountReports(Map<String, dynamic> reports) => reports.entries.map((entry) {
-      final accountId = entry.key;
       final report = entry.value as Map<String, dynamic>;
+      final broker = (report['broker'] ?? 'Unknown').toString();
+      final accountNumber = (report['accountNumber'] ?? 'N/A').toString();
+      final accountId = '$broker • $accountNumber';
 
       return _buildAccountReportCard(accountId, report);
     }).toList();

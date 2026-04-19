@@ -4494,6 +4494,190 @@ class FXCMConnection(BrokerConnection):
         is_live = bool(credentials.get('is_live', False))
         self.base_url = 'https://api.fxcm.com' if is_live else 'https://api-demo.fxcm.com'
         self.last_error = ''
+        self.forexconnect_client = None
+        self.forexconnect_mode = False
+
+    def _has_forexconnect_credentials(self) -> bool:
+        return bool(self.credentials.get('username') and self.credentials.get('password'))
+
+    def _forexconnect_url(self) -> str:
+        return self.credentials.get('server') or 'http://www.fxcorporate.com/Hosts.jsp'
+
+    def _forexconnect_connection_name(self) -> str:
+        explicit = str(self.credentials.get('connection') or '').strip()
+        if explicit:
+            return explicit
+        return 'Real' if bool(self.credentials.get('is_live', False)) else 'Demo'
+
+    def _normalize_forexconnect_symbol(self, instrument: str) -> str:
+        return (instrument or '').replace('/', '').upper()
+
+    def _find_forexconnect_offer(self, symbol: str):
+        if not self.forexconnect_client:
+            return None
+        try:
+            from forexconnect import ForexConnect  # type: ignore
+
+            requested = self._normalize_forexconnect_symbol(symbol)
+            offers_table = self.forexconnect_client.get_table(ForexConnect.OFFERS)
+            if offers_table is None:
+                return None
+
+            fallback_offer = None
+            for offer in offers_table:
+                instrument = str(getattr(offer, 'instrument', '') or '')
+                if self._normalize_forexconnect_symbol(instrument) != requested:
+                    continue
+                subscription_status = str(getattr(offer, 'subscription_status', '') or '').upper()
+                if subscription_status == 'T':
+                    return offer
+                if fallback_offer is None:
+                    fallback_offer = offer
+            return fallback_offer
+        except Exception as e:
+            logger.error(f"Error reading ForexConnect offers table: {e}")
+            return None
+
+    def _find_forexconnect_trade(self, position_id: str):
+        trade_id = str(position_id or '').strip()
+        if not trade_id:
+            return None
+        for trade in self._get_forexconnect_trades_table():
+            if str(getattr(trade, 'trade_id', '') or '') == trade_id:
+                return trade
+        return None
+
+    def _resolve_forexconnect_amount(self, volume: float, instrument: str, account) -> int:
+        requested_volume = max(float(volume or 0), 0.0)
+        if requested_volume <= 0:
+            return 1
+
+        try:
+            login_rules = self.forexconnect_client.login_rules if self.forexconnect_client else None
+            trading_settings_provider = getattr(login_rules, 'trading_settings_provider', None)
+            base_unit_size = int(trading_settings_provider.get_base_unit_size(instrument, account)) if trading_settings_provider else 0
+        except Exception as e:
+            logger.debug(f"FXCM base unit lookup failed for {instrument}: {e}")
+            base_unit_size = 0
+
+        if base_unit_size > 0 and requested_volume < base_unit_size:
+            return max(int(round(base_unit_size * requested_volume)), 1)
+        return max(int(round(requested_volume)), 1)
+
+    def _send_forexconnect_request(self, request):
+        if not self.forexconnect_client:
+            self.last_error = 'ForexConnect client is not available'
+            return None
+        if request is None:
+            self.last_error = 'ForexConnect could not create the request'
+            return None
+        try:
+            response = self.forexconnect_client.send_request(request)
+            self.last_error = ''
+            return response
+        except Exception as e:
+            self.last_error = str(e)
+            logger.error(f"Error sending ForexConnect request: {e}")
+            return None
+
+    def _login_forexconnect(self) -> bool:
+        try:
+            from forexconnect import ForexConnect  # type: ignore
+
+            username = self.credentials.get('username')
+            password = self.credentials.get('password')
+            if not username or not password:
+                self.last_error = 'Missing FXCM username or password'
+                return False
+
+            fx = ForexConnect()
+            fx.login(
+                username,
+                password,
+                self._forexconnect_url(),
+                self._forexconnect_connection_name(),
+                self.credentials.get('session_id'),
+                self.credentials.get('pin'),
+                None,
+            )
+
+            table_manager = fx.table_manager
+            accounts_table = table_manager.get_table(ForexConnect.ACCOUNTS)
+            account_id = str(self.credentials.get('account_number', '') or '').strip()
+            account_row = None
+
+            if accounts_table is not None:
+                for row in accounts_table:
+                    row_account_id = str(getattr(row, 'account_id', '') or '')
+                    if row_account_id == account_id or not account_id:
+                        account_row = row
+                        break
+
+            if account_row is None:
+                self.last_error = 'No FXCM account available for the supplied credentials'
+                try:
+                    fx.logout()
+                except Exception:
+                    pass
+                return False
+
+            self.credentials['account_number'] = str(getattr(account_row, 'account_id', account_id) or account_id)
+            self.forexconnect_client = fx
+            self.forexconnect_mode = True
+            self.connected = True
+            self.last_error = ''
+            return True
+        except ImportError:
+            self.last_error = (
+                'ForexConnect is not installed in this backend environment. '
+                'Install the official FXCM forexconnect package to use username/password login.'
+            )
+            logger.error(self.last_error)
+            return False
+        except Exception as e:
+            self.last_error = str(e)
+            logger.error(f"Error connecting to FXCM via ForexConnect: {e}")
+            return False
+
+    def _get_forexconnect_account_row(self):
+        if not self.forexconnect_client:
+            return None
+        try:
+            from forexconnect import ForexConnect  # type: ignore
+
+            accounts_table = self.forexconnect_client.table_manager.get_table(ForexConnect.ACCOUNTS)
+            account_id = str(self.credentials.get('account_number', '') or '')
+            if accounts_table is not None:
+                for row in accounts_table:
+                    if str(getattr(row, 'account_id', '') or '') == account_id or not account_id:
+                        return row
+        except Exception as e:
+            logger.error(f"Error reading ForexConnect accounts table: {e}")
+        return None
+
+    def _get_forexconnect_trades_table(self):
+        if not self.forexconnect_client:
+            return []
+        try:
+            from forexconnect import ForexConnect  # type: ignore
+
+            table = self.forexconnect_client.table_manager.get_table(ForexConnect.TRADES)
+            return table or []
+        except Exception as e:
+            logger.error(f"Error reading ForexConnect trades table: {e}")
+            return []
+
+    def _get_forexconnect_closed_trades_table(self):
+        if not self.forexconnect_client:
+            return []
+        try:
+            from forexconnect import ForexConnect  # type: ignore
+
+            table = self.forexconnect_client.table_manager.get_table(ForexConnect.CLOSED_TRADES)
+            return table or []
+        except Exception as e:
+            logger.error(f"Error reading ForexConnect closed trades table: {e}")
+            return []
 
     def _headers(self, content_type: bool = True) -> Dict:
         headers = {
@@ -4574,6 +4758,9 @@ class FXCMConnection(BrokerConnection):
 
     def connect(self) -> bool:
         try:
+            if self._has_forexconnect_credentials():
+                return self._login_forexconnect()
+
             if not self.credentials.get('api_key'):
                 self.last_error = 'Missing API token'
                 logger.error('FXCM: Missing API token')
@@ -4594,6 +4781,14 @@ class FXCMConnection(BrokerConnection):
             return False
 
     def disconnect(self) -> bool:
+        if self.forexconnect_client:
+            try:
+                self.forexconnect_client.logout()
+            except Exception as e:
+                logger.debug(f"FXCM ForexConnect logout warning: {e}")
+            finally:
+                self.forexconnect_client = None
+                self.forexconnect_mode = False
         self.connected = False
         return True
 
@@ -4601,6 +4796,27 @@ class FXCMConnection(BrokerConnection):
         try:
             if not self.connected:
                 return {}
+
+            if self.forexconnect_mode:
+                account = self._get_forexconnect_account_row()
+                if not account:
+                    self.last_error = 'No FXCM account payload returned'
+                    return {}
+
+                self.account_info = {
+                    'account_id': str(getattr(account, 'account_id', '')),
+                    'accountNumber': str(getattr(account, 'account_id', '')),
+                    'balance': float(getattr(account, 'balance', 0) or 0),
+                    'equity': float(getattr(account, 'equity', getattr(account, 'balance', 0)) or 0),
+                    'margin_free': float(getattr(account, 'usable_margin', 0) or 0),
+                    'marginFree': float(getattr(account, 'usable_margin', 0) or 0),
+                    'margin': float(getattr(account, 'usd_mr', getattr(account, 'mr', 0)) or 0),
+                    'profit': float(getattr(account, 'gross_pl', 0) or 0),
+                    'currency': 'USD',
+                    'broker': 'FXCM',
+                    'dataSource': 'forexconnect',
+                }
+                return self.account_info
 
             data = self._request('GET', '/trading/get_model', params={'models': 'Account'}, timeout=10)
             if not data:
@@ -4649,6 +4865,25 @@ class FXCMConnection(BrokerConnection):
             if not self.connected:
                 return []
 
+            if self.forexconnect_mode:
+                account_id = str(self.credentials.get('account_number', '') or '')
+                positions = []
+                for pos in self._get_forexconnect_trades_table():
+                    row_account_id = str(getattr(pos, 'account_id', '') or '')
+                    if account_id and row_account_id != account_id:
+                        continue
+                    buy_sell = str(getattr(pos, 'buy_sell', '') or '').upper()
+                    positions.append({
+                        'deal_id': str(getattr(pos, 'trade_id', '') or ''),
+                        'symbol': self._normalize_forexconnect_symbol(getattr(pos, 'instrument', '')),
+                        'type': 'BUY' if buy_sell.startswith('B') else 'SELL',
+                        'size': abs(float(getattr(pos, 'amount', 0) or 0)),
+                        'level': float(getattr(pos, 'open_rate', 0) or 0),
+                        'profit_loss': float(getattr(pos, 'gross_pl', 0) or 0),
+                        'broker': 'FXCM',
+                    })
+                return positions
+
             data = self._request('GET', '/trading/get_model', params={'models': 'OpenPosition'}, timeout=10)
             if not data:
                 return []
@@ -4671,6 +4906,49 @@ class FXCMConnection(BrokerConnection):
 
     def place_order(self, symbol: str, order_type: str, volume: float, **kwargs) -> Dict:
         try:
+            if self.forexconnect_mode:
+                from forexconnect import fxcorepy  # type: ignore
+
+                if not self.connected or not self.forexconnect_client:
+                    return {'success': False, 'error': 'Not connected to FXCM'}
+
+                account = self._get_forexconnect_account_row()
+                if not account:
+                    self.last_error = 'No FXCM account available for trading'
+                    return {'success': False, 'error': self.last_error}
+
+                offer = self._find_forexconnect_offer(symbol)
+                if not offer:
+                    self.last_error = f'Unsupported FXCM instrument: {symbol}'
+                    return {'success': False, 'error': self.last_error}
+
+                buy_sell = fxcorepy.Constants.BUY if str(order_type or '').upper() == 'BUY' else fxcorepy.Constants.SELL
+                amount = self._resolve_forexconnect_amount(volume, str(getattr(offer, 'instrument', symbol) or symbol), account)
+                request = self.forexconnect_client.create_order_request(
+                    order_type=fxcorepy.Constants.Orders.TRUE_MARKET_OPEN,
+                    ACCOUNT_ID=str(getattr(account, 'account_id', '') or self.credentials.get('account_number', '')),
+                    BUY_SELL=buy_sell,
+                    AMOUNT=amount,
+                    OFFER_ID=str(getattr(offer, 'offer_id', '') or ''),
+                    SYMBOL=str(getattr(offer, 'instrument', symbol) or symbol),
+                )
+                response = self._send_forexconnect_request(request)
+                if not response:
+                    return {'success': False, 'error': self.last_error or 'FXCM ForexConnect order failed'}
+
+                order_id = str(getattr(response, 'order_id', '') or getattr(request, 'request_id', '') or '')
+                return {
+                    'success': True,
+                    'orderId': order_id,
+                    'deal_id': '',
+                    'tradeId': '',
+                    'symbol': self._normalize_forexconnect_symbol(getattr(offer, 'instrument', symbol)),
+                    'type': str(order_type or '').upper(),
+                    'amount': amount,
+                    'broker': 'FXCM',
+                    'dataSource': 'forexconnect',
+                }
+
             import requests
 
             if not self.connected:
@@ -4711,6 +4989,45 @@ class FXCMConnection(BrokerConnection):
 
     def close_position(self, position_id: str) -> Dict:
         try:
+            if self.forexconnect_mode:
+                from forexconnect import fxcorepy  # type: ignore
+
+                if not self.connected or not self.forexconnect_client:
+                    return {'success': False, 'error': 'Not connected to FXCM'}
+
+                trade = self._find_forexconnect_trade(position_id)
+                if not trade:
+                    self.last_error = f'FXCM trade not found: {position_id}'
+                    return {'success': False, 'error': self.last_error}
+
+                instrument = str(getattr(trade, 'instrument', '') or '')
+                offer = self._find_forexconnect_offer(instrument)
+                if not offer:
+                    self.last_error = f'FXCM offer not found for trade instrument: {instrument or position_id}'
+                    return {'success': False, 'error': self.last_error}
+
+                buy_sell = str(getattr(trade, 'buy_sell', '') or '').upper()
+                close_side = fxcorepy.Constants.SELL if buy_sell == fxcorepy.Constants.BUY else fxcorepy.Constants.BUY
+                request = self.forexconnect_client.create_order_request(
+                    order_type=fxcorepy.Constants.Orders.TRUE_MARKET_CLOSE,
+                    OFFER_ID=str(getattr(offer, 'offer_id', '') or ''),
+                    ACCOUNT_ID=str(getattr(trade, 'account_id', '') or self.credentials.get('account_number', '')),
+                    BUY_SELL=close_side,
+                    AMOUNT=max(int(getattr(trade, 'amount', 0) or 0), 1),
+                    TRADE_ID=str(getattr(trade, 'trade_id', '') or position_id),
+                )
+                response = self._send_forexconnect_request(request)
+                if not response:
+                    return {'success': False, 'error': self.last_error or 'FXCM ForexConnect close failed'}
+
+                return {
+                    'success': True,
+                    'trade_id': str(getattr(trade, 'trade_id', '') or position_id),
+                    'orderId': str(getattr(response, 'order_id', '') or getattr(request, 'request_id', '') or ''),
+                    'broker': 'FXCM',
+                    'dataSource': 'forexconnect',
+                }
+
             import requests
 
             resp = requests.post(
@@ -4730,6 +5047,29 @@ class FXCMConnection(BrokerConnection):
         try:
             if not self.connected:
                 return []
+
+            if self.forexconnect_mode:
+                account_id = str(self.credentials.get('account_number', '') or '')
+                result = []
+                for trade in self._get_forexconnect_closed_trades_table():
+                    row_account_id = str(getattr(trade, 'account_id', '') or '')
+                    if account_id and row_account_id != account_id:
+                        continue
+                    buy_sell = str(getattr(trade, 'buy_sell', '') or '').upper()
+                    result.append({
+                        'ticket': str(getattr(trade, 'trade_id', '') or ''),
+                        'symbol': self._normalize_forexconnect_symbol(getattr(trade, 'instrument', '')),
+                        'type': 'BUY' if buy_sell.startswith('B') else 'SELL',
+                        'volume': abs(float(getattr(trade, 'amount', 0) or 0)),
+                        'entryPrice': float(getattr(trade, 'open_rate', 0) or 0),
+                        'exitPrice': float(getattr(trade, 'close_rate', 0) or 0),
+                        'profit': float(getattr(trade, 'gross_pl', 0) or 0),
+                        'time': str(getattr(trade, 'close_time', '') or getattr(trade, 'trade_close_time', '') or ''),
+                        'time_open': str(getattr(trade, 'open_time', '') or ''),
+                        'time_close': str(getattr(trade, 'close_time', '') or getattr(trade, 'trade_close_time', '') or ''),
+                        'broker': 'FXCM',
+                    })
+                return result
 
             data = self._request('GET', '/trading/get_model', params={'models': 'ClosedPosition'}, timeout=10)
             if not data:
@@ -7181,7 +7521,7 @@ def get_account_balances():
         
         # Get active broker credentials for this user, optionally scoped to one mode.
         credentials_query = '''
-            SELECT credential_id, broker_name, account_number, is_live, api_key, password, server, account_currency
+            SELECT credential_id, broker_name, account_number, is_live, api_key, username, password, server, account_currency
             FROM broker_credentials 
             WHERE user_id = ? AND is_active = 1
         '''
@@ -7336,6 +7676,52 @@ def get_account_balances():
                                 error_msg = "Failed to connect to Binance API"
                     except Exception as e:
                         logger.warning(f"Binance balance error: {e}")
+                        error_msg = str(e)
+
+                elif broker_name == 'FXCM':
+                    try:
+                        fxcm_conn = FXCMConnection({
+                            'api_key': cred.get('api_key'),
+                            'username': cred.get('username'),
+                            'password': cred.get('password'),
+                            'account_number': account_num,
+                            'server': cred.get('server'),
+                            'connection': 'Real' if bool(cred['is_live']) else 'Demo',
+                            'is_live': bool(cred['is_live']),
+                        })
+                        if fxcm_conn.connect():
+                            account_info = fxcm_conn.get_account_info()
+                            if account_info:
+                                account_info['accountNumber'] = account_info.get('accountNumber') or account_num
+                                account_info['marginFree'] = account_info.get('marginFree', account_info.get('margin_free', 0))
+                                account_info['total_pl'] = account_info.get('profit', account_info.get('total_pl', 0))
+                                account_info['displayCurrency'] = account_info.get('currency', display_currency)
+                            fxcm_conn.disconnect()
+                        if not account_info:
+                            error_msg = fxcm_conn.last_error or 'Failed to connect to FXCM API'
+                    except Exception as e:
+                        logger.warning(f"FXCM balance error: {e}")
+                        error_msg = str(e)
+
+                elif broker_name == 'OANDA':
+                    try:
+                        oanda_conn = OANDAConnection({
+                            'api_key': cred.get('api_key'),
+                            'account_number': account_num,
+                            'is_live': bool(cred['is_live']),
+                        })
+                        if oanda_conn.connect():
+                            account_info = oanda_conn.get_account_info()
+                            if account_info:
+                                account_info['accountNumber'] = account_info.get('accountNumber') or account_num
+                                account_info['marginFree'] = account_info.get('marginFree', account_info.get('margin_free', 0))
+                                account_info['total_pl'] = account_info.get('profit', account_info.get('total_pl', 0))
+                                account_info['displayCurrency'] = account_info.get('currency', display_currency)
+                            oanda_conn.disconnect()
+                        if not account_info:
+                            error_msg = 'Failed to connect to OANDA API'
+                    except Exception as e:
+                        logger.warning(f"OANDA balance error: {e}")
                         error_msg = str(e)
                 
                 else:
@@ -7530,27 +7916,29 @@ def get_account_details(credential_id):
         broker_name = cred['broker_name']
         account_number = cred['account_number']
         
-        # Get live balance if Exness and connected
+        # Get live balance/positions from the connected broker when available.
         balance = float(cred.get('cached_balance') or 0)
         equity = float(cred.get('cached_equity') or 0)
         margin_free = float(cred.get('cached_margin_free') or 0)
         live_account_info = None
         current_positions = []
 
-        if broker_name == 'Exness':
-            try:
-                _, mt5_conn = get_broker_connection(credential_id, user_id, bot_id=f'account-details:{credential_id}')
-                if mt5_conn:
-                    live_account_info = mt5_conn.get_account_info() or {}
-                    current_positions = mt5_conn.get_positions() or []
-                    mt5_conn.disconnect()
+        try:
+            _, broker_conn = get_broker_connection(credential_id, user_id, bot_id=f'account-details:{credential_id}')
+            if broker_conn:
+                live_account_info = broker_conn.get_account_info() or {}
+                current_positions = broker_conn.get_positions() or []
+                if hasattr(broker_conn, 'disconnect'):
+                    broker_conn.disconnect()
 
-                    if live_account_info:
-                        balance = float(live_account_info.get('balance', balance))
-                        equity = float(live_account_info.get('equity', equity))
-                        margin_free = float(live_account_info.get('marginFree', margin_free))
-            except Exception as e:
-                logger.warning(f"Could not read live Exness account details for {account_number}: {e}")
+                if live_account_info:
+                    balance = float(live_account_info.get('balance', balance) or balance)
+                    equity = float(live_account_info.get('equity', equity) or equity)
+                    margin_free = float(
+                        live_account_info.get('marginFree', live_account_info.get('margin_free', margin_free)) or margin_free
+                    )
+        except Exception as e:
+            logger.warning(f"Could not read live account details for {broker_name} {account_number}: {e}")
 
         # Get all trades for bots linked to this account
         cursor.execute('''
@@ -8668,7 +9056,11 @@ def get_account_detailed():
                 elif broker_name == 'FXCM':
                     fxcm_conn = FXCMConnection({
                         'api_key': cred.get('api_key'),
+                        'username': cred.get('username'),
+                        'password': cred.get('password'),
                         'account_number': account_num,
+                        'server': cred.get('server'),
+                        'connection': 'Real' if bool(cred['is_live']) else 'Demo',
                         'is_live': bool(cred['is_live']),
                     })
                     if fxcm_conn.connect():
@@ -8790,67 +9182,83 @@ def get_positions_detailed():
         preferred_mode = requested_mode if requested_mode in ['LIVE', 'DEMO'] else get_user_trading_mode_value(user_id)
         desired_live = 1 if preferred_mode == 'LIVE' else 0
         
-        cursor.execute('''
-            SELECT credential_id, broker_name, account_number, password, server, is_live
+        broker_filter = canonicalize_broker_name(request.args.get('broker', default='', type=str).strip())
+        query = '''
+            SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
             FROM broker_credentials 
-            WHERE user_id = ? AND is_active = 1 AND broker_name = 'Exness'
-            ORDER BY credential_id DESC
-        ''', (user_id,))
-        
+            WHERE user_id = ? AND is_active = 1
+        '''
+        params = [user_id]
+        if broker_filter:
+            query += ' AND UPPER(broker_name) = ?'
+            params.append(broker_filter)
+        query += '''
+            ORDER BY broker_name, credential_id DESC
+        '''
+        cursor.execute(query, params)
+
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
 
-        cred = next(
-            (
-                row for row in rows
-                if int(normalize_mt5_is_live_flag('Exness', row.get('is_live'), row.get('server'))) == desired_live
-            ),
-            rows[0] if rows else None,
-        )
-
-        if not cred:
+        if not rows:
             return jsonify({
                 'success': False,
                 'positions': [],
-                'totalCount': 0
-            })
-
-        import MetaTrader5 as mt5
-        try:
-            active_info = mt5.account_info()
-        except Exception as exc:
-            logger.warning(f"Could not read MT5 session for positions endpoint: {exc}")
-            active_info = None
-
-        if not active_info or str(active_info.login) != str(cred['account_number']):
-            return jsonify({
-                'success': True,
-                'positions': [],
                 'totalCount': 0,
-                'totalPL': 0,
-                'dataSource': 'inactive-session',
-                'warning': (
-                    f"MT5 is currently attached to {getattr(active_info, 'login', 'no account')}. "
-                    f"Open positions for {cred['account_number']} are unavailable until that mode is warmed."
-                ),
             })
 
-        mt5_conn = MT5Connection({
-            'account': int(cred['account_number']),
-            'password': cred['password'],
-            'server': cred['server'],
-            'broker': 'Exness',
-            'is_live': bool(cred['is_live']),
-        })
-        mt5_conn.connected = True
-        positions = mt5_conn.get_positions()
+        positions = []
+        warnings_list = []
+
+        for cred in rows:
+            broker_name = canonicalize_broker_name(cred.get('broker_name'))
+            effective_is_live = int(normalize_mt5_is_live_flag(broker_name, cred.get('is_live'), cred.get('server')))
+            if effective_is_live != desired_live:
+                continue
+
+            conn_label, broker_conn = get_broker_connection(
+                cred['credential_id'],
+                user_id,
+                bot_id=f'positions-detailed:{cred["credential_id"]}',
+            )
+            if not broker_conn:
+                warnings_list.append(f"{broker_name} {cred['account_number']}: {conn_label}")
+                continue
+
+            try:
+                broker_positions = broker_conn.get_positions() or []
+                for position in broker_positions:
+                    pnl = position.get('pnl', position.get('profit_loss', position.get('unrealizedPL', 0)))
+                    positions.append({
+                        'credentialId': cred['credential_id'],
+                        'broker': broker_name,
+                        'accountNumber': cred['account_number'],
+                        'positionId': str(position.get('deal_id') or position.get('trade_id') or position.get('ticket') or ''),
+                        'instrument': position.get('symbol') or position.get('instrument') or '',
+                        'direction': position.get('type') or position.get('direction') or '',
+                        'size': float(position.get('size', position.get('volume', 0)) or 0),
+                        'level': float(position.get('level', position.get('openPrice', 0)) or 0),
+                        'unrealizedPL': float(pnl or 0),
+                        'raw': position,
+                    })
+            except Exception as e:
+                warnings_list.append(f"{broker_name} {cred['account_number']}: {e}")
+            finally:
+                if hasattr(broker_conn, 'disconnect'):
+                    try:
+                        broker_conn.disconnect()
+                    except Exception:
+                        pass
+
+        total_pl = sum(float(p.get('unrealizedPL', 0) or 0) for p in positions)
 
         return jsonify({
             'success': True,
             'positions': positions,
             'totalCount': len(positions),
-            'totalPL': sum(p['pnl'] for p in positions),
-            'dataSource': 'live-session',
+            'totalPL': total_pl,
+            'dataSource': 'multi-broker',
+            'warnings': warnings_list,
         })
             
     except Exception as e:
@@ -8860,6 +9268,237 @@ def get_positions_detailed():
             'error': str(e),
             'positions': []
         }), 500
+
+
+@app.route('/api/unified/portfolio', methods=['GET'])
+@require_session
+def get_unified_portfolio():
+    """Return unified portfolio totals and per-broker cards for the authenticated user."""
+    user_id = request.user_id
+
+    try:
+        requested_mode = str(request.args.get('mode') or '').strip().upper()
+        preferred_mode = requested_mode if requested_mode in ['LIVE', 'DEMO'] else get_user_trading_mode_value(user_id)
+        desired_live = 1 if preferred_mode == 'LIVE' else 0
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT credential_id, broker_name, account_number, is_live, server,
+                   cached_balance, cached_equity, cached_margin_free, cached_profit
+            FROM broker_credentials
+            WHERE user_id = ? AND is_active = 1
+            ORDER BY broker_name, credential_id DESC
+        ''', (user_id,))
+        credentials = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        portfolio = {
+            'total_balance': 0.0,
+            'total_available': 0.0,
+            'total_pnl': 0.0,
+            'total_positions': 0,
+            'connected_brokers': 0,
+            'total_brokers': 0,
+            'mode': preferred_mode,
+        }
+        brokers = {}
+
+        for cred in credentials:
+            broker_name = canonicalize_broker_name(cred.get('broker_name'))
+            effective_is_live = int(normalize_mt5_is_live_flag(broker_name, cred.get('is_live'), cred.get('server')))
+            if effective_is_live != desired_live:
+                continue
+
+            portfolio['total_brokers'] += 1
+            broker_card = {
+                'connected': False,
+                'balance': float(cred.get('cached_balance') or 0),
+                'available': float(cred.get('cached_margin_free') or 0),
+                'pnl': float(cred.get('cached_profit') or 0),
+                'positions': 0,
+                'accountNumber': cred.get('account_number'),
+                'mode': 'Live' if effective_is_live else 'Demo',
+            }
+
+            conn_label, broker_conn = get_broker_connection(
+                cred['credential_id'],
+                user_id,
+                bot_id=f'unified-portfolio:{cred["credential_id"]}',
+            )
+            if broker_conn:
+                try:
+                    account_info = broker_conn.get_account_info() or {}
+                    positions = broker_conn.get_positions() or []
+                    broker_card.update({
+                        'connected': True,
+                        'balance': float(account_info.get('balance', broker_card['balance']) or broker_card['balance']),
+                        'available': float(account_info.get('marginFree', account_info.get('margin_free', broker_card['available'])) or broker_card['available']),
+                        'pnl': float(account_info.get('profit', account_info.get('total_pl', broker_card['pnl'])) or broker_card['pnl']),
+                        'positions': len(positions),
+                    })
+                except Exception as e:
+                    broker_card['error'] = str(e)
+                finally:
+                    if hasattr(broker_conn, 'disconnect'):
+                        try:
+                            broker_conn.disconnect()
+                        except Exception:
+                            pass
+            else:
+                broker_card['error'] = conn_label or 'Connection unavailable'
+
+            brokers[broker_name] = broker_card
+            if broker_card['connected']:
+                portfolio['connected_brokers'] += 1
+            portfolio['total_balance'] += float(broker_card['balance'] or 0)
+            portfolio['total_available'] += float(broker_card['available'] or 0)
+            portfolio['total_pnl'] += float(broker_card['pnl'] or 0)
+            portfolio['total_positions'] += int(broker_card['positions'] or 0)
+
+        return jsonify({'success': True, 'portfolio': portfolio, 'brokers': brokers}), 200
+    except Exception as e:
+        logger.error(f"Error building unified portfolio: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/unified/positions', methods=['GET'])
+@require_session
+def get_unified_positions():
+    """Return all open positions across supported brokers for the authenticated user."""
+    user_id = request.user_id
+
+    try:
+        requested_mode = str(request.args.get('mode') or '').strip().upper()
+        preferred_mode = requested_mode if requested_mode in ['LIVE', 'DEMO'] else get_user_trading_mode_value(user_id)
+        desired_live = 1 if preferred_mode == 'LIVE' else 0
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT credential_id, broker_name, account_number, is_live, server
+            FROM broker_credentials
+            WHERE user_id = ? AND is_active = 1
+            ORDER BY broker_name, credential_id DESC
+        ''', (user_id,))
+        credentials = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        positions = []
+        for cred in credentials:
+            broker_name = canonicalize_broker_name(cred.get('broker_name'))
+            effective_is_live = int(normalize_mt5_is_live_flag(broker_name, cred.get('is_live'), cred.get('server')))
+            if effective_is_live != desired_live:
+                continue
+
+            _, broker_conn = get_broker_connection(
+                cred['credential_id'],
+                user_id,
+                bot_id=f'unified-positions:{cred["credential_id"]}',
+            )
+            if not broker_conn:
+                continue
+
+            try:
+                broker_positions = broker_conn.get_positions() or []
+                for position in broker_positions:
+                    pnl = position.get('pnl', position.get('profit_loss', position.get('unrealizedPL', 0)))
+                    positions.append({
+                        'broker': broker_name,
+                        'accountNumber': cred['account_number'],
+                        'positionId': str(position.get('deal_id') or position.get('trade_id') or position.get('ticket') or ''),
+                        'instrument': position.get('symbol') or position.get('instrument') or '',
+                        'direction': position.get('type') or position.get('direction') or '',
+                        'size': float(position.get('size', position.get('volume', 0)) or 0),
+                        'level': float(position.get('level', position.get('openPrice', 0)) or 0),
+                        'unrealizedPL': float(pnl or 0),
+                    })
+            finally:
+                if hasattr(broker_conn, 'disconnect'):
+                    try:
+                        broker_conn.disconnect()
+                    except Exception:
+                        pass
+
+        return jsonify({'success': True, 'positions': positions, 'totalCount': len(positions)}), 200
+    except Exception as e:
+        logger.error(f"Error getting unified positions: {e}")
+        return jsonify({'success': False, 'error': str(e), 'positions': []}), 500
+
+
+@app.route('/api/unified/close-all', methods=['POST'])
+@require_session
+def close_all_unified_positions():
+    """Close all open positions across supported brokers for the authenticated user."""
+    user_id = request.user_id
+
+    try:
+        requested_mode = str((request.json or {}).get('mode') or '').strip().upper()
+        preferred_mode = requested_mode if requested_mode in ['LIVE', 'DEMO'] else get_user_trading_mode_value(user_id)
+        desired_live = 1 if preferred_mode == 'LIVE' else 0
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT credential_id, broker_name, account_number, is_live, server
+            FROM broker_credentials
+            WHERE user_id = ? AND is_active = 1
+            ORDER BY broker_name, credential_id DESC
+        ''', (user_id,))
+        credentials = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        total_closed = 0
+        results = []
+
+        for cred in credentials:
+            broker_name = canonicalize_broker_name(cred.get('broker_name'))
+            effective_is_live = int(normalize_mt5_is_live_flag(broker_name, cred.get('is_live'), cred.get('server')))
+            if effective_is_live != desired_live:
+                continue
+
+            conn_label, broker_conn = get_broker_connection(
+                cred['credential_id'],
+                user_id,
+                bot_id=f'unified-close-all:{cred["credential_id"]}',
+            )
+            if not broker_conn:
+                results.append({
+                    'broker': broker_name,
+                    'accountNumber': cred['account_number'],
+                    'success': False,
+                    'error': conn_label or 'Connection unavailable',
+                })
+                continue
+
+            try:
+                broker_positions = broker_conn.get_positions() or []
+                for position in broker_positions:
+                    position_id = position.get('deal_id') or position.get('trade_id') or position.get('ticket')
+                    if position_id in [None, '']:
+                        continue
+                    close_result = broker_conn.close_position(str(position_id))
+                    success = bool(close_result.get('success'))
+                    if success:
+                        total_closed += 1
+                    results.append({
+                        'broker': broker_name,
+                        'accountNumber': cred['account_number'],
+                        'positionId': str(position_id),
+                        'success': success,
+                        'error': close_result.get('error'),
+                    })
+            finally:
+                if hasattr(broker_conn, 'disconnect'):
+                    try:
+                        broker_conn.disconnect()
+                    except Exception:
+                        pass
+
+        return jsonify({'success': True, 'total_closed': total_closed, 'results': results}), 200
+    except Exception as e:
+        logger.error(f"Error closing unified positions: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/trades/history', methods=['GET'])
@@ -8879,7 +9518,7 @@ def get_trades_history():
         # Query all active credentials for user, optionally filtered by broker
         broker_clause = f"AND broker_name = '{broker_filter}'" if broker_filter else ""
         cursor.execute(f'''
-            SELECT credential_id, broker_name, account_number, password, server, is_live, api_key
+            SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
             FROM broker_credentials 
             WHERE user_id = ? AND is_active = 1 {broker_clause}
             ORDER BY broker_name, credential_id DESC
@@ -8943,7 +9582,11 @@ def get_trades_history():
                 elif broker_name == 'FXCM':
                     fxcm_conn = FXCMConnection({
                         'api_key': cred.get('api_key'),
+                        'username': cred.get('username'),
+                        'password': cred.get('password'),
                         'account_number': account_num,
+                        'server': cred.get('server'),
+                        'connection': 'Real' if bool(cred['is_live']) else 'Demo',
                         'is_live': bool(cred['is_live']),
                     })
                     if fxcm_conn.connect():
@@ -14505,7 +15148,7 @@ def save_broker_credentials():
     - IG Markets: api_key, username, password, is_live
     - XM Global/XM: account_number, password, server, is_live
     - Binance: api_key, api_secret, optional market/server
-    - FXCM: token/api_key, optional account_number
+    - FXCM: username/password or token/api_key, optional account_number
     - OANDA: api_key, account_number
     - Exness: account_number, password, server, is_live
     - PXBT: account_number, password, server, is_live
@@ -14522,6 +15165,7 @@ def save_broker_credentials():
         username = data.get('username')  # For IG Markets
         api_secret = data.get('api_secret')
         token = data.get('token')
+        fxcm_login_mode = str(data.get('fxcm_login_mode') or '').strip().lower()
         mt5_terminal_path = data.get('mt5_terminal_path') or data.get('mt5_path')
         is_live = normalize_mt5_is_live_flag(broker_name, data.get('is_live', False), server)
         
@@ -14540,15 +15184,28 @@ def save_broker_credentials():
             server = (server or data.get('market') or 'spot').lower()
             account_number = account_number or server.upper()
         elif broker_name in ['FXCM']:
-            api_key = token or api_key or password
-            if not api_key:
+            if fxcm_login_mode == 'username' or username:
+                if not username or not password:
+                    return jsonify({
+                        'success': False,
+                        'error': 'FXCM username mode requires: username, password'
+                    }), 400
+                api_key = token or api_key or ''
+                account_number = account_number or 'FXCM'
+                server = server or 'http://www.fxcorporate.com/Hosts.jsp'
+            else:
+                api_key = token or api_key or password
+            if not api_key and not username:
                 return jsonify({
                     'success': False,
-                    'error': 'FXCM requires: token'
+                    'error': 'FXCM requires either token or username/password'
                 }), 400
             account_number = account_number or 'FXCM'
-            server = server or ('REST-API-LIVE' if is_live else 'REST-API-DEMO')
-            password = ''
+            if username:
+                server = server or 'http://www.fxcorporate.com/Hosts.jsp'
+            else:
+                server = server or ('REST-API-LIVE' if is_live else 'REST-API-DEMO')
+                password = ''
         elif broker_name in ['OANDA']:
             if not api_key or not account_number:
                 return jsonify({
@@ -14805,18 +15462,24 @@ def test_broker_connection():
 
         # ==================== FXCM ====================
         elif broker == 'FXCM':
-            token = data.get('token') or data.get('api_key') or data.get('password')
+            username = data.get('username')
+            password = data.get('password')
+            token = data.get('token') or data.get('api_key')
             account_id = data.get('account_number') or 'FXCM'
-            if not token:
-                return jsonify({'success': False, 'error': 'Missing FXCM field: token'}), 400
+            if not ((username and password) or token):
+                return jsonify({'success': False, 'error': 'Missing FXCM fields: provide token or username/password'}), 400
 
             fxcm_conn = FXCMConnection(credentials={
                 'api_key': token,
+                'username': username,
+                'password': password,
                 'account_number': data.get('account_number', ''),
+                'server': data.get('server') or 'http://www.fxcorporate.com/Hosts.jsp',
+                'connection': 'Real' if is_live else 'Demo',
                 'is_live': is_live,
             })
             if not fxcm_conn.connect():
-                return jsonify({'success': False, 'error': 'Failed to authenticate with FXCM'}), 401
+                return jsonify({'success': False, 'error': fxcm_conn.last_error or 'Failed to authenticate with FXCM'}), 401
 
             account_info = fxcm_conn.get_account_info()
             fxcm_conn.disconnect()
@@ -14829,7 +15492,20 @@ def test_broker_connection():
                 INSERT INTO broker_credentials 
                 (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, api_key, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-            ''', (credential_id, user_id, 'FXCM', account_id, '', ('REST-API-LIVE' if is_live else 'REST-API-DEMO'), int(is_live), token, datetime.now().isoformat(), datetime.now().isoformat()))
+            ''', (
+                credential_id,
+                user_id,
+                'FXCM',
+                account_id,
+                password or '',
+                (data.get('server') or 'http://www.fxcorporate.com/Hosts.jsp') if username else ('REST-API-LIVE' if is_live else 'REST-API-DEMO'),
+                int(is_live),
+                token or '',
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ))
+            if username:
+                cursor.execute('UPDATE broker_credentials SET username = ? WHERE credential_id = ?', (username, credential_id))
             conn.commit()
             conn.close()
 
@@ -15246,6 +15922,185 @@ def test_broker_connection():
         
     except Exception as e:
         logger.error(f"❌ Connection test failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _get_active_fxcm_credential_for_user(user_id: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT credential_id, user_id, broker_name, account_number, server, is_live, is_active, api_key, username, password, updated_at, created_at
+        FROM broker_credentials
+        WHERE user_id = ? AND broker_name = 'FXCM' AND is_active = 1
+        ORDER BY COALESCE(updated_at, created_at, '') DESC, credential_id DESC
+        LIMIT 1
+    ''', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@app.route('/api/fxcm/profit-check', methods=['POST'])
+@require_session
+def api_fxcm_profit_check_user():
+    try:
+        user_id = request.user_id
+        data = request.json or {}
+        target_profit = float(data.get('target_profit') or 0)
+        auto_close = bool(data.get('auto_close', True))
+
+        if target_profit <= 0:
+            return jsonify({'success': False, 'error': 'target_profit must be greater than 0'}), 400
+
+        credential = _get_active_fxcm_credential_for_user(user_id)
+        if not credential or not (credential.get('api_key') or (credential.get('username') and credential.get('password'))):
+            return jsonify({'success': False, 'error': 'No active FXCM credential found for this user'}), 404
+
+        fxcm_conn = FXCMConnection({
+            'api_key': credential.get('api_key'),
+            'username': credential.get('username'),
+            'password': credential.get('password'),
+            'account_number': credential.get('account_number', ''),
+            'server': credential.get('server'),
+            'connection': 'Real' if bool(credential.get('is_live')) else 'Demo',
+            'is_live': bool(credential.get('is_live')),
+        })
+        if not fxcm_conn.connect():
+            return jsonify({'success': False, 'error': fxcm_conn.last_error or 'Failed to connect to FXCM'}), 401
+
+        positions = fxcm_conn.get_positions() or []
+        current_pnl = sum(float(pos.get('profit_loss', 0) or 0) for pos in positions)
+        target_reached = current_pnl >= target_profit
+        positions_closed = 0
+        close_errors = []
+
+        if target_reached and auto_close:
+            for position in positions:
+                position_id = position.get('deal_id') or position.get('trade_id') or position.get('ticket')
+                if not position_id:
+                    continue
+                close_result = fxcm_conn.close_position(str(position_id))
+                if close_result.get('success'):
+                    positions_closed += 1
+                else:
+                    close_errors.append(close_result.get('error') or f'Failed to close position {position_id}')
+
+        account_info = fxcm_conn.get_account_info() or {}
+        fxcm_conn.disconnect()
+
+        if target_reached and auto_close:
+            message = f'FXCM profit target reached at {current_pnl:.2f}. Closed {positions_closed} position(s).'
+        elif target_reached:
+            message = f'FXCM profit target reached at {current_pnl:.2f}.'
+        else:
+            message = f'Current FXCM P/L is {current_pnl:.2f}. Target not reached.'
+
+        response_payload = {
+            'success': True,
+            'target_profit': target_profit,
+            'current_pnl': round(current_pnl, 2),
+            'target_reached': target_reached,
+            'auto_close': auto_close,
+            'positions_checked': len(positions),
+            'positions_closed': positions_closed,
+            'balance_after': {
+                'balance': float(account_info.get('balance', 0) or 0),
+                'available': float(account_info.get('margin_free', account_info.get('marginFree', 0)) or 0),
+                'equity': float(account_info.get('equity', 0) or 0),
+                'currency': account_info.get('currency', 'USD'),
+            },
+            'message': message,
+        }
+        if close_errors:
+            response_payload['close_errors'] = close_errors
+        return jsonify(response_payload), 200
+    except Exception as e:
+        logger.error(f'❌ FXCM profit check error: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fxcm/withdrawal-notifications', methods=['GET'])
+@require_session
+def api_fxcm_get_withdrawal_notifications():
+    try:
+        user_id = request.user_id
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT notification_id, user_id, broker_name, amount, message, status, created_at, completed_at
+            FROM broker_withdrawal_notifications
+            WHERE user_id = ? AND broker_name = 'FXCM'
+            ORDER BY COALESCE(created_at, '') DESC, notification_id DESC
+        ''', (user_id,))
+        notifications = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            amount = float(item.get('amount') or 0)
+            message = item.get('message') or ''
+            positions_closed = 0
+            balance_available = amount
+            realized_profit = amount
+            if '|' in message:
+                for part in message.split('|'):
+                    key, _, value = part.partition('=')
+                    key = key.strip().lower()
+                    value = value.strip()
+                    if key == 'positions_closed':
+                        positions_closed = int(float(value or 0))
+                    elif key == 'balance_available':
+                        balance_available = float(value or 0)
+                    elif key == 'realized_profit':
+                        realized_profit = float(value or 0)
+            item['positions_closed'] = positions_closed
+            item['balance_available'] = balance_available
+            item['realized_profit'] = realized_profit
+            notifications.append(item)
+        conn.close()
+        return jsonify({'success': True, 'notifications': notifications}), 200
+    except Exception as e:
+        logger.error(f'❌ FXCM notification fetch error: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fxcm/withdrawal-notifications', methods=['POST'])
+@require_session
+def api_fxcm_create_withdrawal_notification():
+    try:
+        user_id = request.user_id
+        data = request.json or {}
+        realized_profit = float(data.get('realized_profit') or 0)
+        positions_closed = int(data.get('positions_closed') or 0)
+        balance_available = float(data.get('balance_available') or 0)
+        notification_id = str(uuid.uuid4())
+        created_at = datetime.now().isoformat()
+        message = f'realized_profit={realized_profit}|positions_closed={positions_closed}|balance_available={balance_available}'
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO broker_withdrawal_notifications
+            (notification_id, user_id, broker_name, amount, message, status, created_at)
+            VALUES (?, ?, 'FXCM', ?, ?, 'pending', ?)
+        ''', (notification_id, user_id, realized_profit, message, created_at))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'notification': {
+                'notification_id': notification_id,
+                'user_id': user_id,
+                'broker_name': 'FXCM',
+                'amount': realized_profit,
+                'realized_profit': realized_profit,
+                'positions_closed': positions_closed,
+                'balance_available': balance_available,
+                'status': 'pending',
+                'created_at': created_at,
+            }
+        }), 200
+    except Exception as e:
+        logger.error(f'❌ FXCM notification create error: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -20791,25 +21646,31 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
             return None, error_msg
 
         elif broker_name == 'FXCM':
-            logger.info(f"[Broker Switch] Bot {bot_id}: Using FXCM REST API")
+            logger.info(f"[Broker Switch] Bot {bot_id}: Using FXCM connection")
             api_key = cred['api_key']
+            username = cred.get('username')
+            password = cred.get('password')
             account_number = cred['account_number']
             is_live = bool(cred['is_live'])
 
-            if not api_key:
-                error_msg = 'FXCM: Missing API token'
+            if not api_key and not (username and password):
+                error_msg = 'FXCM: Missing token and missing username/password'
                 logger.error(error_msg)
                 return None, error_msg
 
             fxcm_conn = FXCMConnection(credentials={
                 'api_key': api_key,
+                'username': username,
+                'password': password,
                 'account_number': account_number,
+                'server': cred.get('server'),
+                'connection': 'Real' if is_live else 'Demo',
                 'is_live': is_live,
             })
             if fxcm_conn.connect():
                 logger.info(f"✅ Bot {bot_id}: Connected to FXCM ({account_number or 'FXCM'})")
                 return 'FXCM', fxcm_conn
-            error_msg = 'Failed to connect to FXCM'
+            error_msg = fxcm_conn.last_error or 'Failed to connect to FXCM'
             logger.error(error_msg)
             return None, error_msg
         
@@ -24099,7 +24960,10 @@ def update_commission_config():
         # Validate rates are between 0 and 1
         rate_fields = [
             'developer_direct_rate', 'developer_referral_rate', 'recruiter_rate',
-            'ig_developer_rate', 'ig_recruiter_rate', 'tier2_rate'
+            'ig_developer_rate', 'ig_recruiter_rate',
+            'fxcm_developer_rate', 'fxcm_recruiter_rate',
+            'binance_developer_rate', 'binance_recruiter_rate',
+            'tier2_rate'
         ]
         for field in rate_fields:
             if field in data:
@@ -24113,7 +24977,13 @@ def update_commission_config():
         # Build dynamic UPDATE
         updates = []
         values = []
-        allowed = rate_fields + ['developer_id', 'ig_commission_enabled', 'multi_tier_enabled']
+        allowed = rate_fields + [
+            'developer_id',
+            'ig_commission_enabled',
+            'fxcm_commission_enabled',
+            'binance_commission_enabled',
+            'multi_tier_enabled',
+        ]
         for key in allowed:
             if key in data:
                 updates.append(f'{key} = ?')
@@ -24164,6 +25034,14 @@ def preview_commission_split():
             dev_rate = float(cfg.get('ig_developer_rate', 0.25))
             rec_rate = float(cfg.get('ig_recruiter_rate', 0.05))
             direct_rate = float(cfg.get('developer_direct_rate', 0.25))
+        elif source == 'FXCM':
+            dev_rate = float(cfg.get('fxcm_developer_rate', 0.25))
+            rec_rate = float(cfg.get('fxcm_recruiter_rate', 0.05))
+            direct_rate = float(cfg.get('fxcm_developer_rate', 0.25))
+        elif source == 'BINANCE':
+            dev_rate = float(cfg.get('binance_developer_rate', 0.25))
+            rec_rate = float(cfg.get('binance_recruiter_rate', 0.05))
+            direct_rate = float(cfg.get('binance_developer_rate', 0.25))
         else:
             direct_rate = float(cfg.get('developer_direct_rate', 0.25))
             dev_rate = float(cfg.get('developer_referral_rate', 0.25))
