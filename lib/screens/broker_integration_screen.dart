@@ -1475,10 +1475,8 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       : _isOandaBroker
                           ? '📱 How to get your OANDA API credentials:'
                       : _isFxcmBroker
-                        ? '📱 How to get your FXCM API credentials:'
-                          : _isIgBroker
-                              ? '📱 How to get your IG API credentials:'
-                              : '📱 How to get your MT5 credentials:',
+                          ? '📱 How to get your FXCM API credentials:'
+                          : '📱 How to get your MT5 credentials:',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
@@ -1491,10 +1489,8 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       : _isOandaBroker
                           ? '1. Go to oanda.com → My Account → Manage API Access\n2. Click "Generate" to create a Personal Access Token\n3. Copy the full token (shown once — save it!)\n4. Find your Account ID on the OANDA dashboard\n   (format: 001-001-XXXXXXX-001)\n5. Choose DEMO (fxpractice) or LIVE (fxtrade) mode'
                       : _isFxcmBroker
-                        ? '1. Login to your FXCM account portal\n2. Create/locate your API token\n3. Copy the Bearer token into the API Token field\n4. Enter account ID if you have multiple accounts\n5. Choose DEMO or LIVE to match your FXCM environment'
-                          : _isIgBroker
-                              ? '1. Open the IG developer portal and create an API key\n2. Use your IG login username and password\n3. Copy the correct Account ID from IG\n4. Match DEMO/LIVE to the same IG environment\n5. Test connection before creating bots'
-                              : '1. Open your MetaTrader 5 terminal\n2. Login with your broker account\n3. Your account number appears at the top\n4. Use your MT5 login password\n5. Server will auto-populate',
+                          ? '1. Login to your FXCM account portal\n2. Create/locate your API token\n3. Copy the Bearer token into the API Token field\n4. Enter account ID if you have multiple accounts\n5. Choose DEMO or LIVE to match your FXCM environment'
+                          : '1. Open your MetaTrader 5 terminal\n2. Login with your broker account\n3. Your account number appears at the top\n4. Use your MT5 login password\n5. Server will auto-populate',
                   style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
                 const SizedBox(height: 16),
@@ -1516,14 +1512,14 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       Text(
                         _isBinanceBroker
                             ? 'API Key: paste this client\'s Binance API key'
-                            : (_isFxcmBroker ? 'Token: paste your FXCM Bearer token' : (_isIgBroker ? 'API Key: paste your IG API key' : 'Account: demo or 136372035')),
+                            : (_isFxcmBroker ? 'Token: paste your FXCM Bearer token' : 'Account: demo or 136372035'),
                         style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         _isBinanceBroker
                             ? 'Secret: paste this client\'s Binance API secret'
-                            : (_isFxcmBroker ? 'Account ID: optional (auto-detect if blank)' : (_isIgBroker ? 'Account ID: D... or live account ID' : 'Password: demo123')),
+                            : (_isFxcmBroker ? 'Account ID: optional (auto-detect if blank)' : 'Password: demo123'),
                         style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                       ),
                     ],
