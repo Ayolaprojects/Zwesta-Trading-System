@@ -82,6 +82,71 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info(f"Runtime infrastructure: {get_runtime_infrastructure_summary()}")
 
+_forexconnect_bootstrap_attempted = False
+
+
+def ensure_forexconnect_sdk_available() -> bool:
+    """Try to make the locally installed ForexConnect SDK importable on Windows."""
+    global _forexconnect_bootstrap_attempted
+    if _forexconnect_bootstrap_attempted:
+        return importlib.util.find_spec('forexconnect') is not None
+
+    _forexconnect_bootstrap_attempted = True
+
+    if importlib.util.find_spec('forexconnect') is not None:
+        return True
+
+    candidate_roots = []
+    for raw_path in [
+        os.getenv('FOREXCONNECT_HOME', ''),
+        os.getenv('FOREXCONNECT_SDK_PATH', ''),
+        r'C:\Program Files\Candleworks\ForexConnectAPIx64',
+        r'C:\Program Files\Candleworks\ForexConnectAPI',
+        r'C:\ForexConnectAPI-master',
+    ]:
+        normalized = str(raw_path or '').strip().strip('"')
+        if normalized and os.path.exists(normalized) and normalized not in candidate_roots:
+            candidate_roots.append(normalized)
+
+    def _add_path_once(path_value: str) -> None:
+        if path_value and path_value not in sys.path:
+            sys.path.insert(0, path_value)
+
+    def _add_dll_dir(path_value: str) -> None:
+        if not path_value or not os.path.isdir(path_value):
+            return
+        try:
+            if hasattr(os, 'add_dll_directory'):
+                os.add_dll_directory(path_value)
+        except Exception:
+            pass
+        existing_path = os.environ.get('PATH', '')
+        if path_value.lower() not in existing_path.lower():
+            os.environ['PATH'] = path_value + os.pathsep + existing_path
+
+    for root in candidate_roots:
+        for dll_dir in [root, os.path.join(root, 'bin')]:
+            if os.path.isdir(dll_dir):
+                _add_dll_dir(dll_dir)
+
+        search_roots = [root, os.path.join(root, 'bin')]
+        for search_root in search_roots:
+            if not os.path.isdir(search_root):
+                continue
+            for current_root, dirnames, filenames in os.walk(search_root):
+                if 'forexconnect' in dirnames and os.path.isfile(os.path.join(current_root, 'forexconnect', '__init__.py')):
+                    _add_path_once(current_root)
+                    if importlib.util.find_spec('forexconnect') is not None:
+                        logger.info(f"[FXCM] ForexConnect SDK discovered at {current_root}")
+                        return True
+                if 'fxcorepy.py' in filenames or any(name.startswith('fxcorepy') and name.endswith(('.pyd', '.so')) for name in filenames):
+                    _add_path_once(current_root)
+                    if importlib.util.find_spec('forexconnect') is not None:
+                        logger.info(f"[FXCM] ForexConnect SDK discovered via fxcorepy at {current_root}")
+                        return True
+
+    return importlib.util.find_spec('forexconnect') is not None
+
 MT5_AUTO_LAUNCH = os.getenv('MT5_AUTO_LAUNCH', '0' if os.getenv('DEPLOYMENT_MODE', 'LOCAL').upper() == 'VPS' else '1').strip().lower() in ['1', 'true', 'yes', 'on']
 MT5_AUTO_RESTART = os.getenv('MT5_AUTO_RESTART', '0').strip().lower() in ['1', 'true', 'yes', 'on']
 MT5_STARTUP_WARMUP = os.getenv('MT5_STARTUP_WARMUP', '0' if os.getenv('DEPLOYMENT_MODE', 'LOCAL').upper() == 'VPS' else '1').strip().lower() in ['1', 'true', 'yes', 'on']
@@ -5087,6 +5152,7 @@ class FXCMConnection(BrokerConnection):
 
     def _login_forexconnect(self) -> bool:
         try:
+            ensure_forexconnect_sdk_available()
             from forexconnect import ForexConnect  # type: ignore
 
             username = self.credentials.get('username')
@@ -5134,8 +5200,8 @@ class FXCMConnection(BrokerConnection):
             return True
         except ImportError:
             self.last_error = (
-                'ForexConnect is not installed in this backend environment. '
-                'Install the official FXCM forexconnect package to use username/password login.'
+                'ForexConnect Python bindings were not found in this backend environment. '
+                'Install the official FXCM ForexConnect SDK or set FOREXCONNECT_HOME to the SDK path.'
             )
             logger.error(self.last_error)
             return False
