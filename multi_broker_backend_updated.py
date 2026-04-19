@@ -6959,7 +6959,7 @@ SMALL_ACCOUNT_PRESETS = {
         'drawdownPauseHours': 12.0,
         'maxOpenPositions': 2,
         'maxPositionsPerSymbol': 1,
-        'signalThreshold': 75,
+        'signalThreshold': 40,
         'allowedVolatility': ['Very Low', 'Low', 'Medium'],
         'autoSwitch': False,
         'intelligentScanner': True,
@@ -10659,7 +10659,7 @@ SYMBOL_PARAMETERS = {
         'stop_loss_pips': 1200,
         'take_profit_pips': 3600,
         'max_slippage': 0.002,
-        'min_signal_strength': 50,  # Lowered to match current BTC signal quality while keeping safer strategy guards
+        'min_signal_strength': 40,  # Low threshold for more crypto trade opportunities
         'volatility_high': 5.0,
         'volatility_low': 1.0,
         'max_hold_minutes': 90,
@@ -10669,7 +10669,7 @@ SYMBOL_PARAMETERS = {
         'stop_loss_pips': 160,
         'take_profit_pips': 480,
         'max_slippage': 0.002,
-        'min_signal_strength': 45,
+        'min_signal_strength': 40,  # Low threshold for more crypto trade opportunities
         'volatility_high': 4.0,
         'volatility_low': 1.0,
         'max_hold_minutes': 90,
@@ -17635,7 +17635,7 @@ def _crypto_only_signal_threshold(symbols: List[Any]) -> Optional[int]:
     }
     if not base_symbols or not base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
         return None
-    return 50 if 'BTCUSD' in base_symbols else 45
+    return 40  # Low threshold for crypto bots
 
 
 def _resolve_runtime_trade_cadence(
@@ -18331,11 +18331,11 @@ def _safe_float(raw_value, default_value: float = 0.0) -> float:
 
 
 def _resolve_display_currency_for_mode(mode_value: Any, fallback_currency: str = 'USD') -> str:
-    """Normalize API display currency: LIVE -> ZAR, DEMO -> fallback/default."""
-    mode = str(mode_value or 'demo').strip().lower()
-    if mode == 'live':
-        return 'ZAR'
-    return str(fallback_currency or 'USD').strip().upper() or 'USD'
+    """Normalize API display currency: use the account's actual currency, not hardcoded."""
+    fb = str(fallback_currency or 'USD').strip().upper() or 'USD'
+    if fb in SUPPORTED_DISPLAY_CURRENCIES:
+        return fb
+    return 'USD'
 
 
 def _normalize_symbol_base(symbol: str) -> str:
@@ -26969,11 +26969,24 @@ def user_dashboard():
         cursor.execute('SELECT COUNT(*) FROM user_bots WHERE user_id = ? AND enabled = 1', (user_id,))
         active_bots_count = cursor.fetchone()[0]
         
-        # Total profit
+        # Total profit grouped by currency
         cursor.execute('''
-            SELECT COALESCE(SUM(total_profit), 0) FROM user_bots WHERE user_id = ?
+            SELECT 
+                COALESCE(bc.account_currency, 'USD') as currency,
+                COALESCE(SUM(ub.total_profit), 0) as profit
+            FROM user_bots ub
+            LEFT JOIN bot_credentials boc ON boc.bot_id = ub.bot_id
+            LEFT JOIN broker_credentials bc ON bc.credential_id = boc.credential_id
+            WHERE ub.user_id = ?
+            GROUP BY COALESCE(bc.account_currency, 'USD')
         ''', (user_id,))
-        total_profit = cursor.fetchone()[0] or 0
+        profit_by_currency = {}
+        total_profit = 0
+        for row in cursor.fetchall():
+            cur = (row[0] or 'USD').upper()
+            amt = float(row[1] or 0)
+            profit_by_currency[cur] = round(amt, 2)
+            total_profit += amt
         
         # Total trades
         cursor.execute('''
@@ -27032,6 +27045,7 @@ def user_dashboard():
                 'total_bots': total_bots,
                 'active_bots': active_bots_count,
                 'total_profit': round(total_profit, 2),
+                'profit_by_currency': profit_by_currency,
                 'total_trades': total_trades,
                 'win_rate_percent': win_rate,
                 'total_commission_earned': round(total_commission_earned, 2),
