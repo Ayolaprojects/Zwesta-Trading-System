@@ -51,6 +51,8 @@ def build_sqlite_connection(
     conn = sqlite3.connect(database_path or get_database_path(), timeout=timeout, check_same_thread=False)
     if row_factory:
         conn.row_factory = sqlite3.Row
+    if busy_timeout_ms is None:
+        busy_timeout_ms = int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', '60000'))
     if busy_timeout_ms is not None:
         conn.execute(f'PRAGMA busy_timeout = {int(busy_timeout_ms)}')
     if wal:

@@ -27,6 +27,8 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
 
+from runtime_infrastructure import build_sqlite_connection, get_database_path
+
 # Configure logging for this worker
 logging.basicConfig(
     level=logging.INFO,
@@ -40,10 +42,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== CONSTANTS ====================
-DATABASE_PATH = os.environ.get('DATABASE_PATH', r'C:\backend\zwesta_trading.db')
+DATABASE_PATH = get_database_path()
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
-COMMAND_POLL_INTERVAL = 2  # seconds between checking for new commands
+COMMAND_POLL_INTERVAL = max(2, int(os.getenv('WORKER_COMMAND_POLL_INTERVAL', '3')))  # seconds between checking for new commands
 TRADING_INTERVAL = 300  # default 5 min between trade cycles
+SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', '60000')))
 
 # ==================== WORKER STATE ====================
 worker_id = None
@@ -57,12 +60,13 @@ mt5_module = None       # MetaTrader5 module reference
 
 
 def get_db_connection():
-    """Get database connection with WAL mode"""
-    conn = sqlite3.connect(DATABASE_PATH, timeout=30.0, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA synchronous=NORMAL')
-    return conn
+    """Get a WAL-enabled SQLite connection with a longer busy timeout for worker contention."""
+    return build_sqlite_connection(
+        timeout=max(30.0, SQLITE_BUSY_TIMEOUT_MS / 1000),
+        database_path=DATABASE_PATH,
+        row_factory=True,
+        busy_timeout_ms=SQLITE_BUSY_TIMEOUT_MS,
+    )
 
 
 def update_heartbeat():

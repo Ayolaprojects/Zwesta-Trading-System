@@ -12,3 +12,11 @@ node_modules/
 .cache/
 node_modules/
 .env
+__pycache__/
+*.pyc
+worker_*.log
+replay_pid*.log
+hs_err_pid*.log
+*.log
+.dart_tool/
+backups/

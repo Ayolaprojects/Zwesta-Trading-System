@@ -35,10 +35,16 @@ DATABASE_PATH = get_database_path()
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mt5_worker.py')
 HEARTBEAT_TIMEOUT = 30  # seconds before a worker is considered dead
 MONITOR_INTERVAL = 15   # seconds between health checks
+SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', '60000')))
 
 
 def get_db_connection():
-    return build_sqlite_connection(timeout=30.0, row_factory=True)
+    return build_sqlite_connection(
+        timeout=max(30.0, SQLITE_BUSY_TIMEOUT_MS / 1000),
+        database_path=DATABASE_PATH,
+        row_factory=True,
+        busy_timeout_ms=SQLITE_BUSY_TIMEOUT_MS,
+    )
 
 
 class WorkerPoolManager:

@@ -280,9 +280,15 @@ def repopulate_active_bots():
 
 # Note: repopulate_active_bots() is called later after get_db_connection is defined
 
+
+def resolve_environment_mode() -> str:
+    """Resolve trading mode once while supporting legacy and current env names."""
+    raw_value = os.getenv('ENVIRONMENT', '').strip() or os.getenv('TRADING_ENV', 'DEMO').strip()
+    return raw_value.upper() or 'DEMO'
+
 # ==================== CONFIGURATION ====================
 # Environment Configuration (DEMO or LIVE)
-ENVIRONMENT = os.getenv('TRADING_ENV', 'DEMO')  # Set TRADING_ENV=LIVE in production
+ENVIRONMENT = resolve_environment_mode()
 AUTO_RESTART_BOTS_ON_STARTUP = os.getenv('AUTO_RESTART_BOTS_ON_STARTUP', 'false').lower() == 'true'
 BOT_STARTUP_RESTART_DELAY_SECONDS = max(0.5, float(os.getenv('BOT_STARTUP_RESTART_DELAY_SECONDS', '15')))  # 15s gap between bots prevents MT5 lock thundering herd
 BOT_STARTUP_RESTART_LIMIT = max(0, int(os.getenv('BOT_STARTUP_RESTART_LIMIT', '0')))
@@ -291,7 +297,16 @@ BOT_STARTUP_RESTART_LIMIT = max(0, int(os.getenv('BOT_STARTUP_RESTART_LIMIT', '0
 API_KEY = os.getenv('API_KEY', 'your_generated_api_key_here_change_in_production')
 
 # ==================== WORKER POOL CONFIG ====================
-WORKER_COUNT = max(0, int(os.getenv('WORKER_COUNT', '0')))  # 0 = single-process (legacy), 1+ = multi-process
+DEPLOYMENT_MODE = os.getenv('DEPLOYMENT_MODE', 'LOCAL').upper()  # LOCAL or VPS
+CONFIGURED_WORKER_COUNT = max(0, int(os.getenv('WORKER_COUNT', '0')))  # Raw env value
+WORKER_COUNT = CONFIGURED_WORKER_COUNT
+if DEPLOYMENT_MODE == 'LOCAL' and WORKER_COUNT > 2:
+    # This backend only needs one worker per local Exness terminal: live + demo.
+    logger.warning(
+        f"[WORKERS] Capping local WORKER_COUNT from {WORKER_COUNT} to 2 "
+        f"for the single live/demo Exness setup"
+    )
+    WORKER_COUNT = 2
 MAX_BOTS_PER_WORKER = max(1, int(os.getenv('MAX_BOTS_PER_WORKER', '35')))
 MAX_CONCURRENT_ACTIVE_BOTS = max(1, int(os.getenv('MAX_CONCURRENT_ACTIVE_BOTS', '5')))  # 4GB VPS starter cap
 
@@ -305,12 +320,14 @@ SOCKET_BRIDGES = os.getenv('SOCKET_BRIDGES', '')  # Self-hosted MT5 socket bridg
 SOCKET_AUTH_TOKEN = os.getenv('SOCKET_AUTH_TOKEN', 'zwesta')  # Auth token for socket bridges
 
 # ==================== ENVIRONMENT MODE ====================
-ENVIRONMENT = os.getenv('ENVIRONMENT', 'DEMO').upper()
-DEPLOYMENT_MODE = os.getenv('DEPLOYMENT_MODE', 'LOCAL').upper()  # LOCAL or VPS
 print(f"\n{'='*70}")
 print(f"[ENVIRONMENT] Current Mode: {ENVIRONMENT}")
 print(f"[DEPLOYMENT] Mode: {DEPLOYMENT_MODE}")
-print(f"[WORKERS] Worker Count: {WORKER_COUNT} ({'multi-process' if WORKER_COUNT > 0 else 'single-process (legacy)'})")
+print(
+    f"[WORKERS] Worker Count: {WORKER_COUNT} "
+    f"({'multi-process' if WORKER_COUNT > 0 else 'single-process (legacy)'})"
+    + (f" [configured={CONFIGURED_WORKER_COUNT}]" if CONFIGURED_WORKER_COUNT != WORKER_COUNT else '')
+)
 print(f"[REST TRADING] MetaAPI: {'ENABLED' if METAAPI_TOKEN else 'DISABLED (no token)'}")
 print(f"[REST TRADING] Prefer REST: {PREFER_REST_TRADING}")
 print(f"[PRICE FEED] Twelve Data: {'ENABLED' if TWELVE_DATA_KEY else 'DISABLED'} | Alpha Vantage: {'ENABLED' if ALPHA_VANTAGE_KEY else 'DISABLED'}")
@@ -361,8 +378,19 @@ EXNESS_LIVE = {
     'is_live': True,
 }
 
+
+def get_exness_mt5_config(is_live: Optional[bool] = None) -> Dict:
+    """Return a fresh Exness MT5 config derived from the resolved environment mode."""
+    target_is_live = ENVIRONMENT == 'LIVE' if is_live is None else bool(is_live)
+    base_config = EXNESS_LIVE if target_is_live else EXNESS_DEMO
+    config = dict(base_config)
+    configured_path = globals().get('EXNESS_LIVE_PATH') if target_is_live else globals().get('EXNESS_DEMO_PATH')
+    if configured_path:
+        config['path'] = configured_path
+    return config
+
 # Only these two will be used for Exness
-MT5_CONFIG = EXNESS_LIVE if ENVIRONMENT == 'LIVE' else EXNESS_DEMO
+MT5_CONFIG = get_exness_mt5_config()
 # ==================== FXCM REST API CONNECTION ====================
 # FXCM REST API uses Socket.IO + HTTP for trading.
 # Demo: https://api-demo.fxcm.com   Real: https://api.fxcm.com
@@ -616,10 +644,14 @@ else:
 # On VPS, MT5 terminal is remote, so don't specify a path (connect to running instance)
 if DEPLOYMENT_MODE == 'LOCAL':
     # Use the terminal matching the configured startup account.
-    preferred_startup_path = EXNESS_LIVE_PATH if MT5_CONFIG.get('is_live') else EXNESS_DEMO_PATH
-    preferred_mode_label = 'LIVE' if MT5_CONFIG.get('is_live') else 'DEMO'
+    preferred_startup_path = EXNESS_LIVE_PATH if ENVIRONMENT == 'LIVE' else EXNESS_DEMO_PATH
+    preferred_mode_label = 'LIVE' if ENVIRONMENT == 'LIVE' else 'DEMO'
     if preferred_startup_path:
-        MT5_CONFIG['path'] = preferred_startup_path
+        if EXNESS_LIVE_PATH:
+            EXNESS_LIVE['path'] = EXNESS_LIVE_PATH
+        if EXNESS_DEMO_PATH:
+            EXNESS_DEMO['path'] = EXNESS_DEMO_PATH
+        MT5_CONFIG = get_exness_mt5_config()
         logger.info(f"Found Exness MT5 ({preferred_mode_label}) at: {preferred_startup_path}")
     else:
         # Fallback: try any Exness terminal
@@ -631,11 +663,15 @@ if DEPLOYMENT_MODE == 'LOCAL':
         ]
         for path in exness_paths:
             if os.path.exists(path):
-                MT5_CONFIG['path'] = path
+                if ENVIRONMENT == 'LIVE':
+                    EXNESS_LIVE['path'] = path
+                else:
+                    EXNESS_DEMO['path'] = path
+                MT5_CONFIG = get_exness_mt5_config()
                 logger.info(f"Found Exness MT5 at: {path}")
                 break
 
-        if MT5_CONFIG['path'] is None:
+        if not MT5_CONFIG.get('path'):
             logger.warning("⚠️  Exness MT5 not found in common paths - ensure Exness MT5 is installed")
 else:
     logger.info(f"[VPS MODE] Not searching for local MT5 - will connect to remote MT5 terminal")
@@ -5071,10 +5107,11 @@ class FXCMConnection(BrokerConnection):
             return None
 
     def _connect_socketio_rest(self) -> bool:
-        """Authenticate via FXCM Socket.IO REST handshake (works for demo accounts).
+        """Authenticate via FXCM Socket.IO REST handshake.
         
-        FXCM demo accounts use password as the access_token for Socket.IO.
-        The handshake returns a session ID used as bearer token.
+        Demo accounts can use the login password as the Socket.IO access_token.
+        Token-based accounts can also pass an API token in api_key/password.
+        The handshake returns a session ID used as the bearer token prefix.
         """
         import requests as _req
 
@@ -5125,9 +5162,9 @@ class FXCMConnection(BrokerConnection):
 
             self.last_error = self.last_error or (
                 'FXCM authentication failed. '
-                'Make sure you are using a valid FXCM API Access Token '
-                '(generate one from FXCM Trading Station > Settings > API Token). '
-                'The API token is NOT your account password.'
+                'Use Login ID + Password for demo connections. '
+                'If your FXCM account requires token auth, use the API token. '
+                'If you need desktop username/password auth on the backend, install ForexConnect.'
             )
             logger.error(f'[FXCM] {self.last_error}')
             return False
@@ -5810,8 +5847,8 @@ def is_mt5_broker_name(broker_name: str) -> bool:
 def get_mt5_config_for_broker(broker_name: str) -> Dict:
     normalized = canonicalize_broker_name(broker_name)
     if normalized == 'Exness':
-        return MT5_CONFIG
-    return MT5_CONFIG
+        return get_exness_mt5_config()
+    return get_exness_mt5_config()
 
 
 def get_balance_cache_key(broker_name: str, account_id) -> str:
