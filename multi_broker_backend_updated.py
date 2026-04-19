@@ -25508,6 +25508,19 @@ def update_commission_config():
                 if val < 0 or val > 1:
                     return jsonify({'success': False, 'error': f'{field} must be between 0 and 1'}), 400
 
+        # Validate total rates don't exceed 100%
+        dev_direct = float(data.get('developer_direct_rate', 0.25))
+        dev_referral = float(data.get('developer_referral_rate', dev_direct))
+        recruiter = float(data.get('recruiter_rate', 0.05))
+        tier2 = float(data.get('tier2_rate', 0.02))
+        max_total = dev_referral + recruiter + tier2
+        if max_total > 1.0:
+            return jsonify({
+                'success': False,
+                'error': f'Total commission rates ({max_total*100:.0f}%) exceed 100%. '
+                         f'Developer ({dev_referral*100:.0f}%) + Recruiter ({recruiter*100:.0f}%) + Tier2 ({tier2*100:.0f}%) must be ≤ 100%.'
+            }), 400
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
@@ -27147,7 +27160,7 @@ def commission_summary():
         return jsonify({
             'success': True,
             'summary': {
-                'total_commissions': len(comm_stats),
+                'total_commissions': comm_stats[0] or 0,
                 'total_earned': round(comm_stats[1] or 0, 2),
                 'last_30_days_earned': round(comm_stats[2] or 0, 2),
             },
@@ -28247,85 +28260,18 @@ def record_exness_trade_profit():
         ))
 
         # ==================== PROFIT COMMISSION SPLIT ====================
-        cfg = _get_commission_config(cursor)
-        developer_id = _get_developer_account_id(cfg)
-        referrer_id = _get_active_referrer(cursor, user_id)
-        
-        if profit_loss > 0:  # Only split if profitable
-            if referrer_id:
-                dev_rate = float(cfg.get('developer_referral_rate', cfg.get('developer_direct_rate', 0.25)) or cfg.get('developer_direct_rate', 0.25))
-                recruiter_rate = float(cfg.get('recruiter_rate', 0.05) or 0.05)
-                dev_commission = profit_loss * dev_rate
-                referrer_commission = profit_loss * recruiter_rate
-                user_profit = profit_loss * 0.70
-                
-                logger.info(
-                    f"📊 Profit split (WITH REFERRER): Dev ${dev_commission:.2f} ({dev_rate*100:.0f}%), "
-                    f"Referrer ${referrer_commission:.2f} ({recruiter_rate*100:.0f}%), User ${user_profit:.2f} (70%)"
+        # Use the unified commission distribution system (same as all other brokers)
+        if profit_loss > 0:
+            try:
+                distribute_trade_commissions(
+                    bot_id=f'exness_{broker_account_id}',
+                    user_id=user_id,
+                    profit_amount=profit_loss,
+                    source='Exness',
                 )
-            else:
-                direct_rate = float(cfg.get('developer_direct_rate', 0.30) or 0.30)
-                dev_commission = profit_loss * direct_rate
-                referrer_commission = 0
-                user_profit = profit_loss * 0.70
-                
-                logger.info(f"📊 Profit split (DIRECT): Dev ${dev_commission:.2f} ({direct_rate*100:.0f}%), User ${user_profit:.2f} (70%)")
-            
-            # Insert commission records
-            commission_id_dev = str(uuid.uuid4())
-            commission_id_user = str(uuid.uuid4())
-            commission_time = datetime.now().isoformat()
-            
-            # Developer commission
-            cursor.execute('''
-                INSERT INTO commissions
-                (commission_id, earner_id, payer_id, amount, commission_type, source_id, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                commission_id_dev, developer_id, user_id, dev_commission, 'trade_profit',
-                profit_id, 'earned', commission_time
-            ))
-            
-            # User profit (if not all goes to dev)
-            if user_profit > 0:
-                cursor.execute('''
-                    INSERT INTO commissions
-                    (commission_id, earner_id, payer_id, amount, commission_type, source_id, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    commission_id_user, user_id, developer_id, user_profit, 'trade_profit',
-                    profit_id, 'earned', commission_time
-                ))
-            
-            # Referrer commission (if applicable)
-            if referrer_id and referrer_commission > 0:
-                commission_id_referrer = str(uuid.uuid4())
-                cursor.execute('''
-                    INSERT INTO commissions
-                    (commission_id, earner_id, payer_id, amount, commission_type, source_id, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    commission_id_referrer, referrer_id, user_id, referrer_commission, 'referral_profit',
-                    profit_id, 'earned', commission_time
-                ))
-                
-                # Update user total commission
-                cursor.execute('''
-                    UPDATE users SET total_commission = total_commission + ? 
-                    WHERE user_id = ?
-                ''', (referrer_commission, referrer_id))
-            
-            # Update developer total commission
-            cursor.execute('''
-                UPDATE users SET total_commission = total_commission + ? 
-                WHERE user_id = ?
-            ''', (dev_commission, developer_id))
-            
-            # Update user total commission
-            cursor.execute('''
-                UPDATE users SET total_commission = total_commission + ? 
-                WHERE user_id = ?
-            ''', (user_profit, user_id))
+                logger.info(f"📊 Exness trade commission distributed via unified system: ${profit_loss:.2f}")
+            except Exception as comm_err:
+                logger.error(f"Commission distribution failed for Exness trade {profit_id}: {comm_err}")
 
         conn.commit()
         conn.close()
@@ -28663,9 +28609,27 @@ def admin_verify_exness_withdrawal():
         # ==================== COMMISSION SPLIT LOGIC ====================
         cfg = _get_commission_config(cursor)
         developer_id = _get_developer_account_id(cfg)
-        direct_rate = float(cfg.get('developer_direct_rate', 0.30) or 0.30)
-        dev_share = profit_amount * direct_rate
-        user_share = profit_amount * 0.70  # User gets 70%
+        referrer_id = _get_active_referrer(cursor, user_id)
+
+        # Calculate rates from config (not hardcoded)
+        if referrer_id:
+            dev_rate = float(cfg.get('developer_referral_rate', cfg.get('developer_direct_rate', 0.25)) or 0.25)
+            recruiter_rate = float(cfg.get('recruiter_rate', 0.05) or 0.05)
+        else:
+            dev_rate = float(cfg.get('developer_direct_rate', 0.25) or 0.25)
+            recruiter_rate = 0.0
+
+        # Validate total rates don't exceed 100%
+        total_commission_rate = dev_rate + recruiter_rate
+        if total_commission_rate > 1.0:
+            dev_rate = min(dev_rate, 0.50)
+            recruiter_rate = min(recruiter_rate, 0.10)
+            total_commission_rate = dev_rate + recruiter_rate
+
+        user_rate = 1.0 - total_commission_rate
+        dev_share = profit_amount * dev_rate
+        recruiter_share = profit_amount * recruiter_rate
+        user_share = profit_amount * user_rate
         
         now = datetime.now().isoformat()
         
@@ -28699,16 +28663,25 @@ def admin_verify_exness_withdrawal():
             'profit_withdrawal', withdrawal_id, 'completed', now
         ))
         
-        # STEP 3: Record developer commission
-        commission_id = str(uuid.uuid4())
-        cursor.execute('''
-            INSERT INTO commissions 
-            (commission_id, earner_id, payer_id, amount, commission_type, source_id, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            commission_id, developer_id, user_id, dev_share,
-            'exness_profit_commission', withdrawal_id, 'earned', now
-        ))
+        # STEP 3: Record developer commission using correct schema
+        now_ts = now
+        _insert_commission_record(
+            cursor, earner_id=developer_id, client_id=user_id,
+            bot_id=f'exness_withdrawal_{withdrawal_id}',
+            profit_amount=profit_amount, commission_rate=dev_rate,
+            commission_amount=dev_share, now=now_ts,
+            entry_type='platform_commission', broker_source='Exness',
+        )
+        
+        # STEP 3b: Record recruiter commission if applicable
+        if referrer_id and recruiter_share > 0:
+            _insert_commission_record(
+                cursor, earner_id=referrer_id, client_id=user_id,
+                bot_id=f'exness_withdrawal_{withdrawal_id}',
+                profit_amount=profit_amount, commission_rate=recruiter_rate,
+                commission_amount=recruiter_share, now=now_ts,
+                entry_type='recruiter_commission', broker_source='Exness',
+            )
         
         # STEP 4: Update withdrawal status to verified
         cursor.execute('''
@@ -28721,7 +28694,9 @@ def admin_verify_exness_withdrawal():
         conn.close()
         
         logger.info(f"✅ ADMIN verified withdrawal {withdrawal_id}: User {user_id}")
-        logger.info(f"   Commission split: Dev ${dev_share:.2f} ({direct_rate*100:.0f}%), User ${user_share:.2f} (70%)")
+        logger.info(f"   Commission split: Dev ${dev_share:.2f} ({dev_rate*100:.0f}%), "
+                     f"Recruiter ${recruiter_share:.2f} ({recruiter_rate*100:.0f}%), "
+                     f"User ${user_share:.2f} ({user_rate*100:.0f}%)")
         
         return jsonify({
             'success': True,
@@ -28729,8 +28704,10 @@ def admin_verify_exness_withdrawal():
             'status': 'verified',
             'profit_amount': profit_amount,
             'developer_commission': round(dev_share, 2),
+            'recruiter_commission': round(recruiter_share, 2),
             'user_wallet_credit': round(user_share, 2),
-            'message': f'✅ Withdrawal verified! User will receive ${round(user_share, 2)} in their wallet. Developer earned ${round(dev_share, 2)}.'
+            'message': f'✅ Withdrawal verified! User receives ${round(user_share, 2)} ({user_rate*100:.0f}%). Developer earned ${round(dev_share, 2)} ({dev_rate*100:.0f}%).'
+                       + (f' Recruiter earned ${round(recruiter_share, 2)} ({recruiter_rate*100:.0f}%).' if recruiter_share > 0 else '')
         }), 200
     
     except Exception as e:
