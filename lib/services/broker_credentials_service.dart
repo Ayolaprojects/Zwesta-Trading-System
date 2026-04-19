@@ -235,6 +235,14 @@ class BrokerCredentialsService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      final normalizedBroker = broker.trim().toLowerCase();
+      if (normalizedBroker == 'ig' || normalizedBroker == 'ig markets') {
+        _errorMessage = 'IG Markets is not integrated in the current backend setup.';
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token');
 
@@ -307,6 +315,12 @@ class BrokerCredentialsService extends ChangeNotifier {
     String? username,
   }) async {
     try {
+      final normalizedBroker = broker.trim().toLowerCase();
+      if (normalizedBroker == 'ig' || normalizedBroker == 'ig markets') {
+        _errorMessage = 'IG Markets is not integrated in the current backend setup.';
+        return false;
+      }
+
       print('🔌 Testing connection to: $broker | Account: $accountNumber');
 
       final response = await http.post(

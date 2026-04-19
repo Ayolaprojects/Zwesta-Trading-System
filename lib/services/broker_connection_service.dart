@@ -77,6 +77,14 @@ class BrokerConnectionService {
       }
 
       final normalizedBroker = broker.trim().toLowerCase();
+      if (normalizedBroker == 'ig' || normalizedBroker == 'ig markets') {
+        return {
+          'success': false,
+          'connected': false,
+          'message': 'IG Markets is not integrated in the current backend setup. Supported direct brokers are Exness, Binance, FXCM, and OANDA.',
+          'errorCode': 'UNSUPPORTED_BROKER',
+        };
+      }
       final Map<String, dynamic> payload;
 
       // IG Markets integration removed
@@ -119,12 +127,12 @@ class BrokerConnectionService {
         };
       }
 
-      // Call backend API with session token and is_live flag
-      // Exness MT5 requires longer timeout due to terminal launch & initialization
+        // Call backend API with session token and is_live flag.
+        // Exness tests now use a fast backend preflight and should fail quickly on bad credentials.
       final isExness = normalizedBroker.contains('exness');
       final timeout = isExness
           ? const Duration(
-              seconds: 60) // Exness needs more time for MT5 terminal
+            seconds: 20) // Exness test should now complete quickly
           : const Duration(seconds: 45); // Other brokers need reasonable time
 
       final response = await http
@@ -190,6 +198,29 @@ class BrokerConnectionService {
           };
         }
       } else if (response.statusCode == 401) {
+        Map<String, dynamic>? data;
+        try {
+          data = jsonDecode(response.body) as Map<String, dynamic>;
+        } catch (_) {
+          data = null;
+        }
+
+        final errorMessage = (data?['error'] ?? '').toString();
+        final normalizedError = errorMessage.toLowerCase();
+        final isSessionError = normalizedError.contains('session') ||
+            normalizedError.contains('token') ||
+            normalizedError.contains('unauthorized');
+
+        if (!isSessionError && errorMessage.isNotEmpty) {
+          debugPrint('❌ Broker authentication failed: $errorMessage');
+          return {
+            'success': false,
+            'connected': false,
+            'message': errorMessage,
+            'errorCode': 'AUTH_FAILED',
+          };
+        }
+
         debugPrint('❌ Unauthorized: Session token invalid');
         return {
           'success': false,

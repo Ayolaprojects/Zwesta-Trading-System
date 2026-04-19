@@ -64,6 +64,14 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     'OANDA',       // ✅ REST API forex trading
   ];
 
+  String _sanitizeSelectedBroker(String broker) {
+    final normalizedBroker = _normalizeBrokerDisplayName(broker);
+    if (brokers.contains(normalizedBroker)) {
+      return normalizedBroker;
+    }
+    return 'Exness';
+  }
+
   final Map<String, String> brokerServers = {
     'Binance': 'spot',
     'OANDA': 'REST-API',
@@ -96,7 +104,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     _loadSavedAccounts();
   }
 
-  bool get _isIgBroker => _selectedBroker.toLowerCase().contains('ig');
   bool get _isBinanceBroker => _selectedBroker.toLowerCase() == 'binance';
   bool get _isOandaBroker => _selectedBroker.toLowerCase() == 'oanda';
   bool get _isFxcmBroker =>
@@ -106,7 +113,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   bool get _isPxbtBroker =>
       _selectedBroker.toLowerCase() == 'pxbt' ||
       _selectedBroker.toLowerCase() == 'prime xbt';
-  bool get _isMt5Broker => !_isIgBroker && !_isBinanceBroker && !_isOandaBroker && !_isFxcmBroker;
+  bool get _isMt5Broker => !_isBinanceBroker && !_isOandaBroker && !_isFxcmBroker;
 
   String _normalizeBrokerDisplayName(String broker) {
     final raw = broker.trim();
@@ -117,13 +124,12 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     if (lower == 'binance') return 'Binance';
     if (lower == 'exness') return 'Exness';
     if (lower == 'oanda') return 'OANDA';
-    if (lower == 'ig markets' || lower == 'ig') return 'IG';
     return raw;
   }
 
   Future<void> _persistPreferredBrokerChoice(String broker) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('preferred_broker_display', _normalizeBrokerDisplayName(broker));
+    await prefs.setString('preferred_broker_display', _sanitizeSelectedBroker(broker));
   }
 
   double _doubleValue(dynamic value) =>
@@ -154,6 +160,19 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     await prefs.setString(_modePrefKey('mt5_account', _isLiveMode), _accountController.text);
     await prefs.setString(_modePrefKey('mt5_password', _isLiveMode), _passwordController.text);
     await prefs.setString(_modePrefKey('mt5_server', _isLiveMode), _serverController.text);
+  }
+
+  Future<void> _persistCurrentInputDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('broker', _selectedBroker);
+    await prefs.setBool('is_live_mode', _isLiveMode);
+    await prefs.setString('account_number', _accountController.text);
+    await prefs.setString('mt5_account', _accountController.text);
+    await prefs.setString('mt5_password', _passwordController.text);
+    await prefs.setString('mt5_server', _serverController.text);
+    await prefs.setString('broker_api_key', _apiKeyController.text);
+    await prefs.setString('broker_username', _usernameController.text);
+    await _persistModeScopedCredentials();
   }
 
   Future<void> _restoreModeScopedCredentials() async {
@@ -195,8 +214,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   void _loadSavedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
     final savedBroker = prefs.getString('broker') ?? 'Exness';
-    final normalizedSavedBroker =
-        savedBroker.toLowerCase().contains('xm') ? 'Exness' : savedBroker;
+    final normalizedSavedBroker = _sanitizeSelectedBroker(
+      savedBroker.toLowerCase().contains('xm') ? 'Exness' : savedBroker,
+    );
     final savedMode = prefs.getBool('is_live_mode') ?? false;
     final modeAccount = prefs.getString(_modePrefKey('mt5_account', savedMode));
     final modePassword = prefs.getString(_modePrefKey('mt5_password', savedMode));
@@ -256,14 +276,13 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     }
 
     final missingMt5 = _isMt5Broker && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
-    final missingIg = _isIgBroker && (_apiKeyController.text.isEmpty || _usernameController.text.isEmpty || _passwordController.text.isEmpty || _accountController.text.isEmpty);
     final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
     final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
     final missingFxcm = _isFxcmBroker && !hasFxcmUsernamePassword && !hasFxcmToken;
 
-    if (missingMt5 || missingIg || missingBinance || missingOanda || missingFxcm) {
+    if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please fill all required broker fields')),
       );
@@ -395,6 +414,8 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   }
 
   void _testConnection() async {
+    await _persistCurrentInputDraft();
+
     // Check Exness/PXBT availability first when selected
     if (_isExnessBroker) {
       setState(() => _isTestingConnection = true);
@@ -435,12 +456,13 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     }
 
     final missingMt5 = (_isMt5Broker || _isExnessBroker) && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
-    final missingIg = _isIgBroker && (_apiKeyController.text.isEmpty || _usernameController.text.isEmpty || _passwordController.text.isEmpty || _accountController.text.isEmpty);
     final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
     final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
-    final missingFxcm = _isFxcmBroker && _apiKeyController.text.isEmpty;
+    final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
+    final hasFxcmToken = _apiKeyController.text.isNotEmpty;
+    final missingFxcm = _isFxcmBroker && !hasFxcmUsernamePassword && !hasFxcmToken;
 
-    if (missingMt5 || missingIg || missingBinance || missingOanda || missingFxcm) {
+    if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please fill all required connection fields')),
       );
@@ -453,7 +475,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     if (_isExnessBroker) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('🔌 Testing Exness connection... (may take 30-60 seconds)'),
+          content: const Text('🔌 Testing Exness connection...'),
           duration: const Duration(seconds: 3),
           backgroundColor: Colors.blue.withOpacity(0.7),
         ),
@@ -475,7 +497,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         accountNumber: _accountController.text,
         password: _isOandaBroker ? '' : _passwordController.text,
         server: _serverController.text,
-        apiKey: (_isIgBroker || _isBinanceBroker || _isOandaBroker || _isFxcmBroker)
+        apiKey: (_isBinanceBroker || _isOandaBroker || _isFxcmBroker)
             ? (_apiKeyController.text.isEmpty ? null : _apiKeyController.text)
             : null,
         apiSecret: _isBinanceBroker ? _passwordController.text : null,
@@ -824,10 +846,8 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 ? 'Binance API Connection'
                 : _isOandaBroker
                     ? 'OANDA API Connection'
-                : _isFxcmBroker
-                  ? 'FXCM Connection'
-                    : _isIgBroker
-                        ? 'IG Markets API Connection'
+                    : _isFxcmBroker
+                        ? 'FXCM Connection'
                         : 'MT5 Broker Connection',
             style: Theme.of(context).textTheme.titleLarge,
           ),
@@ -837,10 +857,8 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 ? 'Connect your funded Binance account for crypto bot trading'
                 : _isOandaBroker
                     ? 'Connect your OANDA account — trade Forex, Gold, Oil and Indices'
-                : _isFxcmBroker
-                  ? 'Connect your FXCM Trading Station account for dashboards and account analytics'
-                    : _isIgBroker
-                        ? 'Connect your IG Markets account with the official API credentials'
+                    : _isFxcmBroker
+                        ? 'Connect your FXCM Trading Station account for dashboards and account analytics'
                         : 'Connect your MetaTrader 5 account for automated trading',
             style: Theme.of(context).textTheme.bodySmall,
           ),
@@ -860,7 +878,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 onChanged: (newValue) {
                   if (newValue != null) {
                     setState(() {
-                      _selectedBroker = newValue;
+                      _selectedBroker = _sanitizeSelectedBroker(newValue);
                       _serverController.text = _defaultServerForSelectedBroker();
                     });
                     _persistPreferredBrokerChoice(newValue);
@@ -921,53 +939,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.lock),
                 hintText: 'demo123',
-              ),
-            ),
-          ],
-          if (_isIgBroker) ...[
-            Text('IG API Key', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _apiKeyController,
-              decoration: const InputDecoration(
-                labelText: 'IG API Key',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.vpn_key),
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text('IG Username', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _usernameController,
-              decoration: const InputDecoration(
-                labelText: 'IG Username',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person),
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text('IG Password', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _passwordController,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'IG Password',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.lock),
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text('IG Account ID', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _accountController,
-              decoration: const InputDecoration(
-                labelText: 'IG Account ID',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.account_circle),
-                hintText: 'Demo account IDs usually start with D',
               ),
             ),
           ],

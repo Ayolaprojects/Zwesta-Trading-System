@@ -2786,6 +2786,8 @@ class MT5Connection(BrokerConnection):
             }
 
         super().__init__(BrokerType.METATRADER5, credentials)
+        self.last_error = None
+        self.last_error_code = None
         # CRITICAL FIX: DO NOT launch terminal on every connection attempt!
         # Terminal should only be launched ONCE during backend startup
         # Reuse the existing terminal for all subsequent connections
@@ -2817,6 +2819,38 @@ class MT5Connection(BrokerConnection):
         except ImportError:
             logger.error("MetaTrader5 not installed")
             self.mt5 = None
+
+    def _clear_last_error(self):
+        self.last_error = None
+        self.last_error_code = None
+
+    def _set_last_error(self, message: str, code=None):
+        self.last_error = message
+        self.last_error_code = code
+
+    def _format_mt5_error(self, err) -> str:
+        if err is None:
+            return 'Unknown MT5 error'
+        if isinstance(err, tuple):
+            code = err[0] if len(err) > 0 else None
+            details = ', '.join(str(part) for part in err[1:] if part not in [None, ''])
+            return f'{details} (code {code})' if details else f'MT5 error code {code}'
+        return str(err)
+
+    def _is_auth_error(self, err) -> bool:
+        if isinstance(err, tuple) and len(err) > 0 and err[0] == -6:
+            return True
+        message = self._format_mt5_error(err).lower()
+        auth_markers = [
+            'authorization failed',
+            'auth failed',
+            'invalid account',
+            'invalid login',
+            'invalid password',
+            'invalid server',
+            'unauthorized',
+        ]
+        return any(marker in message for marker in auth_markers)
 
     def _ensure_mt5_terminal_started(self):
         """Ensure the MT5 terminal is started once per configured terminal path."""
@@ -2859,9 +2893,11 @@ class MT5Connection(BrokerConnection):
         """
         global mt5_connection_lock
         is_priority_mode_switch = bool(self.credentials.get('priority_mode_switch'))
+        self._clear_last_error()
 
         if mt5_priority_mode_switch.is_set() and not is_priority_mode_switch:
             logger.info("⏸️ MT5 priority mode switch in progress - skipping background reconnect attempt")
+            self._set_last_error('MT5 mode switch already in progress', 'PRIORITY_MODE_ACTIVE')
             return False
 
         if is_priority_mode_switch:
@@ -2902,6 +2938,7 @@ class MT5Connection(BrokerConnection):
                 f"[MT5 LOCK METRICS] wait={wait_seconds:.2f}s pending={mt5_lock_metrics.get('pending_waiters', 0)} "
                 f"timeouts={mt5_lock_metrics.get('timeout_count', 0)}"
             )
+            self._set_last_error('MT5 is busy. Please try again in a few seconds.', 'LOCK_TIMEOUT')
             return False  # Return False to signal connection failed, bot will retry next cycle
         
         try:
@@ -2923,6 +2960,7 @@ class MT5Connection(BrokerConnection):
         try:
             if not self.mt5:
                 logger.error("MetaTrader5 SDK not available")
+                self._set_last_error('MetaTrader5 SDK not available on the backend', 'SDK_UNAVAILABLE')
                 return False
 
             broker_name = canonicalize_broker_name(self.credentials.get('broker', self.mt5_broker))
@@ -2959,6 +2997,7 @@ class MT5Connection(BrokerConnection):
             
             # Ensure account is integer for proper comparison with MT5 login field
             account = int(account)
+            is_manual_test = bool(self.credentials.get('is_manual_test', False))
             
             # CRITICAL FIX: Check if already logged into this account on this terminal
             # If so, return True immediately without attempting re-init
@@ -2980,11 +3019,12 @@ class MT5Connection(BrokerConnection):
             
             # Check failed-auth cooldown - skip accounts that recently failed authorization
             with _failed_auth_lock:
-                if account in _failed_auth_accounts:
+                if not is_manual_test and account in _failed_auth_accounts:
                     fail_info = _failed_auth_accounts[account]
                     elapsed = time.time() - fail_info['timestamp']
                     if elapsed < _FAILED_AUTH_COOLDOWN:
                         logger.warning(f"⏭️ Skipping account {account} - auth failed {elapsed:.0f}s ago (cooldown: {_FAILED_AUTH_COOLDOWN}s)")
+                        self._set_last_error('Authentication for this account recently failed. Please wait before retrying.', 'AUTH_COOLDOWN')
                         return False
                     else:
                         # Cooldown expired, allow retry
@@ -3054,6 +3094,9 @@ class MT5Connection(BrokerConnection):
                         else:
                             err = self.mt5.last_error()
                             logger.warning(f"  ⚠️ Fast mt5.login() failed: {err} — falling back to initialize()")
+                            if is_manual_test and self._is_auth_error(err):
+                                self._set_last_error('Invalid Exness account number, password, or server.', 'AUTH_FAILED')
+                                return False
                 else:
                     logger.info(f"  ⏳ MT5 version probe returned {_ver}; IPC not ready for fast login, using initialize() path")
             except Exception as fe:
@@ -3061,7 +3104,7 @@ class MT5Connection(BrokerConnection):
             
             # Retry logic: balance checks get 1 attempt (fast fail), trading gets 3
             is_balance_check = self.credentials.get('is_balance_check', False)
-            max_retries = 1 if is_balance_check else 3
+            max_retries = 1 if (is_balance_check or is_manual_test) else 3
             for attempt in range(1, max_retries + 1):
                 logger.info(f"MT5 connection attempt {attempt}/{max_retries}: Account={account}, Server={server}")
                 
@@ -3084,6 +3127,7 @@ class MT5Connection(BrokerConnection):
                     # Always use broker-specific MT5 path (NO generic fallback)
                     if not self.mt5_path:
                         logger.error(f"❌ No {broker_name} MT5 path configured - cannot continue without broker-specific MT5")
+                        self._set_last_error(f'No {broker_name} MT5 terminal path is configured on the backend.', 'PATH_NOT_CONFIGURED')
                         continue
                     
                     # Initialize with broker-specific path only
@@ -3149,11 +3193,21 @@ class MT5Connection(BrokerConnection):
                             return True
                         else:
                             logger.warning(f"  ✗ Account verification failed after initialize - will retry")
+                            if is_manual_test:
+                                self._set_last_error('MT5 could not verify the requested account after login.', 'VERIFICATION_FAILED')
+                                return False
                             continue
                     
                     else:
                         init_error = self.mt5.last_error()
                         logger.warning(f"  ✗ MT5 initialization failed: {init_error}")
+                        self._set_last_error(
+                            self._format_mt5_error(init_error),
+                            init_error[0] if isinstance(init_error, tuple) and len(init_error) > 0 else 'INIT_FAILED'
+                        )
+                        if is_manual_test and self._is_auth_error(init_error):
+                            self._set_last_error('Invalid Exness account number, password, or server.', 'AUTH_FAILED')
+                            return False
                         # Check for IPC timeout during initialization
                         error_code = init_error[0] if isinstance(init_error, tuple) else -1
                         if error_code in [-10005, -10004]:  # IPC timeout or No IPC connection
@@ -3178,7 +3232,15 @@ class MT5Connection(BrokerConnection):
             # Only track if the failure was auth-related (not IPC timeout from contention)
             try:
                 last_err = self.mt5.last_error() if self.mt5 else None
-                if last_err and isinstance(last_err, tuple) and last_err[0] == -6:  # Authorization failed
+                if self._is_auth_error(last_err):
+                    self._set_last_error('Invalid Exness account number, password, or server.', 'AUTH_FAILED')
+                elif last_err and not self.last_error:
+                    self._set_last_error(
+                        self._format_mt5_error(last_err),
+                        last_err[0] if isinstance(last_err, tuple) and len(last_err) > 0 else 'CONNECT_FAILED'
+                    )
+
+                if not is_manual_test and last_err and isinstance(last_err, tuple) and last_err[0] == -6:  # Authorization failed
                     with _failed_auth_lock:
                         _failed_auth_accounts[account] = {
                             'timestamp': time.time(),
@@ -3187,11 +3249,15 @@ class MT5Connection(BrokerConnection):
                         logger.warning(f"🚫 Account {account} added to auth cooldown ({_FAILED_AUTH_COOLDOWN}s) due to auth failure")
             except Exception:
                 pass
+
+            if not self.last_error:
+                self._set_last_error('Failed to connect to MT5.', 'CONNECT_FAILED')
             
             return False
             
         except Exception as e:
             logger.error(f"MT5 connection error: {e}")
+            self._set_last_error(str(e), 'EXCEPTION')
             return False
 
     def disconnect(self) -> bool:
@@ -7521,7 +7587,7 @@ def get_account_balances():
         
         # Get active broker credentials for this user, optionally scoped to one mode.
         credentials_query = '''
-            SELECT credential_id, broker_name, account_number, is_live, api_key, username, password, server, account_currency
+            SELECT credential_id, broker_name, account_number, is_live, api_key, username, password, server, account_currency, mt5_terminal_path
             FROM broker_credentials 
             WHERE user_id = ? AND is_active = 1
         '''
@@ -7605,37 +7671,80 @@ def get_account_balances():
                             f"{float(account_info.get('balance', 0) or 0):.2f} {account_info.get('currency', 'USD')}"
                         )
                     else:
-                    # DISCONNECTED MODE: Do NOT call MT5 from the balance endpoint unless cache is empty and no bots are running.
-                        logger.info(f"ℹ️ Balance: {broker_name} {account_num} ({account_currency}) — using cache only (MT5 disconnected in balance endpoint)")
-                        error_msg = f"Using cached balance ({account_currency}) — MT5 reads handled by trading loop"
-                        cache_key = get_balance_cache_key(broker_name, account_num)
-                        cache_empty = True
-                        with balance_cache_lock:
-                            if cache_key in balance_cache and balance_cache[cache_key].get('balance', 0) > 0:
-                                cache_empty = False
+                        refresh_result = [None]
 
-                        # Diagnostics: Log cache status
-                        # Suppress repeated ZAR diagnostic warnings during polling - only show once per hour
-                        cache_diag_key = f"zar_cache_warning_{broker_name}_{account_num}"
-                        last_zar_warning = getattr(get_account_balances, '_last_warnings', {}).get(cache_diag_key, 0)
-                        now_unix = time.time()
-                    
-                        if cache_empty:
-                            # Log as info only; SQLite fallback may still provide a valid cached balance.
-                            if now_unix - last_zar_warning > 3600:
-                                logger.info(
-                                    f"[DIAGNOSTIC] In-memory cache empty for {broker_name} {account_num}; will evaluate SQLite cache fallback."
-                                )
-                                if not hasattr(get_account_balances, '_last_warnings'):
-                                    get_account_balances._last_warnings = {}
-                                get_account_balances._last_warnings[cache_diag_key] = now_unix
+                        def try_fast_mt5_refresh():
+                            mt5_conn = None
+                            try:
+                                mt5_conn = MT5Connection({
+                                    'broker': broker_name,
+                                    'account': int(account_num),
+                                    'account_number': account_num,
+                                    'password': cred.get('password'),
+                                    'server': cred.get('server'),
+                                    'is_live': bool(cred.get('is_live')),
+                                    'path': cred.get('mt5_terminal_path') or None,
+                                    'is_balance_check': True,
+                                    'lock_timeout': 1.5,
+                                })
+                                if mt5_conn.connect():
+                                    refresh_result[0] = mt5_conn.get_account_info()
+                            except Exception as refresh_exc:
+                                logger.debug(f"Fast MT5 balance refresh failed for {broker_name} {account_num}: {refresh_exc}")
+                            finally:
+                                if mt5_conn and hasattr(mt5_conn, 'disconnect'):
+                                    try:
+                                        mt5_conn.disconnect()
+                                    except Exception:
+                                        pass
+
+                        refresh_thread = threading.Thread(target=try_fast_mt5_refresh, daemon=True)
+                        refresh_thread.start()
+                        refresh_thread.join(timeout=6)
+
+                        if not refresh_thread.is_alive() and refresh_result[0]:
+                            account_info = refresh_result[0]
+                            account_info['accountNumber'] = account_info.get('accountNumber') or account_num
+                            account_info['marginFree'] = account_info.get('marginFree', account_info.get('margin_free', 0))
+                            account_info['total_pl'] = account_info.get('total_pl', account_info.get('profit', 0))
+                            account_info['displayCurrency'] = account_info.get('currency', display_currency)
+                            error_msg = None
+                            logger.info(
+                                f"✅ Balance: refreshed MT5 snapshot for {broker_name} {account_num} -> "
+                                f"{float(account_info.get('balance', 0) or 0):.2f} {account_info.get('currency', 'USD')}"
+                            )
                         else:
-                            # Show positive cache hit once per hour only
-                            if now_unix - last_zar_warning > 3600:
-                                logger.info(f"[DIAGNOSTIC] Cached balance present for {broker_name} {account_num}.")
-                                if not hasattr(get_account_balances, '_last_warnings'):
-                                    get_account_balances._last_warnings = {}
-                                get_account_balances._last_warnings[cache_diag_key] = now_unix
+                    # DISCONNECTED MODE: Do NOT call MT5 from the balance endpoint unless cache is empty and no bots are running.
+                            logger.info(f"ℹ️ Balance: {broker_name} {account_num} ({account_currency}) — using cache only (MT5 disconnected in balance endpoint)")
+                            error_msg = f"Using cached balance ({account_currency}) — MT5 reads handled by trading loop"
+                            cache_key = get_balance_cache_key(broker_name, account_num)
+                            cache_empty = True
+                            with balance_cache_lock:
+                                if cache_key in balance_cache and balance_cache[cache_key].get('balance', 0) > 0:
+                                    cache_empty = False
+
+                            # Diagnostics: Log cache status
+                            # Suppress repeated ZAR diagnostic warnings during polling - only show once per hour
+                            cache_diag_key = f"zar_cache_warning_{broker_name}_{account_num}"
+                            last_zar_warning = getattr(get_account_balances, '_last_warnings', {}).get(cache_diag_key, 0)
+                            now_unix = time.time()
+
+                            if cache_empty:
+                                # Log as info only; SQLite fallback may still provide a valid cached balance.
+                                if now_unix - last_zar_warning > 3600:
+                                    logger.info(
+                                        f"[DIAGNOSTIC] In-memory cache empty for {broker_name} {account_num}; will evaluate SQLite cache fallback."
+                                    )
+                                    if not hasattr(get_account_balances, '_last_warnings'):
+                                        get_account_balances._last_warnings = {}
+                                    get_account_balances._last_warnings[cache_diag_key] = now_unix
+                            else:
+                                # Show positive cache hit once per hour only
+                                if now_unix - last_zar_warning > 3600:
+                                    logger.info(f"[DIAGNOSTIC] Cached balance present for {broker_name} {account_num}.")
+                                    if not hasattr(get_account_balances, '_last_warnings'):
+                                        get_account_balances._last_warnings = {}
+                                    get_account_balances._last_warnings[cache_diag_key] = now_unix
                 
                 elif broker_name == 'Binance':
                     # Connect to Binance API with timeout
@@ -15171,6 +15280,12 @@ def save_broker_credentials():
         
         if not broker_name:
             return jsonify({'success': False, 'error': 'broker_name required'}), 400
+
+        if str(broker_name).strip().lower() in {'ig', 'ig markets', 'ig.com'}:
+            return jsonify({
+                'success': False,
+                'error': 'IG Markets is not integrated in the current backend setup. Supported direct brokers: Exness, Binance, FXCM, OANDA.'
+            }), 400
         
         # Validate based on broker type
         # IG Markets integration removed
@@ -15568,6 +15683,8 @@ def test_broker_connection():
             password = data.get('password', '')
             server = data.get('server', '')
             is_live = normalize_mt5_is_live_flag(broker, is_live, server)
+            deferred_verification_warning = None
+            skip_exness_warmup = False
             
             # Validate required fields
             if not all([broker, account, password, server]):
@@ -15588,6 +15705,15 @@ def test_broker_connection():
                 account = account_str
 
             defer_exness_verification = broker.lower() == 'exness'
+            actual_balance = 10000.00  # Default fallback
+            actual_equity = 10000.00
+            actual_margin_free = 10000.00
+            actual_margin_used = 0.00
+            actual_margin_level = 0.00
+            actual_profit = 0.00
+            actual_currency = 'USD'  # Default; overwritten below from MT5 account_info().currency
+            got_real_balance = False
+            verified_connection = False
             
             # Fix server name for MT5 brokers — use per-account is_live, NOT global ENVIRONMENT
             broker_l = broker.lower()
@@ -15604,18 +15730,55 @@ def test_broker_connection():
                 if not server or server != expected_server:
                     server = expected_server
                     logger.info(f"   Corrected server to: {server} (is_live={is_live})")
+
+            if defer_exness_verification:
+                quick_test_conn = MT5Connection({
+                    'broker': broker,
+                    'account': account,
+                    'account_number': account,
+                    'password': password,
+                    'server': server,
+                    'is_live': is_live,
+                    'is_manual_test': True,
+                    'lock_timeout': 2.5,
+                })
+
+                if quick_test_conn.connect():
+                    quick_info = quick_test_conn.get_account_info() or {}
+                    actual_balance = float(quick_info.get('balance', 0) or 0)
+                    actual_equity = float(quick_info.get('equity', actual_balance) or actual_balance)
+                    actual_margin_free = float(quick_info.get('margin_free', quick_info.get('marginFree', 0)) or 0)
+                    actual_margin_used = float(quick_info.get('margin', 0) or 0)
+                    actual_margin_level = float(quick_info.get('margin_level', quick_info.get('marginLevel', 0)) or 0)
+                    actual_profit = float(quick_info.get('profit', 0) or 0)
+                    actual_currency = str(quick_info.get('currency', 'USD') or 'USD').upper()
+                    got_real_balance = True
+                    verified_connection = True
+                    skip_exness_warmup = True
+                    quick_test_conn.disconnect()
+                    logger.info(
+                        f"✅ Fast Exness credential test succeeded for account {account}: {actual_balance:.2f} {actual_currency}"
+                    )
+                else:
+                    quick_error_code = quick_test_conn.last_error_code
+                    quick_error_message = quick_test_conn.last_error or 'Unable to verify Exness credentials right now.'
+                    skip_exness_warmup = True
+
+                    if quick_error_code == 'AUTH_FAILED':
+                        return jsonify({
+                            'success': False,
+                            'error': quick_error_message,
+                        }), 401
+
+                    deferred_verification_warning = (
+                        'Exness credential saved, but live verification was deferred: '
+                        f'{quick_error_message}'
+                    )
+                    logger.warning(
+                        f"⚠️ Fast Exness credential test could not verify account {account}: {quick_error_message}"
+                    )
             
             # Try to get real balance - first from global cache, then from cached MT5 connection, then via quick MT5 login
-            actual_balance = 10000.00  # Default fallback
-            actual_equity = 10000.00
-            actual_margin_free = 10000.00
-            actual_margin_used = 0.00
-            actual_margin_level = 0.00
-            actual_profit = 0.00
-            actual_currency = 'USD'  # Default; overwritten below from MT5 account_info().currency
-            got_real_balance = False
-            verified_connection = False
-            
             # FIRST: Check global balance_cache (populated on startup with hardcoded demo balances)
             try:
                 global balance_cache, balance_cache_lock
@@ -15812,7 +15975,7 @@ def test_broker_connection():
             warning = None
 
             if defer_exness_verification and not verified_connection:
-                warning = (
+                warning = deferred_verification_warning or (
                     'Exness credential saved. Live MT5 verification is deferred to avoid request timeout '
                     'while the terminal is attached to another account.'
                 )
@@ -15849,7 +16012,7 @@ def test_broker_connection():
                     auto_connected = True
                     connection_status = 'connected'
                     warning = None
-                else:
+                elif not skip_exness_warmup:
                     warm_result = warm_trading_mode_credential(user_id, credential_id, target_mode)
                     if warm_result['connected']:
                         auto_connected = True

@@ -290,6 +290,53 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return raw;
   }
 
+  Widget _buildDashboardSelectorPill({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+    EdgeInsetsGeometry padding = const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+    double borderRadius = 14,
+  }) {
+    final backgroundColor = selected ? const Color(0xFF00E5FF) : const Color(0x1FFFFFFF);
+    final borderColor = selected ? Colors.transparent : Colors.white.withOpacity(0.22);
+    final textColor = selected ? const Color(0xFF0A0E21) : Colors.white.withOpacity(0.92);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(borderRadius),
+        child: Ink(
+          padding: padding,
+          decoration: BoxDecoration(
+            color: backgroundColor,
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(color: borderColor, width: 1),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withOpacity(0.22),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.poppins(
+              color: textColor,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   int _brokerDisplayPriority(String broker) {
     final normalized = _normalizeBrokerDisplayName(broker).toLowerCase();
     final preferred = _normalizeBrokerDisplayName(_preferredBrokerDisplay).toLowerCase();
@@ -325,6 +372,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .where((account) => selectedMode == 'all' || _accountMode(account) == selectedMode)
         .cast<Map<String, dynamic>>()
       .toList());
+  }
+
+  List<Map<String, dynamic>> _applyPortfolioBrokerFilter(Iterable<Map<String, dynamic>> accounts) {
+    final selectedBroker = _normalizeBrokerDisplayName(_portfolioBrokerFilter);
+    if (selectedBroker.isEmpty || selectedBroker == 'All') {
+      return accounts.cast<Map<String, dynamic>>().toList();
+    }
+    return accounts.where((account) {
+      final broker = _normalizeBrokerDisplayName((account['broker'] ?? '').toString());
+      return broker == selectedBroker;
+    }).cast<Map<String, dynamic>>().toList();
   }
 
   List<Map<String, dynamic>> _filteredBots([String? mode]) {
@@ -744,7 +802,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final brokerOptions = <String>{'All', 'Exness', 'Binance', 'FXCM'};
     for (final account in allConnectedAccounts) {
-      final broker = (account['broker'] ?? '').toString().trim();
+      final broker = _normalizeBrokerDisplayName((account['broker'] ?? '').toString());
       if (broker.isNotEmpty) {
         brokerOptions.add(broker);
       }
@@ -758,7 +816,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final selectedAccounts = selectedBrokerFilter == 'All'
         ? allConnectedAccounts
         : allConnectedAccounts
-            .where((account) => (account['broker'] ?? '').toString().trim().toLowerCase() == selectedBrokerFilter.toLowerCase())
+        .where((account) => _normalizeBrokerDisplayName((account['broker'] ?? '').toString()).toLowerCase() == selectedBrokerFilter.toLowerCase())
             .toList();
 
     final selectedBalanceBreakdown = _aggregateAccountBalances(selectedAccounts);
@@ -790,22 +848,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
 
     final brokerFilterChips = sortedBrokers
-        .map((broker) => ChoiceChip(
-              label: Text(broker),
+        .map((broker) => _buildDashboardSelectorPill(
+              label: broker,
               selected: selectedBrokerFilter == broker,
-              onSelected: (_) {
+              onTap: () {
                 setState(() {
                   _portfolioBrokerFilter = _normalizeBrokerDisplayName(broker);
                 });
               },
-              labelStyle: GoogleFonts.poppins(
-                color: selectedBrokerFilter == broker ? const Color(0xFF0A0E21) : Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-              selectedColor: const Color(0xFF00E5FF),
-              backgroundColor: Colors.white.withOpacity(0.22),
-              side: BorderSide(color: Colors.white.withOpacity(0.38), width: 1.1),
             ))
         .toList();
 
@@ -2038,30 +2088,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     style: GoogleFonts.poppins(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w500),
                   ),
                   const SizedBox(width: 10),
-                  ChoiceChip(
-                    label: const Text(r'$ USD'),
+                  _buildDashboardSelectorPill(
+                    label: r'$ USD',
                     selected: _reportingCurrency == 'USD',
-                    onSelected: (_) => _setReportingCurrency('USD'),
-                    selectedColor: const Color(0xFF00E5FF),
-                    backgroundColor: Colors.white.withOpacity(0.10),
-                    labelStyle: GoogleFonts.poppins(
-                      color: _reportingCurrency == 'USD' ? const Color(0xFF0A0E21) : Colors.white70,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
+                    onTap: () => _setReportingCurrency('USD'),
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
                   ),
                   const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: const Text('R ZAR'),
+                  _buildDashboardSelectorPill(
+                    label: 'R ZAR',
                     selected: _reportingCurrency == 'ZAR',
-                    onSelected: (_) => _setReportingCurrency('ZAR'),
-                    selectedColor: const Color(0xFF00E5FF),
-                    backgroundColor: Colors.white.withOpacity(0.10),
-                    labelStyle: GoogleFonts.poppins(
-                      color: _reportingCurrency == 'ZAR' ? const Color(0xFF0A0E21) : Colors.white70,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
+                    onTap: () => _setReportingCurrency('ZAR'),
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
                   ),
                 ],
               ),
@@ -2069,12 +2107,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               // ── Total Portfolio Balance ──
               Builder(
                 builder: (context) {
-                  final filteredAll = _filteredBrokerAccounts();
-                  final liveAllAccounts = _filteredBrokerAccounts('live');
-                  final demoAllAccounts = _filteredBrokerAccounts('demo');
-                  final filteredConnected = _connectedAccountsFor();
-                  final liveConnectedAccounts = _connectedAccountsFor('live');
-                  final demoConnectedAccounts = _connectedAccountsFor('demo');
+                  final filteredAll = _applyPortfolioBrokerFilter(_filteredBrokerAccounts());
+                  final liveAllAccounts = _applyPortfolioBrokerFilter(_filteredBrokerAccounts('live'));
+                  final demoAllAccounts = _applyPortfolioBrokerFilter(_filteredBrokerAccounts('demo'));
+                  final filteredConnected = _applyPortfolioBrokerFilter(_connectedAccountsFor());
+                  final liveConnectedAccounts = _applyPortfolioBrokerFilter(_connectedAccountsFor('live'));
+                  final demoConnectedAccounts = _applyPortfolioBrokerFilter(_connectedAccountsFor('demo'));
                   final filtered = filteredConnected.isNotEmpty ? filteredConnected : filteredAll;
                   final liveAccounts = liveConnectedAccounts.isNotEmpty ? liveConnectedAccounts : liveAllAccounts;
                   final demoAccounts = demoConnectedAccounts.isNotEmpty ? demoConnectedAccounts : demoAllAccounts;
