@@ -361,36 +361,215 @@ EXNESS_LIVE = {
 
 # Only these two will be used for Exness
 MT5_CONFIG = EXNESS_LIVE if ENVIRONMENT == 'LIVE' else EXNESS_DEMO
-# ==================== FXCM CONNECTION PLACEHOLDER ====================
+# ==================== FXCM REST API CONNECTION ====================
+# FXCM REST API uses Socket.IO + HTTP for trading.
+# Demo: https://api-demo.fxcm.com   Real: https://api.fxcm.com
+# Auth: POST /authenticate with login + password to get bearer token.
+
 FXCM_CONFIG = {
     'broker': 'FXCM',
-    'token': os.getenv('FXCM_TOKEN', ''),
-    'is_live': True,
+    'login': os.getenv('FXCM_LOGIN', 'D291208900').strip(),
+    'password': os.getenv('FXCM_PASSWORD', 'zy7hD').strip(),
+    'token': os.getenv('FXCM_TOKEN', '').strip(),  # Optional pre-generated API token
+    'server': os.getenv('FXCM_SERVER', 'demo').strip(),  # 'demo' or 'real'
+    'is_live': os.getenv('FXCM_SERVER', 'demo').strip().lower() == 'real',
 }
 
-def connect_fxcm():
-    """Establish a connection to FXCM using fxcmpy (placeholder)."""
+_FXCM_BASE_URLS = {
+    'demo': 'https://api-demo.fxcm.com',
+    'real': 'https://api.fxcm.com',
+}
+
+# Global FXCM session state
+_fxcm_bearer_token = None
+_fxcm_session = None
+_fxcm_lock = threading.Lock()
+
+
+def _fxcm_base_url() -> str:
+    return _FXCM_BASE_URLS.get(FXCM_CONFIG['server'], _FXCM_BASE_URLS['demo'])
+
+
+def _fxcm_headers() -> dict:
+    """Return authorization headers for FXCM REST calls."""
+    return {
+        'Authorization': f'Bearer {_fxcm_bearer_token}',
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
+
+
+def connect_fxcm(force_reconnect=False) -> bool:
+    """Authenticate with FXCM REST API and store the bearer token.
+
+    FXCM demo accounts use Socket.IO-based REST API.  The flow:
+    1. Open a Socket.IO connection to get a session token, OR
+    2. Use a pre-generated access token from FXCM Trading Station.
+    
+    Returns True if connected, False otherwise.
+    """
+    import requests as _requests
+
+    global _fxcm_bearer_token, _fxcm_session
+    with _fxcm_lock:
+        if _fxcm_bearer_token and _fxcm_session and not force_reconnect:
+            # Quick health check
+            try:
+                resp = _fxcm_session.get(
+                    f"{_fxcm_base_url()}/trading/get_model",
+                    params={'models': 'Account'},
+                    headers=_fxcm_headers(),
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    return True
+            except Exception:
+                pass
+            _fxcm_bearer_token = None
+
+        base = _fxcm_base_url()
+        token = FXCM_CONFIG['token']
+        login = FXCM_CONFIG['login']
+        password = FXCM_CONFIG['password']
+
+        if not _fxcm_session:
+            _fxcm_session = _requests.Session()
+
+        # Strategy 1: Use pre-set API token directly
+        if token:
+            _fxcm_bearer_token = token
+            try:
+                resp = _fxcm_session.get(
+                    f"{base}/trading/get_model",
+                    params={'models': 'Account'},
+                    headers=_fxcm_headers(),
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    logger.info(f"[FXCM] ✅ Connected via API token ({FXCM_CONFIG['server']}) - Login: {login}")
+                    return True
+                else:
+                    logger.warning(f"[FXCM] Token auth returned {resp.status_code}: {resp.text[:200]}")
+                    _fxcm_bearer_token = None
+            except Exception as e:
+                logger.warning(f"[FXCM] Token auth failed: {e}")
+                _fxcm_bearer_token = None
+
+        # Strategy 2: Socket.IO connection handshake (FXCM's primary method)
+        if login and password:
+            try:
+                # FXCM REST API authenticates via Socket.IO handshake
+                # The access_token parameter is sent as a query param during handshake
+                access_token = token or password
+                handshake_url = f"{base}/socket.io/?EIO=3&transport=polling&access_token={access_token}"
+                resp = _fxcm_session.get(handshake_url, timeout=15)
+                if resp.status_code == 200:
+                    # Extract session ID from Socket.IO handshake response
+                    text = resp.text
+                    # Socket.IO response starts with length prefix, then JSON
+                    json_start = text.find('{')
+                    if json_start >= 0:
+                        handshake_data = json.loads(text[json_start:text.rfind('}') + 1])
+                        sid = handshake_data.get('sid', '')
+                        if sid:
+                            _fxcm_bearer_token = f"{sid}{access_token}"
+                            logger.info(f"[FXCM] ✅ Connected via Socket.IO ({FXCM_CONFIG['server']}) - Login: {login}")
+                            return True
+                logger.warning(f"[FXCM] Socket.IO handshake returned {resp.status_code}: {resp.text[:200]}")
+            except Exception as e:
+                logger.error(f"[FXCM] ❌ Socket.IO handshake failed: {e}")
+
+        logger.error(f"[FXCM] ❌ All connection strategies failed for {FXCM_CONFIG['server']} - Login: {login}")
+        return False
+
+
+def disconnect_fxcm():
+    """Close FXCM session."""
+    global _fxcm_bearer_token, _fxcm_session
+    with _fxcm_lock:
+        if _fxcm_session:
+            try:
+                _fxcm_session.close()
+            except Exception:
+                pass
+        _fxcm_bearer_token = None
+        _fxcm_session = None
+        logger.info("[FXCM] Connection closed.")
+
+
+def get_fxcm_account_info() -> dict:
+    """Get FXCM account summary (balance, equity, etc.) via REST API."""
+    import requests as _requests
+
+    login = FXCM_CONFIG['login']
+    is_live = FXCM_CONFIG['is_live']
+
+    if not connect_fxcm():
+        return {'broker': 'FXCM', 'login': login, 'connected': False, 'is_live': is_live,
+                'error': 'Could not connect to FXCM'}
+
     try:
-        import fxcmpy
-    except ImportError:
-        logger.error("fxcmpy not installed. Install with: pip install fxcmpy")
-        return None
-    token = FXCM_CONFIG['token']
-    if not token:
-        logger.error("FXCM token not set in environment.")
-        return None
-    try:
-        con = fxcmpy.fxcmpy(access_token=token, log_level='error', server='real')
-        logger.info("Connected to FXCM successfully.")
-        return con
+        resp = _fxcm_session.get(
+            f"{_fxcm_base_url()}/trading/get_model",
+            params={'models': 'Account'},
+            headers=_fxcm_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            accounts = data.get('accounts') or data.get('response', {}).get('accounts', [])
+            if accounts:
+                acct = accounts[0] if isinstance(accounts, list) else accounts
+                return {
+                    'broker': 'FXCM',
+                    'login': login,
+                    'balance': float(acct.get('balance', 0)),
+                    'equity': float(acct.get('equity', 0)),
+                    'usable_margin': float(acct.get('usableMargin', acct.get('usableMargin3', 0))),
+                    'is_live': is_live,
+                    'connected': True,
+                }
+            return {'broker': 'FXCM', 'login': login, 'connected': True, 'balance': 0, 'equity': 0, 'is_live': is_live}
+        else:
+            return {'broker': 'FXCM', 'login': login, 'connected': False, 'is_live': is_live,
+                    'error': f'FXCM API returned {resp.status_code}'}
     except Exception as e:
-        logger.error(f"FXCM connection failed: {e}")
-        return None
+        logger.error(f"[FXCM] Failed to get account info: {e}")
+        return {'broker': 'FXCM', 'login': login, 'connected': False, 'is_live': is_live, 'error': str(e)}
+
+
+# ==================== API ENDPOINTS: FXCM ====================
+@app.route('/api/fxcm/status', methods=['GET'])
+def get_fxcm_status():
+    """Check FXCM connection status and account info."""
+    info = get_fxcm_account_info()
+    if info and info.get('connected'):
+        return jsonify({'success': True, **info})
+    return jsonify({'success': False, 'error': info.get('error', 'FXCM not connected'),
+                    'login': FXCM_CONFIG['login'], 'server': FXCM_CONFIG['server']})
+
+
+@app.route('/api/fxcm/connect', methods=['POST'])
+def fxcm_connect_endpoint():
+    """Force (re)connect to FXCM."""
+    connected = connect_fxcm(force_reconnect=True)
+    if connected:
+        info = get_fxcm_account_info()
+        return jsonify({'success': True, 'message': 'Connected to FXCM', **(info or {})})
+    return jsonify({'success': False, 'error': 'Failed to connect to FXCM. Check credentials in .env (FXCM_LOGIN, FXCM_PASSWORD, or FXCM_TOKEN).'}), 500
+
+
+@app.route('/api/fxcm/disconnect', methods=['POST'])
+def fxcm_disconnect_endpoint():
+    """Disconnect FXCM session."""
+    disconnect_fxcm()
+    return jsonify({'success': True, 'message': 'FXCM disconnected'})
+
 
 # ==================== API ENDPOINT: DASHBOARD ACCOUNTS ====================
 @app.route('/api/dashboard/accounts', methods=['GET'])
 def get_dashboard_accounts():
-    """Return only 1 live and 1 demo Exness account for dashboard, plus FXCM config."""
+    """Return only 1 live and 1 demo Exness account for dashboard, plus FXCM status."""
     exness_demo = {
         'broker': EXNESS_DEMO['broker'],
         'account': EXNESS_DEMO['account'],
@@ -403,15 +582,19 @@ def get_dashboard_accounts():
         'is_live': True,
         'server': EXNESS_LIVE['server'],
     }
+    fxcm_info = get_fxcm_account_info()
     fxcm = {
-        'broker': FXCM_CONFIG['broker'],
+        'broker': 'FXCM',
+        'login': FXCM_CONFIG['login'],
+        'server': FXCM_CONFIG['server'],
         'is_live': FXCM_CONFIG['is_live'],
-        'token_set': bool(FXCM_CONFIG['token']),
+        'connected': bool(fxcm_info and fxcm_info.get('connected')),
+        'balance': fxcm_info.get('balance', 0) if fxcm_info else 0,
+        'equity': fxcm_info.get('equity', 0) if fxcm_info else 0,
     }
     return jsonify({
         'success': True,
-        'accounts': [exness_live, exness_demo],
-        'fxcm': fxcm,
+        'accounts': [exness_live, exness_demo, fxcm],
     })
 
 # ==================== DUAL EXNESS TERMINAL PATHS ====================
