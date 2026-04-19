@@ -727,9 +727,29 @@ def resolve_mt5_terminal_executable_path(path: str) -> Optional[str]:
         return None
 
     normalized_path = os.path.normpath(normalized_path)
-    path_parts = normalized_path.split(os.sep)
-    if len(path_parts) >= 2 and path_parts[-1].lower() in {'terminal64.exe', 'terminal.exe'} and path_parts[-2].lower() == path_parts[-1].lower():
-        normalized_path = os.path.dirname(normalized_path)
+    executable_names = {'terminal64.exe', 'terminal.exe'}
+
+    # Some upstream credential/path flows accidentally append terminal64.exe to an
+    # already-complete executable path, yielding paths like:
+    # C:\MT5\Exness-Live\terminal64.exe\terminal64.exe
+    # Trim back to the first executable segment before continuing.
+    while True:
+        path_parts = normalized_path.split(os.sep)
+        if len(path_parts) < 2:
+            break
+
+        basename = path_parts[-1].lower()
+        parent_basename = path_parts[-2].lower()
+        if basename in executable_names and parent_basename in executable_names:
+            normalized_path = os.path.dirname(normalized_path)
+            continue
+
+        parent_path = os.path.dirname(normalized_path)
+        if parent_path and os.path.basename(parent_path).lower() in executable_names:
+            normalized_path = parent_path
+            continue
+
+        break
 
     if os.path.isfile(normalized_path):
         return normalized_path
@@ -792,7 +812,16 @@ def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = Non
     normalized = canonicalize_broker_name(broker_name)
     # Allow explicit server override for MT5 brokers when provided by user.
     provided_server = (server or '').strip()
-    if provided_server:
+    invalid_mt5_aliases = {
+        'rest-api',
+        'rest_api',
+        'metaapi',
+        'meta-api',
+        'socket',
+        'socket-bridge',
+        'socket_bridge',
+    }
+    if provided_server and provided_server.lower() not in invalid_mt5_aliases:
         return provided_server
 
     if normalized == 'Exness':
@@ -3120,9 +3149,10 @@ class MT5Connection(BrokerConnection):
             import MetaTrader5 as mt5
             self.mt5 = mt5
             broker_cfg = get_mt5_config_for_broker(self.mt5_broker)
+            resolved_server = credentials.get('server') or broker_cfg.get('server')
             # Prefer explicit credential path, then broker-specific config path.
             # Pass is_live to select the correct terminal for dual-terminal setups
-            is_live = credentials.get('is_live', False)
+            is_live = normalize_mt5_is_live_flag(self.mt5_broker, credentials.get('is_live', False), resolved_server)
             self.mt5_path = find_mt5_terminal_path(
                 self.mt5_broker,
                 credentials.get('path') or broker_cfg.get('path'),
@@ -3283,7 +3313,7 @@ class MT5Connection(BrokerConnection):
             account = self.credentials.get('account') or self.credentials.get('account_number') or broker_cfg.get('account')
             password = self.credentials.get('password') or broker_cfg.get('password')
             server = self.credentials.get('server') or broker_cfg.get('server')
-            is_live = self.credentials.get('is_live', False)
+            is_live = normalize_mt5_is_live_flag(broker_name, self.credentials.get('is_live', False), server)
 
             if account and not self.credentials.get('account'):
                 self.credentials['account'] = account
@@ -3291,6 +3321,7 @@ class MT5Connection(BrokerConnection):
                 self.credentials['account_number'] = account
             
             server = normalize_mt5_server_name(broker_name, is_live, server)
+            self.credentials['server'] = server
 
             route_diagnostic = log_mt5_route_diagnostic(
                 'MT5Connection.connect',
@@ -3814,6 +3845,9 @@ class MT5Connection(BrokerConnection):
                 return None
 
             info = self.mt5.account_info()
+            if info is None:
+                logger.warning("MT5 account_info() returned None while fetching account details")
+                return None
             
             # Get positions for aggregate data
             positions = self.mt5.positions_get()
