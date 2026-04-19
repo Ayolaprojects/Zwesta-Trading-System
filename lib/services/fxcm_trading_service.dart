@@ -20,6 +20,57 @@ class FxcmTradingService {
     return headers;
   }
 
+  static Map<String, dynamic> _decodeResponse(http.Response resp) {
+    try {
+      return jsonDecode(resp.body) as Map<String, dynamic>;
+    } catch (_) {
+      return {
+        'success': resp.statusCode >= 200 && resp.statusCode < 300,
+        'error': 'Server error ${resp.statusCode}',
+        'status_code': resp.statusCode,
+        'raw_body': resp.body,
+      };
+    }
+  }
+
+  static Future<Map<String, dynamic>> _request(
+    String method,
+    String path, {
+    Map<String, dynamic>? body,
+    bool requireJsonContent = false,
+  }) async {
+    try {
+      final headers = await _authHeaders(jsonContent: requireJsonContent || body != null);
+      late http.Response resp;
+      final uri = Uri.parse('$_baseUrl$path');
+
+      switch (method.toUpperCase()) {
+        case 'POST':
+          resp = await http.post(
+            uri,
+            headers: headers,
+            body: body == null ? null : jsonEncode(body),
+          );
+          break;
+        case 'DELETE':
+          resp = await http.delete(
+            uri,
+            headers: headers,
+          );
+          break;
+        default:
+          resp = await http.get(
+            uri,
+            headers: headers,
+          );
+      }
+
+      return _decodeResponse(resp);
+    } catch (e) {
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   // ==================== LOGIN ====================
 
   static Future<Map<String, dynamic>> login({String? token}) async {
@@ -27,14 +78,12 @@ class FxcmTradingService {
       final body = <String, dynamic>{};
       if (token != null) body['token'] = token;
 
-      final resp = await http.post(
-        Uri.parse('$_baseUrl/api/fxcm/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
+      return await _request(
+        'POST',
+        '/api/fxcm/login',
+        body: body,
+        requireJsonContent: true,
       ).timeout(const Duration(seconds: 15));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
     } catch (e) {
       return {'success': false, 'error': e.toString()};
     }
@@ -43,61 +92,25 @@ class FxcmTradingService {
   // ==================== ACCOUNTS ====================
 
   static Future<Map<String, dynamic>> getAccounts() async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/accounts'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/accounts').timeout(const Duration(seconds: 10));
   }
 
   // ==================== BALANCE ====================
 
   static Future<Map<String, dynamic>> getBalance() async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/balance'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/balance').timeout(const Duration(seconds: 10));
   }
 
   // ==================== FUNDS ====================
 
   static Future<Map<String, dynamic>> getFunds() async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/funds'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/funds').timeout(const Duration(seconds: 10));
   }
 
   // ==================== POSITIONS ====================
 
   static Future<Map<String, dynamic>> getPositions() async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/positions'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/positions').timeout(const Duration(seconds: 10));
   }
 
   // ==================== CLOSE POSITION ====================
@@ -105,35 +118,23 @@ class FxcmTradingService {
   static Future<Map<String, dynamic>> closePosition({
     required String dealId,
   }) async {
-    try {
-      final resp = await http.post(
-        Uri.parse('$_baseUrl/api/fxcm/close-position'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'dealId': dealId}),
-      ).timeout(const Duration(seconds: 15));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request(
+      'POST',
+      '/api/fxcm/close-position',
+      body: {'dealId': dealId},
+      requireJsonContent: true,
+    ).timeout(const Duration(seconds: 15));
   }
 
   // ==================== CLOSE ALL POSITIONS ====================
 
   static Future<Map<String, dynamic>> closeAllPositions() async {
-    try {
-      final resp = await http.post(
-        Uri.parse('$_baseUrl/api/fxcm/close-all-positions'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({}),
-      ).timeout(const Duration(seconds: 30));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request(
+      'POST',
+      '/api/fxcm/close-all-positions',
+      body: {},
+      requireJsonContent: true,
+    ).timeout(const Duration(seconds: 30));
   }
 
   // ==================== PLACE ORDER ====================
@@ -145,101 +146,50 @@ class FxcmTradingService {
     double? stopPrice,
     double? limitPrice,
   }) async {
-    try {
-      final body = <String, dynamic>{
-        'instrument': instrument,
-        'direction': direction,
-        'size': size,
-      };
-      if (stopPrice != null) body['stopPrice'] = stopPrice;
-      if (limitPrice != null) body['limitPrice'] = limitPrice;
+    final body = <String, dynamic>{
+      'instrument': instrument,
+      'direction': direction,
+      'size': size,
+    };
+    if (stopPrice != null) body['stopPrice'] = stopPrice;
+    if (limitPrice != null) body['limitPrice'] = limitPrice;
 
-      final resp = await http.post(
-        Uri.parse('$_baseUrl/api/fxcm/place-order'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 15));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request(
+      'POST',
+      '/api/fxcm/place-order',
+      body: body,
+      requireJsonContent: true,
+    ).timeout(const Duration(seconds: 15));
   }
 
   // ==================== PENDING ORDERS ====================
 
   static Future<Map<String, dynamic>> getPendingOrders() async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/pending-orders'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/pending-orders').timeout(const Duration(seconds: 10));
   }
 
   static Future<Map<String, dynamic>> cancelOrder(String orderId) async {
-    try {
-      final resp = await http.delete(
-        Uri.parse('$_baseUrl/api/fxcm/pending-orders/$orderId'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('DELETE', '/api/fxcm/pending-orders/$orderId').timeout(const Duration(seconds: 10));
   }
 
   // ==================== TRANSACTIONS ====================
 
   static Future<Map<String, dynamic>> getTransactions() async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/transactions'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/transactions').timeout(const Duration(seconds: 10));
   }
 
   // ==================== INSTRUMENTS ====================
 
   static Future<Map<String, dynamic>> searchInstruments(String searchTerm) async {
-    try {
-      final encoded = Uri.encodeComponent(searchTerm);
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/instruments?searchTerm=$encoded'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    final encoded = Uri.encodeComponent(searchTerm);
+    return _request('GET', '/api/fxcm/instruments?searchTerm=$encoded').timeout(const Duration(seconds: 10));
   }
 
   // ==================== PRICING ====================
 
   static Future<Map<String, dynamic>> getPricing(String instruments) async {
-    try {
-      final encoded = Uri.encodeComponent(instruments);
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/pricing?instruments=$encoded'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    final encoded = Uri.encodeComponent(instruments);
+    return _request('GET', '/api/fxcm/pricing?instruments=$encoded').timeout(const Duration(seconds: 10));
   }
 
   // ==================== CANDLES ====================
@@ -249,16 +199,7 @@ class FxcmTradingService {
     String period = 'H1',
     int count = 100,
   }) async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/candles/$instrument?period=$period&num=$count'),
-      ).timeout(const Duration(seconds: 15));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/candles/$instrument?period=$period&num=$count').timeout(const Duration(seconds: 15));
   }
 
   // ==================== PROFIT CHECK & AUTO-CLOSE ====================
@@ -268,39 +209,21 @@ class FxcmTradingService {
     required String userId,
     bool autoClose = true,
   }) async {
-    try {
-      final headers = await _authHeaders(jsonContent: true);
-      final resp = await http.post(
-        Uri.parse('$_baseUrl/api/fxcm/profit-check'),
-        headers: headers,
-        body: jsonEncode({
-          'target_profit': targetProfit,
-          'auto_close': autoClose,
-        }),
-      ).timeout(const Duration(seconds: 30));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request(
+      'POST',
+      '/api/fxcm/profit-check',
+      body: {
+        'target_profit': targetProfit,
+        'auto_close': autoClose,
+      },
+      requireJsonContent: true,
+    ).timeout(const Duration(seconds: 30));
   }
 
   // ==================== WITHDRAWAL NOTIFICATIONS ====================
 
   static Future<Map<String, dynamic>> getWithdrawalNotifications(String userId) async {
-    try {
-      final headers = await _authHeaders();
-      final resp = await http.get(
-        Uri.parse('$_baseUrl/api/fxcm/withdrawal-notifications'),
-        headers: headers,
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request('GET', '/api/fxcm/withdrawal-notifications').timeout(const Duration(seconds: 10));
   }
 
   static Future<Map<String, dynamic>> createWithdrawalNotification({
@@ -309,22 +232,15 @@ class FxcmTradingService {
     required int positionsClosed,
     required double balanceAvailable,
   }) async {
-    try {
-      final headers = await _authHeaders(jsonContent: true);
-      final resp = await http.post(
-        Uri.parse('$_baseUrl/api/fxcm/withdrawal-notifications'),
-        headers: headers,
-        body: jsonEncode({
-          'realized_profit': realizedProfit,
-          'positions_closed': positionsClosed,
-          'balance_available': balanceAvailable,
-        }),
-      ).timeout(const Duration(seconds: 10));
-
-      if (resp.statusCode == 200) return jsonDecode(resp.body);
-      return {'success': false, 'error': 'Server error ${resp.statusCode}'};
-    } catch (e) {
-      return {'success': false, 'error': e.toString()};
-    }
+    return _request(
+      'POST',
+      '/api/fxcm/withdrawal-notifications',
+      body: {
+        'realized_profit': realizedProfit,
+        'positions_closed': positionsClosed,
+        'balance_available': balanceAvailable,
+      },
+      requireJsonContent: true,
+    ).timeout(const Duration(seconds: 10));
   }
 }

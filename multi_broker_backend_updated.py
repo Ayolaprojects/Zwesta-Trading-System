@@ -403,6 +403,7 @@ FXCM_CONFIG = {
     'token': os.getenv('FXCM_TOKEN', '').strip(),  # Optional pre-generated API token
     'server': os.getenv('FXCM_SERVER', 'demo').strip(),  # 'demo' or 'real'
     'is_live': os.getenv('FXCM_SERVER', 'demo').strip().lower() == 'real',
+    'resolved_base_url': '',
 }
 
 _FXCM_BASE_URLS = {
@@ -418,6 +419,23 @@ _fxcm_lock = threading.Lock()
 
 def _fxcm_base_url() -> str:
     return _FXCM_BASE_URLS.get(FXCM_CONFIG['server'], _FXCM_BASE_URLS['demo'])
+
+
+def _fxcm_candidate_base_urls() -> List[str]:
+    candidate_urls = []
+    explicit_base_url = os.getenv('FXCM_BASE_URL', '').strip().rstrip('/')
+    if explicit_base_url:
+        candidate_urls.append(explicit_base_url)
+
+    preferred_base_url = _fxcm_base_url()
+    if preferred_base_url not in candidate_urls:
+        candidate_urls.append(preferred_base_url)
+
+    for fallback_url in _FXCM_BASE_URLS.values():
+        if fallback_url not in candidate_urls:
+            candidate_urls.append(fallback_url)
+
+    return candidate_urls
 
 
 def _fxcm_headers() -> dict:
@@ -445,8 +463,9 @@ def connect_fxcm(force_reconnect=False) -> bool:
         if _fxcm_bearer_token and _fxcm_session and not force_reconnect:
             # Quick health check
             try:
+                health_base_url = FXCM_CONFIG.get('resolved_base_url') or _fxcm_base_url()
                 resp = _fxcm_session.get(
-                    f"{_fxcm_base_url()}/trading/get_model",
+                    f"{health_base_url}/trading/get_model",
                     params={'models': 'Account'},
                     headers=_fxcm_headers(),
                     timeout=10,
@@ -457,7 +476,7 @@ def connect_fxcm(force_reconnect=False) -> bool:
                 pass
             _fxcm_bearer_token = None
 
-        base = _fxcm_base_url()
+        base_urls = _fxcm_candidate_base_urls()
         token = FXCM_CONFIG['token']
         login = FXCM_CONFIG['login']
         password = FXCM_CONFIG['password']
@@ -467,47 +486,45 @@ def connect_fxcm(force_reconnect=False) -> bool:
 
         # Strategy 1: Use pre-set API token directly
         if token:
-            _fxcm_bearer_token = token
-            try:
-                resp = _fxcm_session.get(
-                    f"{base}/trading/get_model",
-                    params={'models': 'Account'},
-                    headers=_fxcm_headers(),
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    logger.info(f"[FXCM] ✅ Connected via API token ({FXCM_CONFIG['server']}) - Login: {login}")
-                    return True
-                else:
-                    logger.warning(f"[FXCM] Token auth returned {resp.status_code}: {resp.text[:200]}")
-                    _fxcm_bearer_token = None
-            except Exception as e:
-                logger.warning(f"[FXCM] Token auth failed: {e}")
+            for base_url in base_urls:
+                _fxcm_bearer_token = token
+                try:
+                    resp = _fxcm_session.get(
+                        f"{base_url}/trading/get_model",
+                        params={'models': 'Account'},
+                        headers=_fxcm_headers(),
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        FXCM_CONFIG['resolved_base_url'] = base_url
+                        logger.info(f"[FXCM] ✅ Connected via API token ({base_url}) - Login: {login}")
+                        return True
+                    logger.warning(f"[FXCM] Token auth returned {resp.status_code} on {base_url}: {resp.text[:200]}")
+                except Exception as e:
+                    logger.warning(f"[FXCM] Token auth failed on {base_url}: {e}")
                 _fxcm_bearer_token = None
 
         # Strategy 2: Socket.IO connection handshake (FXCM's primary method)
         if login and password:
-            try:
-                # FXCM REST API authenticates via Socket.IO handshake
-                # The access_token parameter is sent as a query param during handshake
-                access_token = token or password
-                handshake_url = f"{base}/socket.io/?EIO=3&transport=polling&access_token={access_token}"
-                resp = _fxcm_session.get(handshake_url, timeout=15)
-                if resp.status_code == 200:
-                    # Extract session ID from Socket.IO handshake response
-                    text = resp.text
-                    # Socket.IO response starts with length prefix, then JSON
-                    json_start = text.find('{')
-                    if json_start >= 0:
-                        handshake_data = json.loads(text[json_start:text.rfind('}') + 1])
-                        sid = handshake_data.get('sid', '')
-                        if sid:
-                            _fxcm_bearer_token = f"{sid}{access_token}"
-                            logger.info(f"[FXCM] ✅ Connected via Socket.IO ({FXCM_CONFIG['server']}) - Login: {login}")
-                            return True
-                logger.warning(f"[FXCM] Socket.IO handshake returned {resp.status_code}: {resp.text[:200]}")
-            except Exception as e:
-                logger.error(f"[FXCM] ❌ Socket.IO handshake failed: {e}")
+            access_token = token or password
+            for base_url in base_urls:
+                try:
+                    handshake_url = f"{base_url}/socket.io/?EIO=3&transport=polling&access_token={access_token}"
+                    resp = _fxcm_session.get(handshake_url, timeout=15)
+                    if resp.status_code == 200:
+                        text = resp.text
+                        json_start = text.find('{')
+                        if json_start >= 0:
+                            handshake_data = json.loads(text[json_start:text.rfind('}') + 1])
+                            sid = handshake_data.get('sid', '')
+                            if sid:
+                                _fxcm_bearer_token = f"{sid}{access_token}"
+                                FXCM_CONFIG['resolved_base_url'] = base_url
+                                logger.info(f"[FXCM] ✅ Connected via Socket.IO ({base_url}) - Login: {login}")
+                                return True
+                    logger.warning(f"[FXCM] Socket.IO handshake returned {resp.status_code} on {base_url}: {resp.text[:200]}")
+                except Exception as e:
+                    logger.error(f"[FXCM] ❌ Socket.IO handshake failed on {base_url}: {e}")
 
         logger.error(f"[FXCM] ❌ All connection strategies failed for {FXCM_CONFIG['server']} - Login: {login}")
         return False
@@ -539,8 +556,9 @@ def get_fxcm_account_info() -> dict:
                 'error': 'Could not connect to FXCM'}
 
     try:
+        active_base_url = FXCM_CONFIG.get('resolved_base_url') or _fxcm_base_url()
         resp = _fxcm_session.get(
-            f"{_fxcm_base_url()}/trading/get_model",
+            f"{active_base_url}/trading/get_model",
             params={'models': 'Account'},
             headers=_fxcm_headers(),
             timeout=10,
@@ -628,8 +646,8 @@ def get_dashboard_accounts():
     })
 
 # ==================== DUAL EXNESS TERMINAL PATHS ====================
-EXNESS_DEMO_PATH = os.getenv('EXNESS_DEMO_PATH', r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe').strip()
-EXNESS_LIVE_PATH = os.getenv('EXNESS_LIVE_PATH', r'C:\Program Files\MetaTrader 5\terminal64.exe').strip()
+EXNESS_DEMO_PATH = os.getenv('EXNESS_DEMO_PATH', r'C:\MT5\Exness-Demo').strip()
+EXNESS_LIVE_PATH = os.getenv('EXNESS_LIVE_PATH', r'C:\MT5\Exness-Live').strip()
 
 if os.path.exists(EXNESS_DEMO_PATH):
     logger.info(f"[DUAL MT5] ✅ Exness DEMO terminal: {EXNESS_DEMO_PATH}")
@@ -656,6 +674,11 @@ if DEPLOYMENT_MODE == 'LOCAL':
     else:
         # Fallback: try any Exness terminal
         exness_paths = [
+            r'C:\MT5\Exness-Live',
+            r'C:\MT5\Exness-Demo',
+            r'C:\MT5\Exness-Live\terminal64.exe',
+            r'C:\MT5\Exness-Demo\terminal64.exe',
+            r'C:\Program Files\MetaTrader 5\terminal64.exe',
             r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe',
             r'C:\Program Files\Exness MT5\terminal64.exe',
             r'C:\Program Files (x86)\Exness MT5\terminal64.exe',
@@ -682,6 +705,11 @@ else:
 def get_known_mt5_paths(broker_name: str) -> List[str]:
     """Return known terminal paths for Exness MT5 installations only."""
     return [
+        r'C:\MT5\Exness-Live',
+        r'C:\MT5\Exness-Demo',
+        r'C:\MT5\Exness-Live\terminal64.exe',
+        r'C:\MT5\Exness-Demo\terminal64.exe',
+        r'C:\Program Files\MetaTrader 5\terminal64.exe',
         r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe',
         r'C:\Program Files\Exness MT5\terminal64.exe',
         r'C:\Program Files (x86)\Exness MT5\terminal64.exe',
@@ -715,6 +743,19 @@ def resolve_mt5_terminal_executable_path(path: str) -> Optional[str]:
             return candidate_32
 
     return None
+
+
+EXNESS_DEMO_RESOLVED_PATH = resolve_mt5_terminal_executable_path(EXNESS_DEMO_PATH)
+EXNESS_LIVE_RESOLVED_PATH = resolve_mt5_terminal_executable_path(EXNESS_LIVE_PATH)
+if EXNESS_DEMO_RESOLVED_PATH:
+    EXNESS_DEMO_PATH = EXNESS_DEMO_RESOLVED_PATH
+    EXNESS_DEMO['path'] = EXNESS_DEMO_RESOLVED_PATH
+if EXNESS_LIVE_RESOLVED_PATH:
+    EXNESS_LIVE_PATH = EXNESS_LIVE_RESOLVED_PATH
+    EXNESS_LIVE['path'] = EXNESS_LIVE_RESOLVED_PATH
+MT5_CONFIG = get_exness_mt5_config()
+logger.info(f"[DUAL MT5] Resolved Exness DEMO executable: {EXNESS_DEMO_RESOLVED_PATH or 'missing'}")
+logger.info(f"[DUAL MT5] Resolved Exness LIVE executable: {EXNESS_LIVE_RESOLVED_PATH or 'missing'}")
 
 
 def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_live: bool = None) -> Optional[str]:
