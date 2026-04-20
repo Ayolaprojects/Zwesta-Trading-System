@@ -157,11 +157,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   String _effectiveAccountNumber() {
     if (_isFxcmBroker) {
-      final explicitAccount = _accountController.text.trim();
-      if (explicitAccount.isNotEmpty) {
-        return explicitAccount;
-      }
-      return _usernameController.text.trim();
+      return _accountController.text.trim();
     }
     return _accountController.text.trim();
   }
@@ -295,7 +291,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
-    final missingFxcm = _isFxcmBroker && (effectiveAccountNumber.isEmpty || (!hasFxcmUsernamePassword && !hasFxcmToken));
+    final missingFxcm = _isFxcmBroker && (!hasFxcmUsernamePassword && !hasFxcmToken);
 
     if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -355,7 +351,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       final tradingService = Provider.of<TradingService>(context, listen: false);
       await tradingService.syncBrokerAccount(
         brokerName: _selectedBroker,
-        accountNumber: effectiveAccountNumber,
+        accountNumber: _isFxcmBroker ? _accountController.text.trim() : effectiveAccountNumber,
         server: _serverController.text,
       );
     }
@@ -602,7 +598,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
           if (isConnected) {
             await tradingService.syncBrokerAccount(
               brokerName: _selectedBroker,
-              accountNumber: effectiveAccountNumber,
+              accountNumber: account.accountNumber,
               server: _serverController.text,
             );
           }

@@ -5187,28 +5187,86 @@ class FXCMConnection(BrokerConnection):
             )
             return None
 
+        helper_credentials = dict(self.credentials or {})
         payload = {
-            'credentials': self.credentials,
+            'credentials': helper_credentials,
             'extra': extra or {},
         }
         helper_script = get_fxcm_forexconnect_helper_script()
+
+        def _invoke_helper(current_payload: Dict) -> tuple[Optional[subprocess.CompletedProcess], Optional[str]]:
+            try:
+                completed = subprocess.run(
+                    [self.forexconnect_helper_python, helper_script, action],
+                    input=json.dumps(current_payload),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                return completed, None
+            except Exception as e:
+                return None, str(e)
+
         try:
-            completed = subprocess.run(
-                [self.forexconnect_helper_python, helper_script, action],
-                input=json.dumps(payload),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            completed, invoke_error = _invoke_helper(payload)
         except Exception as e:
-            self.last_error = str(e)
-            logger.error(f"Error running FXCM ForexConnect helper: {e}")
+            completed = None
+            invoke_error = str(e)
+
+        if invoke_error:
+            self.last_error = invoke_error
+            logger.error(f"Error running FXCM ForexConnect helper: {invoke_error}")
+            return None
+
+        if completed is None:
+            self.last_error = 'FXCM helper did not return a result'
             return None
 
         stdout = (completed.stdout or '').strip()
         stderr = (completed.stderr or '').strip()
         if completed.returncode != 0:
-            self.last_error = stderr or stdout or f'FXCM helper exited with code {completed.returncode}'
+            parsed_error = None
+            try:
+                helper_error_payload = json.loads(stdout) if stdout else {}
+                if isinstance(helper_error_payload, dict):
+                    parsed_error = helper_error_payload.get('error')
+            except Exception:
+                parsed_error = None
+
+            if (
+                action == 'login_check'
+                and helper_credentials.get('account_number')
+                and str(parsed_error or stderr or stdout or '').strip() == 'No FXCM account available for the supplied credentials'
+            ):
+                retry_credentials = dict(helper_credentials)
+                requested_account = str(retry_credentials.get('account_number') or '').strip()
+                retry_credentials['account_number'] = ''
+                retry_payload = {
+                    'credentials': retry_credentials,
+                    'extra': extra or {},
+                }
+                retry_completed, retry_error = _invoke_helper(retry_payload)
+                if retry_error:
+                    self.last_error = retry_error
+                    logger.error(f"Error retrying FXCM ForexConnect helper without account number: {retry_error}")
+                    return None
+                if retry_completed and retry_completed.returncode == 0:
+                    retry_stdout = (retry_completed.stdout or '').strip()
+                    try:
+                        retry_result = json.loads(retry_stdout) if retry_stdout else {}
+                    except Exception as e:
+                        self.last_error = f'Invalid FXCM helper response: {e}'
+                        logger.error(f"FXCM helper returned invalid JSON for {action} retry: {retry_stdout[:500]}")
+                        return None
+                    resolved_account = str((retry_result.get('account') or {}).get('account_id') or (retry_result.get('account') or {}).get('accountNumber') or '').strip()
+                    if resolved_account and requested_account and resolved_account != requested_account:
+                        logger.info(
+                            f"[FXCM] Helper could not match requested account '{requested_account}'; using available account '{resolved_account}' instead"
+                        )
+                    self.last_error = ''
+                    return retry_result
+
+            self.last_error = str(parsed_error or stderr or stdout or f'FXCM helper exited with code {completed.returncode}')
             logger.error(f"FXCM helper failed for {action}: {self.last_error}")
             return None
 
@@ -5521,7 +5579,13 @@ class FXCMConnection(BrokerConnection):
             # FXCM REST API REQUIRES a Socket.IO handshake first to obtain a session token.
             socketio_error = ''
             token = self.credentials.get('api_key') or self.credentials.get('token')
-            if token:
+            should_try_rest = bool(token) and not (
+                self._has_forexconnect_credentials()
+                and forexconnect_error
+                and 'not configured' not in forexconnect_error.lower()
+                and 'bindings were not found' not in forexconnect_error.lower()
+            )
+            if should_try_rest:
                 if self._connect_socketio_rest():
                     return True
                 socketio_error = self.last_error
@@ -16099,17 +16163,39 @@ def save_broker_credentials():
             server = (server or data.get('market') or 'spot').lower()
             account_number = account_number or server.upper()
         elif broker_name in ['FXCM']:
-            # FXCM REST API: password is the access token for Socket.IO auth
-            username = username or data.get('login_id') or account_number
+            username = str(username or data.get('login_id') or '').strip()
+            account_number = str(account_number or '').strip()
+            password = str(password or '').strip()
+            token = str(token or '').strip()
+            api_key = str(api_key or '').strip()
             if not ((username and password) or token or api_key):
                 return jsonify({
                     'success': False,
-                    'error': 'FXCM requires Login ID and Password'
+                    'error': 'FXCM requires either Login ID + Password or an API token'
                 }), 400
-            # For REST API, the password serves as the access token
-            api_key = token or api_key or password
+
+            # Keep FXCM login ID separate from the trading account row ID returned by ForexConnect.
+            # If the user leaves account_number blank, resolve and persist the actual account row when possible.
+            if username and password:
+                server = server or ('real' if is_live else 'demo')
+                fxcm_conn = FXCMConnection(credentials={
+                    'username': username,
+                    'password': password,
+                    'api_key': token or api_key,
+                    'account_number': account_number,
+                    'server': server,
+                    'connection': 'Real' if is_live else 'Demo',
+                    'is_live': is_live,
+                })
+                if fxcm_conn.connect():
+                    resolved_info = fxcm_conn.get_account_info() or {}
+                    resolved_account = str(resolved_info.get('account_id') or resolved_info.get('accountNumber') or '').strip()
+                    if resolved_account:
+                        account_number = resolved_account
+                    fxcm_conn.disconnect()
+
             account_number = account_number or username or 'FXCM'
-            server = server or ('REST-API-LIVE' if is_live else 'REST-API-DEMO')
+            api_key = token or api_key
         elif broker_name in ['OANDA']:
             if not api_key or not account_number:
                 return jsonify({
@@ -16229,6 +16315,12 @@ def save_broker_credentials():
                 cursor.execute('UPDATE broker_credentials SET account_currency = ? WHERE credential_id = ?', ('USDT', credential_id))
                 conn2 = get_db_connection()
                 conn2.execute('UPDATE broker_credentials SET account_currency = ? WHERE credential_id = ?', ('USDT', credential_id))
+                conn2.commit()
+                conn2.close()
+            elif broker_name == 'FXCM':
+                cursor.execute('UPDATE broker_credentials SET account_currency = ? WHERE credential_id = ?', ('USD', credential_id))
+                conn2 = get_db_connection()
+                conn2.execute('UPDATE broker_credentials SET account_currency = ? WHERE credential_id = ?', ('USD', credential_id))
                 conn2.commit()
                 conn2.close()
         except Exception as e:
@@ -16366,23 +16458,22 @@ def test_broker_connection():
 
         # ==================== FXCM ====================
         elif broker == 'FXCM':
-            login_id = data.get('username') or data.get('login_id') or data.get('account_number')
-            password = data.get('password')
-            token = data.get('token') or data.get('api_key') or data.get('api_token')
-            account_id = data.get('account_number') or login_id or 'FXCM'
-            if not (token or (login_id and password)):
-                return jsonify({'success': False, 'error': 'Missing FXCM fields: provide your FXCM API Access Token (from Trading Station > Settings)'}), 400
+            login_id = str(data.get('username') or data.get('login_id') or '').strip()
+            password = str(data.get('password') or '').strip()
+            token = str(data.get('token') or data.get('api_key') or data.get('api_token') or '').strip()
+            requested_account_id = str(data.get('account_number') or '').strip()
+            use_username_mode = bool(login_id and password)
+            account_id = requested_account_id
+            if not (token or use_username_mode):
+                return jsonify({'success': False, 'error': 'Missing FXCM fields: provide Login ID + Password or an API token'}), 400
 
-            # FXCM REST API uses the API Access Token for Socket.IO handshake.
-            # The token is NOT the account password — it's generated in FXCM Trading Station.
-            api_token = token or password  # Allow password field as fallback
             fxcm_conn = FXCMConnection(credentials={
-                'api_key': api_token,
+                'api_key': token,
                 'username': login_id,
                 'password': password,
-                'fxcm_login_mode': 'rest',
+                'fxcm_login_mode': 'forexconnect' if use_username_mode else 'rest',
                 'account_number': account_id,
-                'server': data.get('server') or ('REST-API-LIVE' if is_live else 'REST-API-DEMO'),
+                'server': data.get('server') or ('real' if is_live else 'demo'),
                 'connection': 'Real' if is_live else 'Demo',
                 'is_live': is_live,
             })
@@ -16391,7 +16482,7 @@ def test_broker_connection():
 
             account_info = fxcm_conn.get_account_info()
             fxcm_conn.disconnect()
-            account_id = str(account_info.get('account_id') or account_id)
+            account_id = str(account_info.get('account_id') or account_info.get('accountNumber') or account_id or login_id or 'FXCM').strip()
 
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -16406,14 +16497,16 @@ def test_broker_connection():
                 'FXCM',
                 account_id,
                 (password or '') if use_username_mode else '',
-                (data.get('server') or 'http://www.fxcorporate.com/Hosts.jsp') if use_username_mode else ('REST-API-LIVE' if is_live else 'REST-API-DEMO'),
+                (data.get('server') or ('real' if is_live else 'demo')) if use_username_mode else (data.get('server') or ('real' if is_live else 'demo')),
                 int(is_live),
                 token or '',
                 datetime.now().isoformat(),
                 datetime.now().isoformat(),
             ))
-            if use_username_mode and username:
-                cursor.execute('UPDATE broker_credentials SET username = ? WHERE credential_id = ?', (username, credential_id))
+            if use_username_mode and login_id:
+                cursor.execute('UPDATE broker_credentials SET username = ?, account_currency = ? WHERE credential_id = ?', (login_id, 'USD', credential_id))
+            else:
+                cursor.execute('UPDATE broker_credentials SET account_currency = ? WHERE credential_id = ?', ('USD', credential_id))
             conn.commit()
             conn.close()
 
