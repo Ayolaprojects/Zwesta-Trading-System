@@ -110,6 +110,23 @@ def has_fxcm_connection_credentials(credentials: Optional[Dict[str, Any]]) -> bo
     return bool(api_key or (username and password))
 
 
+_FXCM_LOG_COOLDOWN_SECONDS = 300
+_fxcm_log_cooldowns: Dict[str, float] = {}
+_fxcm_log_cooldown_lock = threading.Lock()
+
+
+def _log_fxcm_once(level: str, key: str, message: str, cooldown_seconds: int = _FXCM_LOG_COOLDOWN_SECONDS) -> None:
+    now = time.time()
+    with _fxcm_log_cooldown_lock:
+        last_logged_at = _fxcm_log_cooldowns.get(key, 0.0)
+        if (now - last_logged_at) < max(1, cooldown_seconds):
+            return
+        _fxcm_log_cooldowns[key] = now
+
+    log_method = getattr(logger, level, logger.warning)
+    log_method(message)
+
+
 OZOW_REQUEST_HASH_FIELDS = [
     'siteCode',
     'countryCode',
@@ -678,6 +695,98 @@ def get_failed_auth_status(account_id):
 def broker_uses_single_mode_slot(broker_name: str) -> bool:
     """Return True when a broker should have only one active credential per mode per user."""
     return canonicalize_broker_name(broker_name) == 'Exness'
+
+
+def _broker_credential_completeness_score(row: Dict[str, Any]) -> int:
+    broker_name = canonicalize_broker_name(row.get('broker_name'))
+    account_number = str(row.get('account_number') or '').strip()
+    password = str(row.get('password') or '').strip()
+    server = str(row.get('server') or '').strip()
+    api_key = str(row.get('api_key') or '').strip()
+    username = str(row.get('username') or '').strip()
+
+    score = 1 if account_number else 0
+    if broker_name == 'FXCM':
+        score += 10 if has_fxcm_connection_credentials({
+            'api_key': api_key,
+            'username': username,
+            'password': password,
+        }) else 0
+    elif broker_name == 'Binance':
+        score += 10 if api_key and password else 0
+    elif broker_name == 'OANDA':
+        score += 10 if api_key and account_number else 0
+    else:
+        score += 10 if account_number and password and server else 0
+
+    if str(row.get('updated_at') or '').strip():
+        score += 1
+    return score
+
+
+def _dedupe_key_for_active_credential(row: Dict[str, Any]) -> Tuple[Any, ...]:
+    broker_name = canonicalize_broker_name(row.get('broker_name'))
+    account_number = str(row.get('account_number') or '').strip()
+    username = str(row.get('username') or '').strip()
+    normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, row.get('is_live'), row.get('server')))
+
+    if broker_uses_single_mode_slot(broker_name):
+        return (broker_name, normalized_is_live)
+
+    if broker_name == 'FXCM' and username:
+        return (broker_name, username, normalized_is_live)
+
+    return (broker_name, account_number, normalized_is_live)
+
+
+def dedupe_active_broker_credentials(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    deduped_credentials: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+    duplicate_credential_ids: List[str] = []
+
+    for row in rows:
+        dedupe_key = _dedupe_key_for_active_credential(row)
+
+        existing = deduped_credentials.get(dedupe_key)
+        if existing is None:
+            deduped_credentials[dedupe_key] = row
+            continue
+
+        existing_score = _broker_credential_completeness_score(existing)
+        new_score = _broker_credential_completeness_score(row)
+        if new_score > existing_score:
+            deduped_credentials[dedupe_key] = row
+            discarded = existing
+        else:
+            discarded = row
+
+        discarded_id = str(discarded.get('credential_id') or '').strip()
+        if discarded_id:
+            duplicate_credential_ids.append(discarded_id)
+
+    return list(deduped_credentials.values()), duplicate_credential_ids
+
+
+def deactivate_duplicate_credential_ids(cursor, duplicate_credential_ids: List[str], user_id: str, reason: str) -> int:
+    duplicate_credential_ids = [str(cid).strip() for cid in duplicate_credential_ids if str(cid or '').strip()]
+    if not duplicate_credential_ids:
+        return 0
+
+    placeholders = ','.join('?' for _ in duplicate_credential_ids)
+    cursor.execute(
+        f'''
+            UPDATE broker_credentials
+            SET is_active = 0, updated_at = ?
+            WHERE credential_id IN ({placeholders})
+        ''',
+        (datetime.now().isoformat(), *duplicate_credential_ids),
+    )
+    deactivated_count = cursor.rowcount or 0
+    if deactivated_count:
+        logger.warning(
+            f"Deactivated {deactivated_count} duplicate/incomplete broker credential(s) for user {user_id} "
+            f"while {reason}."
+        )
+    return deactivated_count
 
 
 def deactivate_conflicting_broker_credentials(cursor, user_id: str, broker_name: str, is_live, keep_credential_id: str = None) -> int:
@@ -5662,7 +5771,7 @@ class FXCMConnection(BrokerConnection):
                 retry_completed, retry_error = _invoke_helper(retry_payload)
                 if retry_error:
                     self.last_error = retry_error
-                    logger.error(f"Error retrying FXCM ForexConnect helper without account number: {retry_error}")
+                    _log_fxcm_once('error', f'fxcm-helper-retry:{action}:{retry_error}', f"Error retrying FXCM ForexConnect helper without account number: {retry_error}")
                     return None
                 if retry_completed and retry_completed.returncode == 0:
                     retry_stdout = (retry_completed.stdout or '').strip()
@@ -5681,7 +5790,7 @@ class FXCMConnection(BrokerConnection):
                     return retry_result
 
             self.last_error = str(parsed_error or stderr or stdout or f'FXCM helper exited with code {completed.returncode}')
-            logger.error(f"FXCM helper failed for {action}: {self.last_error}")
+            _log_fxcm_once('error', f'fxcm-helper:{action}:{self.last_error}', f"FXCM helper failed for {action}: {self.last_error}")
             return None
 
         try:
@@ -5777,7 +5886,7 @@ class FXCMConnection(BrokerConnection):
                 'Install the official FXCM ForexConnect SDK, set FOREXCONNECT_HOME to the SDK path, '
                 'or configure FXCM_FOREXCONNECT_PYTHON to a Python 3.7 interpreter with forexconnect installed.'
             )
-            logger.error(self.last_error)
+            _log_fxcm_once('error', f'fxcm-forexconnect-import:{self.last_error}', self.last_error)
             return False
         except Exception as e:
             self.last_error = str(e)
@@ -5907,13 +6016,13 @@ class FXCMConnection(BrokerConnection):
                     self.base_url = base_url
                     if response.status_code != 200:
                         self.last_error = f"HTTP {response.status_code}: {response.text[:300]}"
-                        logger.error(f"FXCM request failed for {path}: {self.last_error}")
+                        _log_fxcm_once('error', f'fxcm-request:{path}:{self.last_error}', f"FXCM request failed for {path}: {self.last_error}")
                         return None
 
                     payload = response.json()
                     if isinstance(payload, dict) and payload.get('error'):
                         self.last_error = str(payload.get('error'))
-                        logger.error(f"FXCM API returned error for {path}: {self.last_error}")
+                        _log_fxcm_once('error', f'fxcm-api-error:{path}:{self.last_error}', f"FXCM API returned error for {path}: {self.last_error}")
                         return None
 
                     self.last_error = ''
@@ -5925,11 +6034,11 @@ class FXCMConnection(BrokerConnection):
                 'FXCM request failed for all configured hosts: ',
                 errors,
             )
-            logger.error(f"Error calling FXCM endpoint {path}: {self.last_error}")
+            _log_fxcm_once('error', f'fxcm-endpoint:{path}:{self.last_error}', f"Error calling FXCM endpoint {path}: {self.last_error}")
             return None
         except Exception as e:
             self.last_error = str(e)
-            logger.error(f"Error calling FXCM endpoint {path}: {e}")
+            _log_fxcm_once('error', f'fxcm-endpoint-exception:{path}:{self.last_error}', f"Error calling FXCM endpoint {path}: {e}")
             return None
 
     def _connect_socketio_rest(self) -> bool:
@@ -5966,10 +6075,10 @@ class FXCMConnection(BrokerConnection):
                             logger.info(f"[FXCM] ✅ Socket.IO REST auth succeeded ({self.base_url})")
                             self.get_account_info()
                             return True
-                logger.warning(f"[FXCM] Socket.IO handshake returned {resp.status_code} ({base_url})")
+                _log_fxcm_once('warning', f'fxcm-socketio-status:{base_url}:{resp.status_code}', f"[FXCM] Socket.IO handshake returned {resp.status_code} ({base_url})")
             except Exception as e:
                 errors.append(f"{base_url}: {e}")
-                logger.warning(f"[FXCM] Socket.IO REST auth failed for {base_url}: {e}")
+                _log_fxcm_once('warning', f'fxcm-socketio-exception:{base_url}:{e}', f"[FXCM] Socket.IO REST auth failed for {base_url}: {e}")
 
         if errors:
             self.last_error = self._format_connectivity_error(
@@ -6013,11 +6122,11 @@ class FXCMConnection(BrokerConnection):
                 'Use Login ID + Password with ForexConnect, or use an API token for REST mode. '
                 'If the backend does not have ForexConnect installed, install the official forexconnect package.'
             )
-            logger.error(f'[FXCM] {self.last_error}')
+            _log_fxcm_once('error', f'fxcm-connect-final:{self.last_error}', f'[FXCM] {self.last_error}')
             return False
         except Exception as e:
             self.last_error = str(e)
-            logger.error(f"Error connecting to FXCM: {e}")
+            _log_fxcm_once('error', f'fxcm-connect-exception:{self.last_error}', f"Error connecting to FXCM: {e}")
             return False
 
     def disconnect(self) -> bool:
@@ -8817,38 +8926,9 @@ def get_account_balances():
         cursor.execute(credentials_query, credentials_params)
 
         raw_credentials = [dict(row) for row in cursor.fetchall()]
-        deduped_credentials = {}
-        duplicate_credential_ids = []
-        for row in raw_credentials:
-            broker_name = canonicalize_broker_name(row['broker_name'])
-            account_number = str(row['account_number'] or '').strip()
-            normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, row['is_live'], row.get('server')))
-            if broker_uses_single_mode_slot(broker_name):
-                dedupe_key = (broker_name, normalized_is_live)
-            else:
-                dedupe_key = (broker_name, account_number, normalized_is_live)
-            if dedupe_key not in deduped_credentials:
-                deduped_credentials[dedupe_key] = row
-            elif broker_uses_single_mode_slot(broker_name):
-                duplicate_credential_ids.append(row['credential_id'])
-
-        if duplicate_credential_ids:
-            placeholders = ','.join('?' for _ in duplicate_credential_ids)
-            cursor.execute(
-                f'''
-                    UPDATE broker_credentials
-                    SET is_active = 0, updated_at = ?
-                    WHERE credential_id IN ({placeholders})
-                ''',
-                (datetime.now().isoformat(), *duplicate_credential_ids),
-            )
+        credentials, duplicate_credential_ids = dedupe_active_broker_credentials(raw_credentials)
+        if deactivate_duplicate_credential_ids(cursor, duplicate_credential_ids, user_id, 'loading account balances'):
             conn.commit()
-            logger.warning(
-                f"Deactivated {len(duplicate_credential_ids)} duplicate Exness credential(s) for user {user_id} "
-                f"to enforce one live slot and one demo slot."
-            )
-
-        credentials = list(deduped_credentials.values())
         
         # CRITICAL FIX: Fetch cached balances for fallback on timeout
         cached_query = '''
@@ -10367,7 +10447,7 @@ def get_account_detailed():
         # Query all active credentials, optionally filtered by broker
         broker_clause = f"AND broker_name = '{broker_filter}'" if broker_filter else ""
         cursor.execute(f'''
-            SELECT credential_id, broker_name, account_number, password, server, is_live,
+            SELECT credential_id, broker_name, account_number, password, server, is_live, username,
                    cached_balance, cached_equity, cached_margin_free, cached_margin,
                    cached_margin_level, cached_profit, account_currency, last_update, updated_at, api_key
             FROM broker_credentials 
@@ -10378,6 +10458,9 @@ def get_account_detailed():
         ''', (user_id,))
         
         creds = [dict(row) for row in cursor.fetchall()]
+        creds, duplicate_credential_ids = dedupe_active_broker_credentials(creds)
+        if deactivate_duplicate_credential_ids(cursor, duplicate_credential_ids, user_id, 'loading account details'):
+            conn.commit()
         conn.close()
         
         if not creds:
@@ -10589,6 +10672,9 @@ def get_positions_detailed():
         cursor.execute(query, params)
 
         rows = [dict(row) for row in cursor.fetchall()]
+        rows, duplicate_credential_ids = dedupe_active_broker_credentials(rows)
+        if deactivate_duplicate_credential_ids(cursor, duplicate_credential_ids, user_id, 'loading detailed positions'):
+            conn.commit()
         conn.close()
 
         if not rows:
@@ -16622,7 +16708,11 @@ def save_broker_credentials():
                         account_number = resolved_account
                     fxcm_conn.disconnect()
 
-            account_number = account_number or username or 'FXCM'
+            if not account_number:
+                return jsonify({
+                    'success': False,
+                    'error': 'FXCM trading account ID could not be resolved. Test the connection first or enter the Trading Account ID before saving.'
+                }), 400
             api_key = token or api_key
         elif broker_name in ['OANDA']:
             if not api_key or not account_number:
@@ -23462,6 +23552,24 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
     Returns: (broker_type, connection_object) or (None, error_message)
     """
     try:
+        context_id = str(bot_id or 'runtime').strip() or 'runtime'
+        if context_id.startswith('positions-detailed:'):
+            context_label = f'Position inspection {context_id}'
+        elif context_id.startswith('unified-portfolio:'):
+            context_label = f'Portfolio inspection {context_id}'
+        elif context_id.startswith('unified-positions:'):
+            context_label = f'Positions aggregation {context_id}'
+        elif context_id.startswith('account-details:'):
+            context_label = f'Account details {context_id}'
+        elif context_id.startswith('mode-switch:'):
+            context_label = f'Mode switch {context_id}'
+        elif context_id.startswith('unified-close-all:'):
+            context_label = f'Close-all request {context_id}'
+        elif context_id.startswith('manual-close:'):
+            context_label = f'Manual close {context_id}'
+        else:
+            context_label = f'Bot {context_id}'
+
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -23484,10 +23592,10 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
         cred = dict(cred_row)
         broker_name = canonicalize_broker_name(cred['broker_name'])
         
-        logger.info(f"[Broker Detection] Bot {bot_id}: Detected broker type: {broker_name}")
+        logger.info(f"[Broker Detection] {context_label}: Detected broker type: {broker_name}")
         
         if broker_name == 'Binance':
-            logger.info(f"[Broker Switch] Bot {bot_id}: Using Binance REST API")
+            logger.info(f"[Broker Switch] {context_label}: Using Binance REST API")
             api_key = cred['api_key']
             api_secret = cred['password']
             account_number = cred['account_number']
@@ -23507,14 +23615,14 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 'is_live': is_live,
             })
             if binance_conn.connect():
-                logger.info(f"✅ Bot {bot_id}: Connected to Binance ({account_number or server})")
+                logger.info(f"✅ {context_label}: Connected to Binance ({account_number or server})")
                 return 'Binance', binance_conn
             error_msg = 'Failed to connect to Binance'
             logger.error(error_msg)
             return None, error_msg
 
         elif broker_name == 'OANDA':
-            logger.info(f"[Broker Switch] Bot {bot_id}: Using OANDA REST API")
+            logger.info(f"[Broker Switch] {context_label}: Using OANDA REST API")
             api_key = cred['api_key']
             account_number = cred['account_number']
             is_live = bool(cred['is_live'])
@@ -23530,14 +23638,14 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 'is_live': is_live,
             })
             if oanda_conn.connect():
-                logger.info(f"✅ Bot {bot_id}: Connected to OANDA ({account_number})")
+                logger.info(f"✅ {context_label}: Connected to OANDA ({account_number})")
                 return 'OANDA', oanda_conn
             error_msg = 'Failed to connect to OANDA'
             logger.error(error_msg)
             return None, error_msg
 
         elif broker_name == 'FXCM':
-            logger.info(f"[Broker Switch] Bot {bot_id}: Using FXCM connection")
+            logger.info(f"[Broker Switch] {context_label}: Using FXCM connection")
             api_key = str(cred['api_key'] or '').strip()
             username = str(cred.get('username') or '').strip()
             password = str(cred.get('password') or '').strip()
@@ -23550,7 +23658,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 'password': password,
             }):
                 error_msg = 'FXCM: Credential incomplete - skipping connection attempt'
-                logger.info(f"Bot {bot_id}: {error_msg}")
+                logger.info(f"{context_label}: {error_msg}")
                 return None, error_msg
 
             fxcm_conn = FXCMConnection(credentials={
@@ -23563,7 +23671,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 'is_live': is_live,
             })
             if fxcm_conn.connect():
-                logger.info(f"✅ Bot {bot_id}: Connected to FXCM ({account_number or 'FXCM'})")
+                logger.info(f"✅ {context_label}: Connected to FXCM ({account_number or 'FXCM'})")
                 return 'FXCM', fxcm_conn
             error_msg = fxcm_conn.last_error or 'Failed to connect to FXCM'
             logger.error(error_msg)
@@ -23571,7 +23679,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
         
         # ✅ METATRADER 5 - Exness
         elif broker_name == 'Exness':
-            logger.info(f"[Broker Switch] Bot {bot_id}: Using MetaTrader 5 SDK")
+            logger.info(f"[Broker Switch] {context_label}: Using MetaTrader 5 SDK")
             account_number = cred['account_number']
             password = cred['password']
             server = cred['server']
@@ -23585,7 +23693,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
             # Normalize server name for MT5
             server = normalize_mt5_server_name(broker_name, bool(is_live), server)
             
-            logger.info(f"Bot {bot_id}: Connecting to MT5 - Account: {account_number}, Server: {server}")
+            logger.info(f"{context_label}: Connecting to MT5 - Account: {account_number}, Server: {server}")
             log_mt5_route_diagnostic(
                 f'get_broker_connection:{bot_id or credential_id}',
                 {
