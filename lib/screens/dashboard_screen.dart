@@ -617,6 +617,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
+  bool _isDashboardRouteActive() {
+    final route = ModalRoute.of(context);
+    return route == null || route.isCurrent;
+  }
+
   /// Fetch broker account balances from /api/accounts/balances
   Future<void> _fetchBrokerBalances() async {
     if (_brokerBalancesLoading) return;
@@ -758,14 +763,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     
     // Subsequent refreshes with exponential backoff on error
     _refreshTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
-      if (mounted) {
+      if (mounted && _isDashboardRouteActive()) {
         _performRefresh();
       }
     });
   }
   
   Future<void> _performRefresh() async {
-    if (_refreshInProgress) return;
+    if (_refreshInProgress || !_isDashboardRouteActive()) return;
     _refreshInProgress = true;
     try {
       await _fetchRealBots();
