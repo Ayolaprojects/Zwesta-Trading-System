@@ -5993,7 +5993,11 @@ class FXCMConnection(BrokerConnection):
             # FXCM REST API REQUIRES a Socket.IO handshake first to obtain a session token.
             socketio_error = ''
             token = self.credentials.get('api_key') or self.credentials.get('token')
-            should_try_rest = bool(token) and not (
+            demo_password_token = ''
+            if not token and self._server_mode() == 'demo' and self._has_forexconnect_credentials():
+                demo_password_token = self.credentials.get('password') or ''
+
+            should_try_rest = bool(token or demo_password_token) and not (
                 self._has_forexconnect_credentials()
                 and forexconnect_error
                 and 'not configured' not in forexconnect_error.lower()

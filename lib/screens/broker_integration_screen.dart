@@ -472,7 +472,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
-    final missingFxcm = _isFxcmBroker && (effectiveAccountNumber.isEmpty || (!hasFxcmUsernamePassword && !hasFxcmToken));
+    final missingFxcm = _isFxcmBroker && (!hasFxcmUsernamePassword && !hasFxcmToken);
 
     if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
