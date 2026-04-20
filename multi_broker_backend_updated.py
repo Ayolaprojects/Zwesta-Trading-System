@@ -870,27 +870,16 @@ def resolve_mt5_terminal_executable_path(path: str) -> Optional[str]:
     normalized_path = os.path.normpath(normalized_path)
     executable_names = {'terminal64.exe', 'terminal.exe'}
 
-    # Some upstream credential/path flows accidentally append terminal64.exe to an
-    # already-complete executable path, yielding paths like:
+    # Some upstream credential/path flows accidentally append path segments after an
+    # already-complete terminal executable path, yielding inputs like:
     # C:\MT5\Exness-Live\terminal64.exe\terminal64.exe
-    # Trim back to the first executable segment before continuing.
-    while True:
-        path_parts = normalized_path.split(os.sep)
-        if len(path_parts) < 2:
+    # C:\MT5\Exness-Live\terminal64.exe\some-subdir
+    # Canonicalize by cutting the path at the first executable segment.
+    path_parts = normalized_path.split(os.sep)
+    for index, part in enumerate(path_parts):
+        if part.lower() in executable_names:
+            normalized_path = os.sep.join(path_parts[:index + 1])
             break
-
-        basename = path_parts[-1].lower()
-        parent_basename = path_parts[-2].lower()
-        if basename in executable_names and parent_basename in executable_names:
-            normalized_path = os.path.dirname(normalized_path)
-            continue
-
-        parent_path = os.path.dirname(normalized_path)
-        if parent_path and os.path.basename(parent_path).lower() in executable_names:
-            normalized_path = parent_path
-            continue
-
-        break
 
     if os.path.isfile(normalized_path):
         return normalized_path
