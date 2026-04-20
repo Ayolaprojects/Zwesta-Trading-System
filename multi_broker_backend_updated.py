@@ -9220,7 +9220,7 @@ def get_account_balances():
                     'total_pl': float(cached_profit if has_cached_data else 0),
                     'currency': cached_currency,
                     'displayCurrency': cached_currency,
-                    'connected': bool(cache_source == 'memory_cache' and has_cached_data),
+                    'connected': bool(cache_source in ('memory_cache', 'sqlite_cache') and has_cached_data),
                     'dataSource': cache_source if has_cached_data else ('stale_cache' if cache_is_stale else 'not_connected'),
                     'cacheAgeSeconds': cache_snapshot_age,
                 })
@@ -16586,6 +16586,7 @@ def save_broker_credentials():
             password = str(password or '').strip()
             token = str(token or '').strip()
             api_key = str(api_key or '').strip()
+            resolved_fxcm_info = None
             if not ((username and password) or token or api_key):
                 return jsonify({
                     'success': False,
@@ -16594,7 +16595,7 @@ def save_broker_credentials():
 
             # Keep FXCM login ID separate from the trading account row ID returned by ForexConnect.
             # If the user leaves account_number blank, resolve and persist the actual account row when possible.
-            if username and password:
+            if username and password and not account_number:
                 server = server or ('real' if is_live else 'demo')
                 fxcm_conn = FXCMConnection(credentials={
                     'username': username,
@@ -16606,8 +16607,8 @@ def save_broker_credentials():
                     'is_live': is_live,
                 })
                 if fxcm_conn.connect():
-                    resolved_info = fxcm_conn.get_account_info() or {}
-                    resolved_account = str(resolved_info.get('account_id') or resolved_info.get('accountNumber') or '').strip()
+                    resolved_fxcm_info = fxcm_conn.get_account_info() or {}
+                    resolved_account = str(resolved_fxcm_info.get('account_id') or resolved_fxcm_info.get('accountNumber') or '').strip()
                     if resolved_account:
                         account_number = resolved_account
                     fxcm_conn.disconnect()
@@ -16701,6 +16702,15 @@ def save_broker_credentials():
             logger.info(f"✅ Created new broker credential for user {user_id}: {broker_name} | Account: {account_id}")
         
         conn.commit()
+
+        if broker_name == 'FXCM' and resolved_fxcm_info:
+            persist_account_snapshot(
+                broker_name,
+                account_number,
+                resolved_fxcm_info,
+                credential_id=credential_id,
+                user_id=user_id,
+            )
         
         # CRITICAL: Fetch actual currency from broker account and update database
         try:
@@ -16928,12 +16938,27 @@ def test_broker_connection():
             conn.commit()
             conn.close()
 
+            if account_info:
+                persist_account_snapshot(
+                    'FXCM',
+                    account_id,
+                    account_info,
+                    credential_id=credential_id,
+                    user_id=user_id,
+                )
+
             return jsonify({
                 'success': True,
                 'message': f'Successfully connected to FXCM account {account_id}',
                 'credential_id': credential_id,
                 'broker': 'FXCM',
                 'account_number': account_id,
+                'balance': float(account_info.get('balance', 0) or 0),
+                'equity': float(account_info.get('equity', account_info.get('balance', 0)) or 0),
+                'free_margin': float(account_info.get('marginFree', account_info.get('margin_free', 0)) or 0),
+                'margin': float(account_info.get('margin', 0) or 0),
+                'margin_level': float(account_info.get('margin_level', account_info.get('marginLevel', 0)) or 0),
+                'profit': float(account_info.get('profit', account_info.get('total_pl', 0)) or 0),
                 'currency': account_info.get('currency', 'USD'),
                 'is_live': is_live,
                 'status': 'CONNECTED',
