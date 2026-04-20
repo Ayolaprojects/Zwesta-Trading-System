@@ -96,6 +96,14 @@ def get_fxcm_forexconnect_helper_script() -> str:
     return os.path.join(os.path.dirname(__file__), 'scripts', 'fxcm_forexconnect_helper.py')
 
 
+def has_fxcm_connection_credentials(credentials: Optional[Dict[str, Any]]) -> bool:
+    payload = credentials or {}
+    api_key = str(payload.get('api_key', '') or payload.get('token', '') or '').strip()
+    username = str(payload.get('username', '') or '').strip()
+    password = str(payload.get('password', '') or '').strip()
+    return bool(api_key or (username and password))
+
+
 def ensure_forexconnect_sdk_available() -> bool:
     """Try to make the locally installed ForexConnect SDK importable on Windows."""
     global _forexconnect_bootstrap_attempted
@@ -3472,6 +3480,20 @@ class MT5Connection(BrokerConnection):
                 self.mt5_path = route_diagnostic['selected_path']
 
             normalized_path = resolve_mt5_terminal_executable_path(self.mt5_path)
+            if normalized_path:
+                self.mt5_path = normalized_path
+                route_diagnostic = log_mt5_route_diagnostic(
+                    'MT5Connection.connect.resolved',
+                    {
+                        'broker': broker_name,
+                        'broker_name': broker_name,
+                        'account': account,
+                        'account_number': account,
+                        'server': server,
+                        'path': normalized_path,
+                        'is_live': is_live,
+                    },
+                )
             
             # Ensure account is integer for proper comparison with MT5 login field
             account = int(account)
@@ -22643,15 +22665,19 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
 
         elif broker_name == 'FXCM':
             logger.info(f"[Broker Switch] Bot {bot_id}: Using FXCM connection")
-            api_key = cred['api_key']
-            username = cred.get('username')
-            password = cred.get('password')
+            api_key = str(cred['api_key'] or '').strip()
+            username = str(cred.get('username') or '').strip()
+            password = str(cred.get('password') or '').strip()
             account_number = cred['account_number']
             is_live = bool(cred['is_live'])
 
-            if not api_key and not (username and password):
-                error_msg = 'FXCM: Missing token and missing username/password'
-                logger.error(error_msg)
+            if not has_fxcm_connection_credentials({
+                'api_key': api_key,
+                'username': username,
+                'password': password,
+            }):
+                error_msg = 'FXCM: Credential incomplete - skipping connection attempt'
+                logger.info(f"Bot {bot_id}: {error_msg}")
                 return None, error_msg
 
             fxcm_conn = FXCMConnection(credentials={
@@ -22710,7 +22736,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 'server': server,
                 'broker': broker_for_mt5,
                 'is_live': bool(is_live),
-                'path': cred.get('mt5_terminal_path') or None,  # Per-account terminal path (prevents account-switching conflict)
+                'path': resolve_mt5_terminal_executable_path(cred.get('mt5_terminal_path')) or cred.get('mt5_terminal_path') or None,  # Per-account terminal path (prevents account-switching conflict)
                 'priority_mode_switch': bool(bot_id and str(bot_id).startswith('mode-switch:')),
             })
             
