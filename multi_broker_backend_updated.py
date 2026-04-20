@@ -739,6 +739,28 @@ def _dedupe_key_for_active_credential(row: Dict[str, Any]) -> Tuple[Any, ...]:
     return (broker_name, account_number, normalized_is_live)
 
 
+def _is_probable_fxcm_trading_account_id(value: Any) -> bool:
+    account_number = str(value or '').strip()
+    return bool(account_number) and account_number.isdigit()
+
+
+def _is_fxcm_placeholder_row(row: Dict[str, Any]) -> bool:
+    broker_name = canonicalize_broker_name(row.get('broker_name'))
+    if broker_name != 'FXCM':
+        return False
+
+    account_number = str(row.get('account_number') or '').strip()
+    if not account_number:
+        return True
+    if _is_probable_fxcm_trading_account_id(account_number):
+        return False
+
+    username = str(row.get('username') or '').strip()
+    api_key = str(row.get('api_key') or '').strip()
+    password = str(row.get('password') or '').strip()
+    return not bool(username or api_key or password)
+
+
 def dedupe_active_broker_credentials(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
     deduped_credentials: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
     duplicate_credential_ids: List[str] = []
@@ -762,6 +784,31 @@ def dedupe_active_broker_credentials(rows: List[Dict[str, Any]]) -> Tuple[List[D
         discarded_id = str(discarded.get('credential_id') or '').strip()
         if discarded_id:
             duplicate_credential_ids.append(discarded_id)
+
+    fxcm_real_accounts_by_mode = {
+        int(normalize_mt5_is_live_flag(canonicalize_broker_name(row.get('broker_name')), row.get('is_live'), row.get('server')))
+        for row in deduped_credentials.values()
+        if canonicalize_broker_name(row.get('broker_name')) == 'FXCM'
+        and _is_probable_fxcm_trading_account_id(row.get('account_number'))
+        and has_fxcm_connection_credentials(row)
+    }
+
+    if fxcm_real_accounts_by_mode:
+        filtered_credentials: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        for dedupe_key, row in deduped_credentials.items():
+            broker_name = canonicalize_broker_name(row.get('broker_name'))
+            normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, row.get('is_live'), row.get('server')))
+            if (
+                broker_name == 'FXCM'
+                and normalized_is_live in fxcm_real_accounts_by_mode
+                and _is_fxcm_placeholder_row(row)
+            ):
+                discarded_id = str(row.get('credential_id') or '').strip()
+                if discarded_id:
+                    duplicate_credential_ids.append(discarded_id)
+                continue
+            filtered_credentials[dedupe_key] = row
+        deduped_credentials = filtered_credentials
 
     return list(deduped_credentials.values()), duplicate_credential_ids
 
@@ -11002,6 +11049,9 @@ def get_trades_history():
         ''', (user_id,))
         
         creds = [dict(row) for row in cursor.fetchall()]
+        creds, duplicate_credential_ids = dedupe_active_broker_credentials(creds)
+        if deactivate_duplicate_credential_ids(cursor, duplicate_credential_ids, user_id, 'loading trade history'):
+            conn.commit()
         conn.close()
 
         if not creds:
