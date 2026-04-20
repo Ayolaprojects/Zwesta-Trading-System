@@ -1003,7 +1003,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Use one of these FXCM login methods:\n\n1. Login ID + Password\n   Use this when the backend supports ForexConnect.\n\n2. Login ID + API Access Token\n   Use a token generated inside FXCM Trading Station.\n\nTo get your API token:\n1. Log into FXCM Trading Station\n2. Open Settings\n3. Click "Generate API Token"\n4. Copy the token into the optional field below',
+                    'Use one of these FXCM login methods:\n\n1. Login ID + Password\n   Use this when the backend supports ForexConnect.\n\n2. Login ID + API Access Token\n   Use a token generated inside FXCM Trading Station.\n\nThe Trading Account ID field below is optional. Leave it blank if you only know your Login ID and let the backend resolve the actual account row.\n\nTo get your API token:\n1. Log into FXCM Trading Station\n2. Open Settings\n3. Click "Generate API Token"\n4. Copy the token into the optional field below',
                     style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: Colors.white70,
@@ -1047,10 +1047,23 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
             TextField(
               controller: _usernameController,
               decoration: const InputDecoration(
-                labelText: 'FXCM Login ID / Account ID',
+                labelText: 'FXCM Login ID',
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.person),
                 hintText: 'e.g. D291208899',
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            Text('Trading Account ID (Optional)', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _accountController,
+              decoration: const InputDecoration(
+                labelText: 'FXCM Trading Account ID',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.badge_outlined),
+                hintText: 'Leave blank to auto-resolve after login',
               ),
             ),
             const SizedBox(height: 24),
@@ -1493,7 +1506,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       : _isOandaBroker
                           ? '1. Go to oanda.com → My Account → Manage API Access\n2. Click "Generate" to create a Personal Access Token\n3. Copy the full token (shown once — save it!)\n4. Find your Account ID on the OANDA dashboard\n   (format: 001-001-XXXXXXX-001)\n5. Choose DEMO (fxpractice) or LIVE (fxtrade) mode'
                       : _isFxcmBroker
-                          ? '1. Log into FXCM Trading Station (web or desktop)\n2. Go to Settings (gear icon)\n3. Click "Generate API Token"\n4. Copy the token and paste it below\n5. Enter your Login ID (e.g. D291208899)\n6. Select DEMO or LIVE to match your account'
+                          ? '1. Enter your FXCM Login ID and Trading Station password\n2. Leave Trading Account ID blank if you do not know it\n3. The backend will resolve the actual FXCM account row after login\n4. If needed, generate an API token from Trading Station Settings\n5. Select DEMO or LIVE to match your account'
                           : '1. Open your MetaTrader 5 terminal\n2. Login with your broker account\n3. Your account number appears at the top\n4. Use your MT5 login password\n5. Server will auto-populate',
                   style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
@@ -1523,9 +1536,16 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       Text(
                         _isBinanceBroker
                             ? 'Secret: paste this client\'s Binance API secret'
-                            : (_isFxcmBroker ? 'API Token: paste from Trading Station Settings' : 'Password: demo123'),
+                            : (_isFxcmBroker ? 'Trading Account ID: optional, backend can auto-resolve' : 'Password: demo123'),
                         style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                       ),
+                      if (_isFxcmBroker) ...[
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Password: Oaxm3',
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                      ),
+                      ],
                     ],
                   ),
                 ),
