@@ -5276,13 +5276,25 @@ class FXCMConnection(BrokerConnection):
             accounts_table = table_manager.get_table(ForexConnect.ACCOUNTS)
             account_id = str(self.credentials.get('account_number', '') or '').strip()
             account_row = None
+            fallback_account_row = None
 
             if accounts_table is not None:
                 for row in accounts_table:
                     row_account_id = str(getattr(row, 'account_id', '') or '')
+                    if fallback_account_row is None:
+                        fallback_account_row = row
                     if row_account_id == account_id or not account_id:
                         account_row = row
                         break
+
+            if account_row is None and fallback_account_row is not None:
+                requested_account = account_id
+                account_row = fallback_account_row
+                resolved_account = str(getattr(account_row, 'account_id', '') or '')
+                if requested_account and requested_account != resolved_account:
+                    logger.info(
+                        f"[FXCM] Requested account '{requested_account}' did not match ForexConnect accounts; using available account '{resolved_account}' instead"
+                    )
 
             if account_row is None:
                 self.last_error = 'No FXCM account available for the supplied credentials'

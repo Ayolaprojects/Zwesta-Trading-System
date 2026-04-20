@@ -55,12 +55,17 @@ def _get_account_row(fx: ForexConnect, credentials: Dict[str, Any]):
     accounts_table = fx.table_manager.get_table(ForexConnect.ACCOUNTS)
     account_id = str(credentials.get('account_number', '') or '').strip()
     account_row = None
+    fallback_account_row = None
     if accounts_table is not None:
         for row in accounts_table:
             row_account_id = str(getattr(row, 'account_id', '') or '')
+            if fallback_account_row is None:
+                fallback_account_row = row
             if row_account_id == account_id or not account_id:
                 account_row = row
                 break
+    if account_row is None and fallback_account_row is not None:
+        account_row = fallback_account_row
     if account_row is None:
         raise RuntimeError('No FXCM account available for the supplied credentials')
     return account_row
