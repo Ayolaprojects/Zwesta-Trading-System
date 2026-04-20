@@ -14286,16 +14286,25 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     bot_state['maxOpenPositions'] = bot_state.get('maxOpenPositions') or 5
     bot_state['maxPositionsPerSymbol'] = bot_state.get('maxPositionsPerSymbol') or bot_state['maxOpenPositions']
     bot_state['managementProfile'] = _normalize_management_profile(bot_state.get('managementProfile'))
-    bot_state['managementMode'] = bot_state.get('managementMode') or 'assisted'
+    bot_state['managementMode'] = 'manual' if str(bot_state.get('managementMode') or 'assisted').lower() == 'manual' else 'assisted'
     bot_state['managementState'] = bot_state.get('managementState') or 'normal'
     bot_state['autoAdaptationEnabled'] = _coerce_bool(bot_state.get('autoAdaptationEnabled', True), True)
     bot_state['allowAdaptiveRawFallback'] = _coerce_bool(
         bot_state.get('allowAdaptiveRawFallback', bot_state.get('intelligentScanner', False)),
         bool(bot_state.get('intelligentScanner', False)),
     )
+    default_signal_threshold_mode = (
+        'manual'
+        if bot_state['managementMode'] == 'manual' and bot_state.get('signalThreshold') is not None
+        else 'auto'
+    )
     bot_state['signalThresholdMode'] = str(
-        bot_state.get('signalThresholdMode') or ('manual' if bot_state.get('signalThreshold') is not None else 'auto')
+        bot_state.get('signalThresholdMode') or default_signal_threshold_mode
     ).lower()
+    if bot_state['managementMode'] != 'manual':
+        bot_state['signalThresholdMode'] = 'auto'
+    elif bot_state['signalThresholdMode'] != 'manual':
+        bot_state['signalThresholdMode'] = 'auto'
     bot_state['signalThreshold'] = bot_state.get('signalThreshold') or BOT_MANAGEMENT_PROFILES[bot_state['managementProfile']]['signalThreshold']
     restored_symbols = bot_state.get('symbols') or (row['symbols'].split(',') if row['symbols'] else ['EURUSDm'])
     bot_state['symbols'] = validate_and_correct_symbols(restored_symbols, broker_name)
@@ -16914,27 +16923,50 @@ def test_broker_connection():
 
             conn = get_db_connection()
             cursor = conn.cursor()
-            credential_id = str(uuid.uuid4())
+            server_name = data.get('server') or ('real' if is_live else 'demo')
+            timestamp = datetime.now().isoformat()
             cursor.execute('''
-                INSERT INTO broker_credentials 
-                (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, api_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-            ''', (
-                credential_id,
-                user_id,
-                'FXCM',
-                account_id,
-                (password or '') if use_username_mode else '',
-                (data.get('server') or ('real' if is_live else 'demo')) if use_username_mode else (data.get('server') or ('real' if is_live else 'demo')),
-                int(is_live),
-                token or '',
-                datetime.now().isoformat(),
-                datetime.now().isoformat(),
-            ))
-            if use_username_mode and login_id:
-                cursor.execute('UPDATE broker_credentials SET username = ?, account_currency = ? WHERE credential_id = ?', (login_id, 'USD', credential_id))
+                SELECT credential_id FROM broker_credentials
+                WHERE user_id = ? AND broker_name = ? AND account_number = ?
+            ''', (user_id, 'FXCM', account_id))
+            existing = cursor.fetchone()
+
+            if existing:
+                credential_id = existing[0]
+                cursor.execute('''
+                    UPDATE broker_credentials
+                    SET password = ?, server = ?, is_live = ?, is_active = 1, api_key = ?, updated_at = ?, username = ?, account_currency = ?
+                    WHERE credential_id = ?
+                ''', (
+                    (password or '') if use_username_mode else '',
+                    server_name,
+                    int(is_live),
+                    token or '',
+                    timestamp,
+                    login_id if use_username_mode else None,
+                    'USD',
+                    credential_id,
+                ))
             else:
-                cursor.execute('UPDATE broker_credentials SET account_currency = ? WHERE credential_id = ?', ('USD', credential_id))
+                credential_id = str(uuid.uuid4())
+                cursor.execute('''
+                    INSERT INTO broker_credentials 
+                    (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, api_key, created_at, updated_at, username, account_currency)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                ''', (
+                    credential_id,
+                    user_id,
+                    'FXCM',
+                    account_id,
+                    (password or '') if use_username_mode else '',
+                    server_name,
+                    int(is_live),
+                    token or '',
+                    timestamp,
+                    timestamp,
+                    login_id if use_username_mode else None,
+                    'USD',
+                ))
             conn.commit()
             conn.close()
 
@@ -20663,6 +20695,11 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
     adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
     crypto_only_threshold = _crypto_only_signal_threshold(bot_config.get('symbols') or [])
     signal_threshold_mode = str(bot_config.get('signalThresholdMode') or 'auto').lower()
+    if is_assisted:
+        signal_threshold_mode = 'auto'
+    elif signal_threshold_mode != 'manual':
+        signal_threshold_mode = 'auto'
+    bot_config['signalThresholdMode'] = signal_threshold_mode
     effective = {
         'profile': profile,
         'mode': 'assisted' if is_assisted else 'manual',
@@ -20874,12 +20911,20 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
         min(profile_defaults['maxPositionsPerSymbol'], max_open_positions),
         warnings,
     )
+    default_signal_threshold_mode = (
+        'manual'
+        if management_mode == 'manual' and data.get('signalThreshold') is not None
+        else 'auto'
+    )
     signal_threshold_mode = str(
-        data.get('signalThresholdMode') or ('manual' if data.get('signalThreshold') is not None else 'auto')
+        data.get('signalThresholdMode') or default_signal_threshold_mode
     ).strip().lower()
     if signal_threshold_mode not in {'auto', 'manual'}:
         signal_threshold_mode = 'auto'
         warnings.append('signalThresholdMode defaulted to auto')
+    if management_mode != 'manual' and signal_threshold_mode != 'auto':
+        signal_threshold_mode = 'auto'
+        warnings.append('signalThresholdMode forced to auto for assisted management')
 
     crypto_only_threshold = _crypto_only_signal_threshold(data.get('symbols') or [])
 

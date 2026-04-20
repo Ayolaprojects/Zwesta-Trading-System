@@ -1316,7 +1316,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 if (_isConnected) ...[
                   const SizedBox(height: 14),
                   Text(
-                    'Bot Status: READY',
+                    'Broker Status: CONNECTED',
                     style: GoogleFonts.poppins(
                       color: AppColors.successColor,
                       fontWeight: FontWeight.bold,
@@ -1337,7 +1337,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Live Scalping Activity:',
+                          'Connected Account Snapshot:',
                           style: GoogleFonts.poppins(
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
