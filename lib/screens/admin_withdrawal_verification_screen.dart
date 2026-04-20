@@ -19,6 +19,7 @@ class AdminWithdrawalVerificationScreen extends StatefulWidget {
 class _AdminWithdrawalVerificationScreenState
     extends State<AdminWithdrawalVerificationScreen> {
   List<Map<String, dynamic>> _pendingWithdrawals = [];
+  List<Map<String, dynamic>> _pendingCommissionWithdrawals = [];
   final List<Map<String, dynamic>> _verifiedWithdrawals = [];
   bool _isLoading = true;
   String? _errorMessage;
@@ -28,10 +29,10 @@ class _AdminWithdrawalVerificationScreenState
   @override
   void initState() {
     super.initState();
-    _fetchPendingWithdrawals();
+    _fetchAdminQueues();
   }
 
-  Future<void> _fetchPendingWithdrawals() async {
+  Future<void> _fetchAdminQueues() async {
     setState(() => _isLoading = true);
     try {
       final response = await http.get(
@@ -42,14 +43,24 @@ class _AdminWithdrawalVerificationScreenState
         },
       ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
+      final commissionResponse = await http.get(
+        Uri.parse('${EnvironmentConfig.apiUrl}/api/admin/commission-withdrawals/pending'),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'your_admin_api_key',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200 && commissionResponse.statusCode == 200) {
         final data = jsonDecode(response.body);
+        final commissionData = jsonDecode(commissionResponse.body);
         setState(() {
           _pendingWithdrawals = List<Map<String, dynamic>>.from(data['withdrawals'] ?? []);
+          _pendingCommissionWithdrawals = List<Map<String, dynamic>>.from(commissionData['withdrawals'] ?? []);
           _isLoading = false;
         });
       } else {
-        throw Exception('Failed to fetch withdrawals: ${response.statusCode}');
+        throw Exception('Failed to fetch withdrawals: ${response.statusCode}/${commissionResponse.statusCode}');
       }
     } catch (e) {
       setState(() {
@@ -84,7 +95,7 @@ class _AdminWithdrawalVerificationScreenState
         });
         // Remove from pending list
         _pendingWithdrawals.removeWhere((w) => w['withdrawal_id'] == withdrawalId);
-        _fetchPendingWithdrawals();
+        _fetchAdminQueues();
       } else {
         final error = jsonDecode(response.body);
         throw Exception(error['error'] ?? 'Verification failed');
@@ -94,16 +105,57 @@ class _AdminWithdrawalVerificationScreenState
     }
   }
 
-  Future<String?> _showNotesDialog() async {
+  Future<void> _updateCommissionWithdrawalStatus(String withdrawalId, String status) async {
+    final notes = await _showNotesDialog(
+      title: 'Update Commission Payout',
+      hintText: 'Optional admin note or payout reference',
+      confirmLabel: 'Update',
+    );
+    if (notes == null) return;
+
+    try {
+      final response = await http.post(
+        Uri.parse('${EnvironmentConfig.apiUrl}/api/admin/commission-withdrawal/$withdrawalId/status'),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'your_admin_api_key',
+        },
+        body: jsonEncode({
+          'status': status,
+          'notes': notes,
+          'processed_by': 'admin_ui',
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        setState(() {
+          _successMessage = data['message']?.toString() ?? 'Commission payout updated';
+        });
+        _fetchAdminQueues();
+      } else {
+        final error = jsonDecode(response.body);
+        throw Exception(error['error'] ?? 'Failed to update commission payout');
+      }
+    } catch (e) {
+      setState(() => _errorMessage = 'Error: ${e.toString()}');
+    }
+  }
+
+  Future<String?> _showNotesDialog({
+    String title = 'Add Verification Notes',
+    String hintText = 'e.g., "Verified on Exness platform", "User confirmed withdrawal"',
+    String confirmLabel = 'Verify',
+  }) async {
     String? notes;
     return showDialog<String?>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add Verification Notes'),
+        title: Text(title),
         content: TextField(
-          decoration: const InputDecoration(
-            hintText: 'e.g., "Verified on Exness platform", "User confirmed withdrawal"',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            hintText: hintText,
+            border: const OutlineInputBorder(),
           ),
           maxLines: 3,
           onChanged: (value) => notes = value,
@@ -115,7 +167,7 @@ class _AdminWithdrawalVerificationScreenState
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, notes ?? ''),
-            child: const Text('Verify'),
+            child: Text(confirmLabel),
           ),
         ],
       ),
@@ -179,6 +231,34 @@ class _AdminWithdrawalVerificationScreenState
                         style: TextStyle(
                           color: _selectedTab == 'pending'
                               ? Colors.blue
+                              : Colors.grey,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => setState(() => _selectedTab = 'commission'),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            color: _selectedTab == 'commission'
+                                ? Colors.orange
+                                : Colors.transparent,
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                      child: Text(
+                        'Commission (${_pendingCommissionWithdrawals.length})',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _selectedTab == 'commission'
+                              ? Colors.orange
                               : Colors.grey,
                           fontWeight: FontWeight.bold,
                         ),
@@ -268,6 +348,8 @@ class _AdminWithdrawalVerificationScreenState
                 ? const Center(child: CircularProgressIndicator())
                 : _selectedTab == 'pending'
                     ? _buildPendingList()
+                    : _selectedTab == 'commission'
+                        ? _buildCommissionPendingList()
                     : _buildVerifiedList(),
           ),
         ],
@@ -428,6 +510,120 @@ class _AdminWithdrawalVerificationScreenState
                     backgroundColor: Colors.green,
                     minimumSize: const Size(double.infinity, 40),
                   ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCommissionPendingList() {
+    if (_pendingCommissionWithdrawals.isEmpty) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.payments_outlined, size: 48, color: Colors.grey),
+            SizedBox(height: 12),
+            Text('No pending commission payouts'),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: _pendingCommissionWithdrawals.length,
+      itemBuilder: (context, index) {
+        final withdrawal = _pendingCommissionWithdrawals[index];
+        final createdAt = DateTime.tryParse(withdrawal['created_at'] ?? '') ?? DateTime.now();
+        final amount = (withdrawal['amount'] as num?)?.toDouble() ?? 0.0;
+        final status = (withdrawal['status'] ?? 'pending').toString().toUpperCase();
+
+        return Card(
+          color: Colors.grey[850],
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          withdrawal['name']?.toString().isNotEmpty == true
+                              ? withdrawal['name'].toString()
+                              : 'Commission Withdrawal',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'User: ${withdrawal['user_id']?.toString().substring(0, 8) ?? 'N/A'}...',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.3),
+                        border: Border.all(color: Colors.orange),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        status,
+                        style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('Amount: \$${amount.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                Text('Method: ${withdrawal['payout_method'] ?? 'bank_transfer'}'),
+                if ((withdrawal['payment_reference'] ?? '').toString().isNotEmpty)
+                  Text('Reference: ${withdrawal['payment_reference']}'),
+                if ((withdrawal['payout_details'] ?? '').toString().isNotEmpty)
+                  Text('Details: ${withdrawal['payout_details']}'),
+                const SizedBox(height: 12),
+                Text(
+                  'Requested: ${DateFormat('MMM d, yyyy HH:mm').format(createdAt)}',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (status == 'PENDING')
+                      ElevatedButton(
+                        onPressed: () => _updateCommissionWithdrawalStatus(withdrawal['withdrawal_id'], 'approved'),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+                        child: const Text('Approve'),
+                      ),
+                    if (status == 'PENDING' || status == 'APPROVED')
+                      ElevatedButton(
+                        onPressed: () => _updateCommissionWithdrawalStatus(withdrawal['withdrawal_id'], 'processing'),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                        child: const Text('Processing'),
+                      ),
+                    if (status == 'APPROVED' || status == 'PROCESSING')
+                      ElevatedButton(
+                        onPressed: () => _updateCommissionWithdrawalStatus(withdrawal['withdrawal_id'], 'completed'),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                        child: const Text('Complete'),
+                      ),
+                    if (status != 'COMPLETED' && status != 'FAILED' && status != 'CANCELLED')
+                      OutlinedButton(
+                        onPressed: () => _updateCommissionWithdrawalStatus(withdrawal['withdrawal_id'], 'failed'),
+                        child: const Text('Fail'),
+                      ),
+                  ],
                 ),
               ],
             ),

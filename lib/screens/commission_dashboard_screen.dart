@@ -370,9 +370,12 @@ class _CommissionDashboardScreenState extends State<CommissionDashboardScreen> {
 
   void _showWithdrawDialog(CommissionService service, double maxAmount) {
     final amountCtrl = TextEditingController();
+    final payoutDetailsCtrl = TextEditingController();
+    String payoutMethod = 'bank_transfer';
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3A),
         title: Text('Request Withdrawal', style: GoogleFonts.poppins(color: Colors.white)),
         content: Column(
@@ -393,6 +396,43 @@ class _CommissionDashboardScreenState extends State<CommissionDashboardScreen> {
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
               ),
             ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: payoutMethod,
+              dropdownColor: const Color(0xFF1A1F3A),
+              decoration: InputDecoration(
+                labelText: 'Payout Method',
+                labelStyle: GoogleFonts.poppins(color: Colors.white70),
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.06),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'bank_transfer', child: Text('Bank Transfer')),
+                DropdownMenuItem(value: 'ozow', child: Text('Ozow Payout')),
+              ],
+              onChanged: (value) {
+                setDialogState(() {
+                  payoutMethod = value ?? 'bank_transfer';
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: payoutDetailsCtrl,
+              style: GoogleFonts.poppins(color: Colors.white),
+              maxLines: 2,
+              decoration: InputDecoration(
+                hintText: payoutMethod == 'ozow'
+                    ? 'Enter the Ozow payout destination or notes for admin processing'
+                    : 'Enter bank account or payout instructions',
+                hintStyle: GoogleFonts.poppins(color: Colors.white30),
+                prefixIcon: const Icon(Icons.account_balance_wallet_outlined, color: Color(0xFF00E5FF)),
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.06),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              ),
+            ),
           ],
         ),
         actions: [
@@ -408,7 +448,11 @@ class _CommissionDashboardScreenState extends State<CommissionDashboardScreen> {
                 return;
               }
               Navigator.pop(ctx);
-              final ok = await service.requestWithdrawal(amount);
+              final ok = await service.requestWithdrawal(
+                amount,
+                payoutMethod: payoutMethod,
+                payoutDetails: payoutDetailsCtrl.text.trim(),
+              );
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(content: Text(ok ? 'Withdrawal requested!' : service.errorMessage ?? 'Failed')),
@@ -419,6 +463,7 @@ class _CommissionDashboardScreenState extends State<CommissionDashboardScreen> {
             child: Text('Withdraw', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
           ),
         ],
+      ),
       ),
     );
   }

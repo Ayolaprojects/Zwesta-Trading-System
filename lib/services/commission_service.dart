@@ -159,7 +159,7 @@ class CommissionService extends ChangeNotifier {
   List<Commission> getCommissionsForBot(String botId) => _commissions.where((c) => c.botId == botId).toList();
 
   /// Request commission withdrawal
-  Future<bool> requestWithdrawal(double amount) async {
+  Future<bool> requestWithdrawal(double amount, {String payoutMethod = 'bank_transfer', String payoutDetails = ''}) async {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
@@ -183,10 +183,14 @@ class CommissionService extends ChangeNotifier {
           'Content-Type': 'application/json',
           'X-Session-Token': sessionToken,
         },
-        body: jsonEncode({'amount': amount}),
+        body: jsonEncode({
+          'amount': amount,
+          'payout_method': payoutMethod,
+          'payout_details': payoutDetails,
+        }),
       ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 || response.statusCode == 201) {
         print('✅ Withdrawal request submitted');
         await fetchCommissions(); // Refresh
         _isLoading = false;

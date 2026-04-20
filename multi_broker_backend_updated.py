@@ -70,9 +70,14 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
+
+def _resolve_log_level() -> int:
+    raw_level = str(os.getenv('LOG_LEVEL', 'INFO') or 'INFO').strip().upper()
+    return getattr(logging, raw_level, logging.INFO)
+
 # Configure logging with UTF-8 encoding and rotation
 logging.basicConfig(
-    level=logging.WARNING,  # Changed from INFO to WARNING to reduce log volume
+    level=_resolve_log_level(),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         RotatingFileHandler('multi_broker_backend.log', maxBytes=10*1024*1024, backupCount=3, encoding='utf-8'),  # 10MB per file, keep 3 backups
@@ -80,6 +85,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+logger.setLevel(_resolve_log_level())
 logger.info(f"Runtime infrastructure: {get_runtime_infrastructure_summary()}")
 
 _forexconnect_bootstrap_attempted = False
@@ -102,6 +108,364 @@ def has_fxcm_connection_credentials(credentials: Optional[Dict[str, Any]]) -> bo
     username = str(payload.get('username', '') or '').strip()
     password = str(payload.get('password', '') or '').strip()
     return bool(api_key or (username and password))
+
+
+OZOW_REQUEST_HASH_FIELDS = [
+    'siteCode',
+    'countryCode',
+    'currencyCode',
+    'amount',
+    'transactionReference',
+    'bankReference',
+    'optional1',
+    'optional2',
+    'optional3',
+    'optional4',
+    'optional5',
+    'customer',
+    'cancelUrl',
+    'errorUrl',
+    'successUrl',
+    'notifyUrl',
+    'isTest',
+    'selectedBankId',
+    'bankAccountNumber',
+    'branchCode',
+    'bankAccountName',
+    'payeeDisplayName',
+    'expiryDateUtc',
+    'allowVariableAmount',
+    'variableAmountMin',
+    'variableAmountMax',
+    'customerIdentifier',
+]
+
+OZOW_RESPONSE_HASH_FIELDS = [
+    'SiteCode',
+    'TransactionId',
+    'TransactionReference',
+    'Amount',
+    'Status',
+    'Optional1',
+    'Optional2',
+    'Optional3',
+    'Optional4',
+    'Optional5',
+    'CurrencyCode',
+    'IsTest',
+    'StatusMessage',
+]
+
+
+def get_ozow_site_code() -> str:
+    return str(os.getenv('OZOW_SITE_CODE', '') or '').strip()
+
+
+def get_ozow_api_key() -> str:
+    return str(os.getenv('OZOW_API_KEY', '') or '').strip()
+
+
+def get_ozow_private_key() -> str:
+    return str(os.getenv('OZOW_PRIVATE_KEY', '') or '').strip()
+
+
+def get_ozow_api_base_url(is_test: bool) -> str:
+    explicit = str(os.getenv('OZOW_API_BASE_URL', '') or '').strip().rstrip('/')
+    if explicit:
+        return explicit
+    return 'https://stagingapi.ozow.com' if is_test else 'https://api.ozow.com'
+
+
+def ozow_enabled() -> bool:
+    return bool(get_ozow_site_code() and get_ozow_api_key() and get_ozow_private_key())
+
+
+def get_ozow_is_test(default: Optional[bool] = None) -> bool:
+    fallback = default
+    if fallback is None:
+        fallback = ENVIRONMENT != 'LIVE'
+    raw_value = str(os.getenv('OZOW_IS_TEST', 'true' if fallback else 'false')).strip().lower()
+    return raw_value in {'1', 'true', 'yes', 'on'}
+
+
+def _normalize_ozow_hash_value(field_name: str, value: Any) -> str:
+    if value is None:
+        return ''
+    if field_name == 'amount':
+        return f"{float(value):.2f}"
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    return str(value).strip()
+
+
+def build_ozow_request_hash(payload: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for field_name in OZOW_REQUEST_HASH_FIELDS:
+        value = payload.get(field_name)
+        if field_name == 'allowVariableAmount' and str(value).strip().lower() == 'false':
+            continue
+        normalized = _normalize_ozow_hash_value(field_name, value)
+        if normalized:
+            parts.append(normalized)
+    raw = ''.join(parts) + get_ozow_private_key()
+    return hashlib.sha512(raw.lower().encode('utf-8')).hexdigest()
+
+
+def build_ozow_response_hash(payload: Dict[str, Any]) -> str:
+    parts = [_normalize_ozow_hash_value(field_name, payload.get(field_name)) for field_name in OZOW_RESPONSE_HASH_FIELDS]
+    raw = ''.join(parts) + get_ozow_private_key()
+    return hashlib.sha512(raw.lower().encode('utf-8')).hexdigest().lstrip('0')
+
+
+def verify_ozow_response_hash(payload: Dict[str, Any]) -> bool:
+    received_hash = str(payload.get('Hash') or payload.get('hash') or '').strip().lower().lstrip('0')
+    if not received_hash:
+        return False
+    calculated_hash = build_ozow_response_hash(payload).lower().lstrip('0')
+    return received_hash == calculated_hash
+
+
+def _normalize_ozow_status(value: Any) -> str:
+    return str(value or '').strip().lower()
+
+
+def fetch_ozow_transaction_status(transaction_reference: str, transaction_id: str = '', is_test: Optional[bool] = None) -> Dict[str, Any]:
+    if not ozow_enabled():
+        raise RuntimeError('Ozow is not configured')
+
+    import requests
+
+    resolved_is_test = get_ozow_is_test(is_test)
+    api_base = get_ozow_api_base_url(resolved_is_test)
+    params = {'siteCode': get_ozow_site_code()}
+    endpoint = '/GetTransactionByReference'
+    if transaction_id:
+        endpoint = '/GetTransaction'
+        params['transactionId'] = transaction_id
+    else:
+        params['transactionReference'] = transaction_reference
+
+    response = requests.get(
+        f'{api_base}{endpoint}',
+        params=params,
+        headers={
+            'ApiKey': get_ozow_api_key(),
+            'Accept': 'application/json',
+        },
+        timeout=20,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f'Ozow status lookup failed with HTTP {response.status_code}: {response.text}')
+
+    payload = response.json() if response.content else {}
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError('Ozow status lookup returned an empty response')
+    return payload
+
+
+def _sync_ozow_payment_state(cursor, payment_row: Dict[str, Any], ozow_payload: Dict[str, Any], source_label: str) -> Dict[str, Any]:
+    payment = dict(payment_row)
+    now_iso = datetime.now().isoformat()
+    normalized_status = _normalize_ozow_status(ozow_payload.get('status') or ozow_payload.get('Status'))
+    completed_at = payment.get('completed_at')
+    if normalized_status == 'complete' and not completed_at:
+        completed_at = now_iso
+
+    status_message = str(
+        ozow_payload.get('statusMessage')
+        or ozow_payload.get('StatusMessage')
+        or ozow_payload.get('subStatus')
+        or ozow_payload.get('SubStatus')
+        or ''
+    ).strip()
+    ozow_transaction_id = str(ozow_payload.get('transactionId') or ozow_payload.get('TransactionId') or payment.get('ozow_transaction_id') or '').strip()
+    bank_name = str(ozow_payload.get('bankName') or ozow_payload.get('BankName') or payment.get('bank_name') or '').strip()
+    masked_account_number = str(
+        ozow_payload.get('maskedAccountNumber')
+        or ozow_payload.get('MaskedAccountNumber')
+        or payment.get('masked_account_number')
+        or ''
+    ).strip()
+
+    cursor.execute(
+        '''
+        UPDATE ozow_payments
+        SET status = ?, ozow_transaction_id = ?, bank_name = ?, masked_account_number = ?,
+            status_message = ?, payload_json = ?, updated_at = ?, completed_at = ?
+        WHERE payment_reference = ?
+        ''',
+        (
+            normalized_status,
+            ozow_transaction_id,
+            bank_name,
+            masked_account_number,
+            status_message,
+            json.dumps({'source': source_label, 'payload': ozow_payload}),
+            now_iso,
+            completed_at,
+            payment['payment_reference'],
+        ),
+    )
+
+    payment.update({
+        'status': normalized_status,
+        'ozow_transaction_id': ozow_transaction_id,
+        'bank_name': bank_name,
+        'masked_account_number': masked_account_number,
+        'status_message': status_message,
+        'updated_at': now_iso,
+        'completed_at': completed_at,
+    })
+    return payment
+
+
+def _ensure_user_wallet(cursor, user_id: str, currency: str = 'ZAR'):
+    cursor.execute('SELECT wallet_id, balance, currency FROM user_wallets WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    if row:
+        return row
+
+    wallet_id = str(uuid.uuid4())
+    now_iso = datetime.now().isoformat()
+    cursor.execute(
+        '''
+        INSERT INTO user_wallets (wallet_id, user_id, balance, currency, last_updated)
+        VALUES (?, ?, 0, ?, ?)
+        ''',
+        (wallet_id, user_id, currency, now_iso),
+    )
+    cursor.execute('SELECT wallet_id, balance, currency FROM user_wallets WHERE user_id = ?', (user_id,))
+    return cursor.fetchone()
+
+
+def _create_ozow_payment_reference(user_id: str) -> str:
+    token = uuid.uuid4().hex[:10].upper()
+    return f"ZWOZ-{user_id.replace('-', '')[:8].upper()}-{token}"
+
+
+def _record_wallet_credit_from_ozow(cursor, payment_row: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    if payment_row.get('credited_at'):
+        return
+
+    wallet = _ensure_user_wallet(cursor, payment_row['user_id'], currency=str(payment_row.get('currency') or 'ZAR').upper())
+    wallet_id = wallet['wallet_id'] if isinstance(wallet, sqlite3.Row) else wallet[0]
+    current_balance = float(wallet['balance'] if isinstance(wallet, sqlite3.Row) else wallet[1] or 0.0)
+    wallet_currency = str(wallet['currency'] if isinstance(wallet, sqlite3.Row) else wallet[2] or payment_row.get('currency') or 'ZAR').upper()
+    amount = float(payment_row.get('amount') or 0.0)
+    now_iso = datetime.now().isoformat()
+    new_balance = round(current_balance + amount, 2)
+
+    cursor.execute(
+        'UPDATE user_wallets SET balance = ?, currency = ?, last_updated = ? WHERE wallet_id = ?',
+        (new_balance, wallet_currency, now_iso, wallet_id),
+    )
+
+    wallet_transaction_id = str(uuid.uuid4())
+    cursor.execute(
+        '''
+        INSERT INTO wallet_transactions (transaction_id, wallet_id, user_id, amount, transaction_type, status, created_at)
+        VALUES (?, ?, ?, ?, ?, 'completed', ?)
+        ''',
+        (wallet_transaction_id, wallet_id, payment_row['user_id'], amount, 'ozow_deposit', now_iso),
+    )
+
+    transaction_id = str(uuid.uuid4())
+    cursor.execute(
+        '''
+        INSERT INTO transactions (transaction_id, user_id, type, amount, method, status, reason, bank_reference, fee, net_amount, created_at, completed_at)
+        VALUES (?, ?, 'deposit', ?, 'ozow', 'completed', ?, ?, 0, ?, ?, ?)
+        ''',
+        (
+            transaction_id,
+            payment_row['user_id'],
+            amount,
+            f"Ozow wallet top-up ({payment_row.get('payment_reference')})",
+            str(payload.get('TransactionId') or payment_row.get('payment_reference') or ''),
+            amount,
+            now_iso,
+            now_iso,
+        ),
+    )
+
+    cursor.execute(
+        'UPDATE ozow_payments SET credited_at = ?, updated_at = ? WHERE payment_reference = ?',
+        (now_iso, now_iso, payment_row['payment_reference']),
+    )
+
+
+COMMISSION_WITHDRAWAL_ALLOWED_STATUSES = {
+    'pending',
+    'approved',
+    'processing',
+    'completed',
+    'failed',
+    'cancelled',
+}
+
+
+def _normalize_commission_withdrawal_status(value: Any) -> str:
+    return str(value or '').strip().lower()
+
+
+def _build_commission_withdrawal_response(row: sqlite3.Row) -> Dict[str, Any]:
+    item = dict(row)
+    item['amount'] = float(item.get('amount') or 0)
+    item['status'] = _normalize_commission_withdrawal_status(item.get('status'))
+    return item
+
+
+def get_broker_runtime_readiness() -> Dict[str, Any]:
+    exness_demo_path = str(os.getenv('EXNESS_DEMO_PATH', '') or '').strip().strip('"')
+    exness_live_path = str(os.getenv('EXNESS_LIVE_PATH', '') or '').strip().strip('"')
+    fxcm_helper_python = get_fxcm_forexconnect_python()
+    fxcm_helper_script = get_fxcm_forexconnect_helper_script()
+    log_file_path = os.path.abspath('multi_broker_backend.log')
+
+    binance_api_key = str(os.getenv('BINANCE_API_KEY', '') or '').strip()
+    binance_api_secret = str(os.getenv('BINANCE_API_SECRET', '') or '').strip()
+    fxcm_login = str(os.getenv('FXCM_LOGIN', '') or '').strip()
+    fxcm_password = str(os.getenv('FXCM_PASSWORD', '') or '').strip()
+    exness_account = str(os.getenv('EXNESS_ACCOUNT', '') or '').strip()
+    exness_password = str(os.getenv('EXNESS_PASSWORD', '') or '').strip()
+    exness_server = str(os.getenv('EXNESS_SERVER', '') or '').strip()
+
+    mt5_import_ok = False
+    try:
+        import MetaTrader5  # type: ignore # noqa: F401
+        mt5_import_ok = True
+    except Exception:
+        mt5_import_ok = False
+
+    forexconnect_helper_ready = bool(fxcm_helper_python and os.path.exists(fxcm_helper_python) and fxcm_helper_script and os.path.exists(fxcm_helper_script))
+
+    return {
+        'logging': {
+            'log_level': logging.getLevelName(logger.getEffectiveLevel()),
+            'log_file_path': log_file_path,
+            'log_file_exists': os.path.exists(log_file_path),
+        },
+        'fxcm': {
+            'login_configured': bool(fxcm_login and fxcm_password),
+            'helper_python_path': fxcm_helper_python,
+            'helper_python_exists': bool(fxcm_helper_python and os.path.exists(fxcm_helper_python)),
+            'helper_script_path': fxcm_helper_script,
+            'helper_script_exists': bool(fxcm_helper_script and os.path.exists(fxcm_helper_script)),
+            'helper_ready': forexconnect_helper_ready,
+        },
+        'exness': {
+            'credentials_configured': bool(exness_account and exness_password and exness_server),
+            'mt5_import_available': mt5_import_ok,
+            'demo_terminal_path': exness_demo_path,
+            'demo_terminal_exists': bool(exness_demo_path and os.path.exists(exness_demo_path)),
+            'live_terminal_path': exness_live_path,
+            'live_terminal_exists': bool(exness_live_path and os.path.exists(exness_live_path)),
+        },
+        'binance': {
+            'credentials_configured': bool(binance_api_key and binance_api_secret),
+            'api_key_present': bool(binance_api_key),
+            'api_secret_present': bool(binance_api_secret),
+        },
+    }
 
 
 def ensure_forexconnect_sdk_available() -> bool:
@@ -2390,6 +2754,22 @@ def init_database():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     ''')
+    cursor.execute('PRAGMA table_info(commission_withdrawals)')
+    commission_withdrawal_columns = {row[1] for row in cursor.fetchall()}
+    if 'payout_method' not in commission_withdrawal_columns:
+        cursor.execute("ALTER TABLE commission_withdrawals ADD COLUMN payout_method TEXT DEFAULT 'bank_transfer'")
+    if 'payout_details' not in commission_withdrawal_columns:
+        cursor.execute('ALTER TABLE commission_withdrawals ADD COLUMN payout_details TEXT')
+    if 'payment_reference' not in commission_withdrawal_columns:
+        cursor.execute('ALTER TABLE commission_withdrawals ADD COLUMN payment_reference TEXT')
+    if 'admin_notes' not in commission_withdrawal_columns:
+        cursor.execute('ALTER TABLE commission_withdrawals ADD COLUMN admin_notes TEXT')
+    if 'external_reference' not in commission_withdrawal_columns:
+        cursor.execute('ALTER TABLE commission_withdrawals ADD COLUMN external_reference TEXT')
+    if 'processed_by' not in commission_withdrawal_columns:
+        cursor.execute('ALTER TABLE commission_withdrawals ADD COLUMN processed_by TEXT')
+    if 'updated_at' not in commission_withdrawal_columns:
+        cursor.execute('ALTER TABLE commission_withdrawals ADD COLUMN updated_at TEXT')
 
     # Exness withdrawals table - tracks Exness MT5 profit withdrawals
     cursor.execute('''
@@ -2466,6 +2846,40 @@ def init_database():
             FOREIGN KEY (source_withdrawal_id) REFERENCES exness_withdrawals(withdrawal_id)
         )
     ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ozow_payments (
+            payment_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            payment_reference TEXT NOT NULL UNIQUE,
+            transaction_reference TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT DEFAULT 'ZAR',
+            purpose TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            checkout_url TEXT,
+            payment_request_id TEXT,
+            ozow_transaction_id TEXT,
+            bank_reference TEXT,
+            bank_name TEXT,
+            masked_account_number TEXT,
+            status_message TEXT,
+            is_test BOOLEAN DEFAULT 0,
+            metadata_json TEXT,
+            payload_json TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            completed_at TEXT,
+            credited_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+    ''')
+    cursor.execute('PRAGMA table_info(ozow_payments)')
+    ozow_payment_columns = {row[1] for row in cursor.fetchall()}
+    if 'payment_request_id' not in ozow_payment_columns:
+        cursor.execute('ALTER TABLE ozow_payments ADD COLUMN payment_request_id TEXT')
+    if 'credited_at' not in ozow_payment_columns:
+        cursor.execute('ALTER TABLE ozow_payments ADD COLUMN credited_at TEXT')
 
     # User sessions table - for authentication
     cursor.execute('''
@@ -17179,8 +17593,7 @@ def get_user_commissions():
             SELECT 
                 COUNT(*) as total_count,
                 COALESCE(SUM(amount), 0) as total_earned,
-                COALESCE(SUM(CASE WHEN payout_status = 'pending' THEN amount ELSE 0 END), 0) as pending,
-                COALESCE(SUM(CASE WHEN payout_status = 'completed' THEN amount ELSE 0 END), 0) as withdrawn
+                COALESCE(SUM(CASE WHEN payout_status = 'pending' THEN amount ELSE 0 END), 0) as pending
             FROM commission_ledger
             WHERE user_id = ?
         ''', (user_id,))
@@ -17193,6 +17606,13 @@ def get_user_commissions():
             WHERE user_id = ? AND status IN ('pending', 'approved', 'processing')
         ''', (user_id,))
         reserved_amount = float(cursor.fetchone()[0] or 0)
+
+        cursor.execute('''
+            SELECT COALESCE(SUM(amount), 0)
+            FROM commission_withdrawals
+            WHERE user_id = ? AND status = 'completed'
+        ''', (user_id,))
+        withdrawn_amount = float(cursor.fetchone()[0] or 0)
         
         commissions = []
         for row in commission_rows:
@@ -17211,7 +17631,7 @@ def get_user_commissions():
         stats = {
             'total_earned': stats_row[1] or 0,
             'total_pending': max((stats_row[2] or 0) - reserved_amount, 0),
-            'total_withdrawn': stats_row[3] or 0,
+            'total_withdrawn': withdrawn_amount,
             'trade_commissions': stats_row[0] or 0,
             'referral_commissions': 0,
             'reserved_for_withdrawal': reserved_amount,
@@ -17280,6 +17700,8 @@ def request_commission_withdrawal():
         user_id = request.user_id
         data = request.json
         amount = data.get('amount', 0)
+        payout_method = str(data.get('payout_method') or 'bank_transfer').strip().lower()
+        payout_details = str(data.get('payout_details') or '').strip()
         
         if amount <= 0:
             return jsonify({'success': False, 'error': 'Amount must be greater than 0'}), 400
@@ -17314,11 +17736,16 @@ def request_commission_withdrawal():
         # Create withdrawal request
         withdrawal_id = str(uuid.uuid4())
         created_at = datetime.now().isoformat()
+        payment_reference = _create_ozow_payment_reference(user_id) if payout_method == 'ozow' else None
         
         cursor.execute('''
-            INSERT INTO commission_withdrawals (withdrawal_id, user_id, amount, status, created_at)
-            VALUES (?, ?, ?, 'pending', ?)
-        ''', (withdrawal_id, user_id, amount, created_at))
+            INSERT INTO commission_withdrawals (
+                withdrawal_id, user_id, amount, status, created_at, processed_at,
+                payout_method, payout_details, payment_reference, admin_notes,
+                external_reference, processed_by, updated_at
+            )
+            VALUES (?, ?, ?, 'pending', ?, NULL, ?, ?, ?, NULL, NULL, NULL, ?)
+        ''', (withdrawal_id, user_id, amount, created_at, payout_method, payout_details, payment_reference, created_at))
         
         conn.commit()
         conn.close()
@@ -17330,12 +17757,290 @@ def request_commission_withdrawal():
             'withdrawal_id': withdrawal_id,
             'amount': amount,
             'status': 'pending',
-            'message': 'Withdrawal request submitted. Processing usually takes 3-5 business days.'
+            'payout_method': payout_method,
+            'payment_reference': payment_reference,
+            'message': (
+                'Ozow payout request submitted for manual processing. '
+                'Your commission request has been queued with your Ozow payout reference.'
+                if payout_method == 'ozow'
+                else 'Withdrawal request submitted. Processing usually takes 3-5 business days.'
+            )
         }), 201
         
     except Exception as e:
         logger.error(f"❌ Error creating withdrawal: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/user/commission-withdrawals', methods=['GET'])
+@require_session
+def get_user_commission_withdrawals():
+    try:
+        user_id = request.user_id
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT withdrawal_id, user_id, amount, status, created_at, processed_at,
+                   payout_method, payout_details, payment_reference, admin_notes,
+                   external_reference, processed_by, updated_at
+            FROM commission_withdrawals
+            WHERE user_id = ?
+            ORDER BY COALESCE(updated_at, created_at, '') DESC, withdrawal_id DESC
+        ''', (user_id,))
+        withdrawals = [_build_commission_withdrawal_response(row) for row in cursor.fetchall()]
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'withdrawals': withdrawals,
+            'count': len(withdrawals),
+        }), 200
+    except Exception as e:
+        logger.error(f'Error getting user commission withdrawals: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/payments/ozow/initialize', methods=['POST'])
+@require_session
+def initialize_ozow_payment():
+    """Create an Ozow payment request for wallet top-ups."""
+    try:
+        if not ozow_enabled():
+            return jsonify({
+                'success': False,
+                'error': 'Ozow is not configured on the backend. Set OZOW_SITE_CODE, OZOW_API_KEY, and OZOW_PRIVATE_KEY first.',
+            }), 503
+
+        user_id = request.user_id
+        data = request.get_json(silent=True) or {}
+        amount = float(data.get('amount') or 0.0)
+        purpose = str(data.get('purpose') or 'wallet_topup').strip().lower()
+        currency = str(data.get('currency') or 'ZAR').strip().upper()
+        metadata = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
+
+        if amount <= 0:
+            return jsonify({'success': False, 'error': 'Amount must be greater than 0'}), 400
+        if currency != 'ZAR':
+            return jsonify({'success': False, 'error': 'Ozow currently supports ZAR payments only.'}), 400
+        if purpose != 'wallet_topup':
+            return jsonify({'success': False, 'error': 'Unsupported Ozow payment purpose.'}), 400
+
+        import requests
+
+        is_test = get_ozow_is_test()
+        api_base = get_ozow_api_base_url(is_test)
+        public_base = str(os.getenv('PUBLIC_API_BASE_URL', '') or os.getenv('API_PUBLIC_BASE_URL', '') or '').strip().rstrip('/')
+        if not public_base:
+            public_base = request.url_root.rstrip('/')
+
+        payment_reference = _create_ozow_payment_reference(user_id)
+        bank_reference = str(metadata.get('bankReference') or f'Zwesta {payment_reference[-8:]}').strip()
+        success_url = str(data.get('success_url') or f'{public_base}/api/payments/ozow/return?status=success&payment_reference={payment_reference}').strip()
+        cancel_url = str(data.get('cancel_url') or f'{public_base}/api/payments/ozow/return?status=cancelled&payment_reference={payment_reference}').strip()
+        error_url = str(data.get('error_url') or f'{public_base}/api/payments/ozow/return?status=error&payment_reference={payment_reference}').strip()
+        notify_url = str(data.get('notify_url') or f'{public_base}/api/payments/ozow/notify').strip()
+
+        ozow_payload = {
+            'siteCode': get_ozow_site_code(),
+            'countryCode': 'ZA',
+            'currencyCode': currency,
+            'amount': round(amount, 2),
+            'transactionReference': payment_reference,
+            'bankReference': bank_reference,
+            'optional1': user_id,
+            'optional2': purpose,
+            'optional3': str(metadata.get('source') or 'zwesta-wallet').strip(),
+            'successUrl': success_url,
+            'cancelUrl': cancel_url,
+            'errorUrl': error_url,
+            'notifyUrl': notify_url,
+            'isTest': is_test,
+        }
+        ozow_payload['hashCheck'] = build_ozow_request_hash(ozow_payload)
+
+        response = requests.post(
+            f'{api_base}/PostPaymentRequest',
+            json=ozow_payload,
+            headers={
+                'ApiKey': get_ozow_api_key(),
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            },
+            timeout=20,
+        )
+
+        response_payload = response.json() if response.content else {}
+        if response.status_code != 200 or not response_payload.get('url'):
+            error_message = str(response_payload.get('errorMessage') or response.text or 'Ozow payment initialization failed')
+            logger.error(f"Ozow payment initialization failed: {error_message}")
+            return jsonify({'success': False, 'error': error_message}), 502
+
+        now_iso = datetime.now().isoformat()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO ozow_payments (
+                payment_id, user_id, payment_reference, transaction_reference, amount, currency, purpose,
+                status, checkout_url, payment_request_id, bank_reference, is_test, metadata_json, payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'initiated', ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                str(uuid.uuid4()),
+                user_id,
+                payment_reference,
+                payment_reference,
+                round(amount, 2),
+                currency,
+                purpose,
+                str(response_payload.get('url') or '').strip(),
+                str(response_payload.get('paymentRequestId') or '').strip(),
+                bank_reference,
+                1 if is_test else 0,
+                json.dumps(metadata),
+                json.dumps({'request': ozow_payload, 'response': response_payload}),
+                now_iso,
+                now_iso,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'payment_reference': payment_reference,
+            'checkout_url': response_payload.get('url'),
+            'payment_request_id': response_payload.get('paymentRequestId'),
+            'status': 'initiated',
+            'amount': round(amount, 2),
+            'currency': currency,
+            'purpose': purpose,
+            'message': 'Ozow checkout initialized. Redirect the user to the returned checkout URL to complete payment.',
+        }), 200
+    except Exception as e:
+        logger.error(f"Error initializing Ozow payment: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/payments/ozow/status/<payment_reference>', methods=['GET'])
+@require_session
+def get_ozow_payment_status(payment_reference):
+    try:
+        user_id = request.user_id
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT payment_reference, amount, currency, purpose, status, checkout_url,
+                   payment_request_id,
+                   ozow_transaction_id, bank_reference, bank_name, masked_account_number,
+                   status_message, is_test, created_at, updated_at, completed_at, credited_at
+            FROM ozow_payments
+            WHERE payment_reference = ? AND user_id = ?
+            ''',
+            (payment_reference, user_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Ozow payment not found'}), 404
+
+        payment = dict(row)
+        try:
+            verified_payload = fetch_ozow_transaction_status(
+                payment_reference,
+                transaction_id=str(payment.get('ozow_transaction_id') or '').strip(),
+                is_test=bool(payment.get('is_test')),
+            )
+            payment = _sync_ozow_payment_state(cursor, payment, verified_payload, 'status_api')
+            if payment.get('status') == 'complete' and payment.get('purpose') == 'wallet_topup' and not payment.get('credited_at'):
+                _record_wallet_credit_from_ozow(cursor, payment, verified_payload)
+                cursor.execute(
+                    '''
+                    SELECT payment_reference, amount, currency, purpose, status, checkout_url,
+                           payment_request_id, ozow_transaction_id, bank_reference, bank_name,
+                           masked_account_number, status_message, is_test, created_at,
+                           updated_at, completed_at, credited_at
+                    FROM ozow_payments
+                    WHERE payment_reference = ? AND user_id = ?
+                    ''',
+                    (payment_reference, user_id),
+                )
+                refreshed_row = cursor.fetchone()
+                if refreshed_row:
+                    payment = dict(refreshed_row)
+            conn.commit()
+        except Exception as sync_error:
+            logger.warning(f'Ozow status API verification failed for {payment_reference}: {sync_error}')
+
+        conn.close()
+
+        return jsonify({'success': True, 'payment': payment}), 200
+    except Exception as e:
+        logger.error(f"Error fetching Ozow payment status: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/payments/ozow/return', methods=['GET'])
+def ozow_return_page():
+    payment_reference = str(request.args.get('payment_reference') or '').strip()
+    status = str(request.args.get('status') or 'pending').strip()
+    return (
+        f'<html><body style="font-family: Arial; background:#0A0E21; color:white; padding:24px;">'
+        f'<h2>Zwesta Ozow Payment</h2>'
+        f'<p>Status: <strong>{status}</strong></p>'
+        f'<p>Reference: <strong>{payment_reference}</strong></p>'
+        f'<p>You can return to the app and refresh your wallet balance.</p>'
+        f'</body></html>'
+    )
+
+
+@app.route('/api/payments/ozow/notify', methods=['POST'])
+def ozow_notify():
+    try:
+        payload = request.form.to_dict() if request.form else (request.get_json(silent=True) or {})
+        if not payload:
+            return 'Missing payload', 400
+        if not verify_ozow_response_hash(payload):
+            logger.warning(f"Invalid Ozow notify hash for reference {payload.get('TransactionReference')}")
+            return 'Invalid hash', 400
+
+        payment_reference = str(payload.get('TransactionReference') or '').strip()
+        if not payment_reference:
+            return 'Missing TransactionReference', 400
+
+        normalized_status = str(payload.get('Status') or '').strip().lower()
+        now_iso = datetime.now().isoformat()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM ozow_payments WHERE payment_reference = ?', (payment_reference,))
+        payment_row = cursor.fetchone()
+        if not payment_row:
+            conn.close()
+            return 'Payment not found', 404
+
+        payment = dict(payment_row)
+        verified_payload = payload
+        try:
+            verified_payload = fetch_ozow_transaction_status(
+                payment_reference,
+                transaction_id=str(payload.get('TransactionId') or '').strip(),
+                is_test=bool(payment.get('is_test')),
+            )
+        except Exception as verify_error:
+            logger.warning(f'Ozow notify verification API fallback used for {payment_reference}: {verify_error}')
+
+        payment = _sync_ozow_payment_state(cursor, payment, verified_payload, 'notify')
+
+        if payment.get('status') == 'complete' and payment.get('purpose') == 'wallet_topup' and not payment.get('credited_at'):
+            _record_wallet_credit_from_ozow(cursor, payment, verified_payload)
+
+        conn.commit()
+        conn.close()
+        return 'OK', 200
+    except Exception as e:
+        logger.error(f"Error processing Ozow notify: {e}")
+        return 'Error', 500
 
 
 # ==================== COMMISSION DISTRIBUTION HELPER ====================
@@ -25989,6 +26694,17 @@ def get_referral_link(referral_code):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/system/broker-readiness', methods=['GET'])
+@require_api_key
+def get_system_broker_readiness():
+    try:
+        readiness = get_broker_runtime_readiness()
+        return jsonify({'success': True, 'readiness': readiness}), 200
+    except Exception as e:
+        logger.error(f'Error getting broker runtime readiness: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/user/<user_id>/referral-code', methods=['GET'])
 @require_api_key
 def get_user_referral_code(user_id):
@@ -26835,7 +27551,28 @@ def admin_withdrawals():
             ORDER BY w.created_at ASC
         ''')
         
-        withdrawals = [dict(row) for row in cursor.fetchall()]
+        withdrawals = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            item['withdrawal_type'] = 'wallet'
+            withdrawals.append(item)
+
+        cursor.execute('''
+            SELECT cw.withdrawal_id, cw.user_id, u.name, u.email, cw.amount,
+                   cw.payout_method, cw.payout_details, cw.payment_reference,
+                   cw.status, cw.created_at, cw.admin_notes, cw.external_reference,
+                   cw.processed_by, cw.updated_at
+            FROM commission_withdrawals cw
+            JOIN users u ON cw.user_id = u.user_id
+            WHERE cw.status IN ('pending', 'approved', 'processing')
+            ORDER BY cw.created_at ASC
+        ''')
+        for row in cursor.fetchall():
+            item = dict(row)
+            item['withdrawal_type'] = 'commission'
+            withdrawals.append(item)
+
+        withdrawals.sort(key=lambda item: item.get('created_at') or '')
         conn.close()
         
         return jsonify({
@@ -26893,6 +27630,142 @@ def admin_get_pending_exness_withdrawals():
     
     except Exception as e:
         logger.error(f"Error fetching pending Exness withdrawals: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/admin/commission-withdrawals', methods=['GET'])
+@require_api_key
+def admin_get_commission_withdrawals():
+    try:
+        status_filter = _normalize_commission_withdrawal_status(request.args.get('status'))
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT cw.withdrawal_id, cw.user_id, u.name, u.email, cw.amount,
+                   cw.status, cw.created_at, cw.processed_at, cw.payout_method,
+                   cw.payout_details, cw.payment_reference, cw.admin_notes,
+                   cw.external_reference, cw.processed_by, cw.updated_at
+            FROM commission_withdrawals cw
+            JOIN users u ON cw.user_id = u.user_id
+        '''
+        params: List[Any] = []
+        if status_filter:
+            query += ' WHERE cw.status = ?'
+            params.append(status_filter)
+        query += " ORDER BY COALESCE(cw.updated_at, cw.created_at, '') DESC, cw.withdrawal_id DESC"
+
+        cursor.execute(query, tuple(params))
+        withdrawals = [_build_commission_withdrawal_response(row) for row in cursor.fetchall()]
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'withdrawals': withdrawals,
+            'count': len(withdrawals),
+        }), 200
+    except Exception as e:
+        logger.error(f'Error fetching commission withdrawals for admin: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/admin/commission-withdrawals/pending', methods=['GET'])
+@require_api_key
+def admin_get_pending_commission_withdrawals():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT cw.withdrawal_id, cw.user_id, u.name, u.email, cw.amount,
+                   cw.status, cw.created_at, cw.processed_at, cw.payout_method,
+                   cw.payout_details, cw.payment_reference, cw.admin_notes,
+                   cw.external_reference, cw.processed_by, cw.updated_at
+            FROM commission_withdrawals cw
+            JOIN users u ON cw.user_id = u.user_id
+            WHERE cw.status IN ('pending', 'approved', 'processing')
+            ORDER BY cw.created_at ASC
+        ''')
+        withdrawals = [_build_commission_withdrawal_response(row) for row in cursor.fetchall()]
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'withdrawals': withdrawals,
+            'count': len(withdrawals),
+        }), 200
+    except Exception as e:
+        logger.error(f'Error fetching pending commission withdrawals: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/admin/commission-withdrawal/<withdrawal_id>/status', methods=['POST'])
+@require_api_key
+def admin_update_commission_withdrawal_status(withdrawal_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        new_status = _normalize_commission_withdrawal_status(data.get('status'))
+        admin_notes = str(data.get('notes') or '').strip()
+        external_reference = str(data.get('external_reference') or '').strip()
+        processed_by = str(data.get('processed_by') or 'admin').strip()
+
+        if new_status not in COMMISSION_WITHDRAWAL_ALLOWED_STATUSES:
+            return jsonify({'success': False, 'error': f'Invalid status: {new_status}'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM commission_withdrawals WHERE withdrawal_id = ?', (withdrawal_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Commission withdrawal not found'}), 404
+
+        withdrawal = dict(row)
+        current_status = _normalize_commission_withdrawal_status(withdrawal.get('status'))
+        if current_status == 'completed' and new_status != 'completed':
+            conn.close()
+            return jsonify({'success': False, 'error': 'Completed withdrawals cannot be changed'}), 409
+
+        now_iso = datetime.now().isoformat()
+        processed_at = now_iso if new_status in {'processing', 'completed', 'failed', 'cancelled'} else withdrawal.get('processed_at')
+        merged_notes = admin_notes or str(withdrawal.get('admin_notes') or '')
+        merged_reference = external_reference or str(withdrawal.get('external_reference') or '')
+        merged_processed_by = processed_by or str(withdrawal.get('processed_by') or 'admin')
+
+        cursor.execute('''
+            UPDATE commission_withdrawals
+            SET status = ?, processed_at = ?, admin_notes = ?, external_reference = ?,
+                processed_by = ?, updated_at = ?
+            WHERE withdrawal_id = ?
+        ''', (
+            new_status,
+            processed_at,
+            merged_notes,
+            merged_reference,
+            merged_processed_by,
+            now_iso,
+            withdrawal_id,
+        ))
+
+        conn.commit()
+        cursor.execute('''
+            SELECT cw.withdrawal_id, cw.user_id, u.name, u.email, cw.amount,
+                   cw.status, cw.created_at, cw.processed_at, cw.payout_method,
+                   cw.payout_details, cw.payment_reference, cw.admin_notes,
+                   cw.external_reference, cw.processed_by, cw.updated_at
+            FROM commission_withdrawals cw
+            JOIN users u ON cw.user_id = u.user_id
+            WHERE cw.withdrawal_id = ?
+        ''', (withdrawal_id,))
+        updated = cursor.fetchone()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'withdrawal': _build_commission_withdrawal_response(updated),
+            'message': f'Commission withdrawal moved from {current_status or "unknown"} to {new_status}.',
+        }), 200
+    except Exception as e:
+        logger.error(f'Error updating commission withdrawal status: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -29377,12 +30250,13 @@ def get_wallet_balance(user_id):
         conn.close()
         
         balance = wallet['balance'] if wallet else 0
+        currency = str((wallet['currency'] if wallet else 'USD') or 'USD').upper()
         
         return jsonify({
             'success': True,
             'user_id': user_id,
             'balance': round(balance, 2),
-            'currency': 'USD'
+            'currency': currency
         }), 200
     
     except Exception as e:

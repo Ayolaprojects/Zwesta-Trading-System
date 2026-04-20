@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../services/ozow_service.dart';
 import '../utils/environment_config.dart';
 import '../widgets/logo_widget.dart';
 import 'consolidated_reports_screen.dart';
@@ -16,18 +20,79 @@ class UserWalletScreen extends StatefulWidget {
 }
 
 class _UserWalletScreenState extends State<UserWalletScreen> {
+  static const String _latestOzowReferenceKey = 'latest_ozow_payment_reference';
+  static const String _latestOzowStatusKey = 'latest_ozow_payment_status';
+
   double _walletBalance = 0;
   double _totalEarned = 0;
   double _totalWithdrawn = 0;
   bool _isLoading = true;
+  bool _isCheckingOzowStatus = false;
   String? _errorMessage;
   String? _successMessage;
   String _activeBrokerName = 'Exness';
+  String _walletCurrency = 'USD';
+  String? _latestOzowPaymentReference;
+  String? _latestOzowPaymentStatus;
+  Timer? _ozowStatusTimer;
 
   @override
   void initState() {
     super.initState();
+    _restoreLatestOzowPaymentState();
     _fetchWalletData();
+  }
+
+  @override
+  void dispose() {
+    _ozowStatusTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _restoreLatestOzowPaymentState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final reference = (prefs.getString(_latestOzowReferenceKey) ?? '').trim();
+    final status = (prefs.getString(_latestOzowStatusKey) ?? '').trim().toLowerCase();
+    if (!mounted || reference.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _latestOzowPaymentReference = reference;
+      _latestOzowPaymentStatus = status.isEmpty ? 'initiated' : status;
+    });
+    _maybeStartOzowStatusPolling();
+  }
+
+  Future<void> _persistLatestOzowPaymentState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final reference = (_latestOzowPaymentReference ?? '').trim();
+    final status = (_latestOzowPaymentStatus ?? '').trim().toLowerCase();
+    if (reference.isEmpty) {
+      await prefs.remove(_latestOzowReferenceKey);
+      await prefs.remove(_latestOzowStatusKey);
+      return;
+    }
+
+    await prefs.setString(_latestOzowReferenceKey, reference);
+    await prefs.setString(_latestOzowStatusKey, status);
+  }
+
+  void _maybeStartOzowStatusPolling() {
+    final reference = (_latestOzowPaymentReference ?? '').trim();
+    final status = (_latestOzowPaymentStatus ?? '').trim().toLowerCase();
+    if (reference.isEmpty || status == 'complete') {
+      _ozowStatusTimer?.cancel();
+      _ozowStatusTimer = null;
+      return;
+    }
+    if (_ozowStatusTimer != null) {
+      return;
+    }
+
+    _ozowStatusTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+      _checkLatestOzowPaymentStatus(showProgress: false);
+    });
   }
 
   Future<void> _fetchWalletData() async {
@@ -55,6 +120,7 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
         final data = jsonDecode(walletResponse.body);
         setState(() {
           _walletBalance = (data['balance'] as num?)?.toDouble() ?? 0;
+          _walletCurrency = (data['currency'] as String? ?? 'USD').toUpperCase();
         });
       }
 
@@ -115,6 +181,8 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
           });
         }
       }
+
+      _maybeStartOzowStatusPolling();
     } catch (e) {
       setState(() {
         _errorMessage = 'Error loading wallet: ${e.toString()}';
@@ -170,6 +238,112 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
     }
   }
 
+  Future<void> _startOzowTopUp() async {
+    final amount = await _showTopUpAmountDialog();
+    if (amount == null) {
+      return;
+    }
+
+    try {
+      final result = await OzowService.initializeWalletTopUp(amount: amount, currency: 'ZAR');
+      final checkoutUrl = (result['checkout_url'] as String? ?? '').trim();
+      final paymentReference = (result['payment_reference'] as String? ?? '').trim();
+
+      if (checkoutUrl.isEmpty) {
+        throw Exception('Ozow did not return a checkout URL');
+      }
+
+      if (mounted) {
+        setState(() {
+          _latestOzowPaymentReference = paymentReference;
+          _latestOzowPaymentStatus = (result['status'] as String? ?? 'initiated').trim().toLowerCase();
+          _errorMessage = null;
+        });
+        unawaited(_persistLatestOzowPaymentState());
+        _maybeStartOzowStatusPolling();
+      }
+
+      final launched = await launchUrl(Uri.parse(checkoutUrl), mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        await Clipboard.setData(ClipboardData(text: checkoutUrl));
+        setState(() {
+          _successMessage = 'Ozow checkout link copied. Reference: $paymentReference';
+        });
+      } else if (mounted) {
+        setState(() {
+          _successMessage = 'Ozow checkout opened. Complete payment, then refresh wallet balance. Reference: $paymentReference';
+        });
+      }
+    } catch (e) {
+      setState(() => _errorMessage = 'Ozow top-up error: ${e.toString()}');
+    }
+  }
+
+  Future<void> _checkLatestOzowPaymentStatus({bool showProgress = true}) async {
+    final paymentReference = _latestOzowPaymentReference;
+    if (paymentReference == null || paymentReference.isEmpty || _isCheckingOzowStatus) {
+      return;
+    }
+
+    if (showProgress) {
+      setState(() {
+        _isCheckingOzowStatus = true;
+        _errorMessage = null;
+      });
+    } else {
+      _isCheckingOzowStatus = true;
+    }
+
+    try {
+      final result = await OzowService.getPaymentStatus(paymentReference);
+      final payment = (result['payment'] as Map<String, dynamic>? ?? const <String, dynamic>{});
+      final status = (payment['status'] as String? ?? 'pending').trim().toLowerCase();
+      final statusMessage = (payment['status_message'] as String? ?? '').trim();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _latestOzowPaymentStatus = status;
+        _successMessage = status == 'complete'
+            ? 'Ozow payment completed and wallet updated for reference $paymentReference.'
+            : 'Ozow payment status: $status${statusMessage.isNotEmpty ? ' ($statusMessage)' : ''}';
+      });
+      unawaited(_persistLatestOzowPaymentState());
+
+      if (status == 'complete') {
+        _ozowStatusTimer?.cancel();
+        _ozowStatusTimer = null;
+        await _fetchWalletData();
+      } else {
+        _maybeStartOzowStatusPolling();
+      }
+    } catch (e) {
+      if (mounted && showProgress) {
+        setState(() => _errorMessage = 'Unable to verify Ozow payment: ${e.toString()}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingOzowStatus = false);
+      } else {
+        _isCheckingOzowStatus = false;
+      }
+    }
+  }
+
+  String _formatOzowStatus(String? status) {
+    final normalized = (status ?? '').trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return 'Pending';
+    }
+    return normalized
+        .split(RegExp(r'[_\s]+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+        .join(' ');
+  }
+
   Future<double?> _showWithdrawalAmountDialog() async {
     String? amountStr;
     return showDialog<double?>(
@@ -221,6 +395,48 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
               Navigator.pop(context, amount);
             },
             child: const Text('Request Withdrawal'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<double?> _showTopUpAmountDialog() async {
+    String? amountStr;
+    return showDialog<double?>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Top Up With Ozow'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Ozow supports ZAR EFT payments. Enter the amount you want to add to your wallet.'),
+            const SizedBox(height: 12),
+            TextField(
+              decoration: const InputDecoration(
+                hintText: 'Amount in ZAR',
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.number,
+              onChanged: (value) => amountStr = value,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              final amount = double.tryParse(amountStr ?? '');
+              if (amount == null || amount <= 0) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Invalid amount')),
+                );
+                return;
+              }
+              Navigator.pop(context, amount);
+            },
+            child: const Text('Continue To Ozow'),
           ),
         ],
       ),
@@ -350,7 +566,7 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
                             Row(
                               children: [
                                 Text(
-                                  '\$${_walletBalance.toStringAsFixed(2)}',
+                                  '${_walletCurrency == 'ZAR' ? 'R' : r'$'}${_walletBalance.toStringAsFixed(2)}',
                                   style: const TextStyle(
                                     fontSize: 36,
                                     fontWeight: FontWeight.bold,
@@ -387,23 +603,91 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
                               ),
                             ),
                             const SizedBox(height: 16),
-                            SizedBox(
-                              width: double.infinity,
-                              child: ElevatedButton.icon(
-                                onPressed: _requestWithdrawal,
-                                icon: const Icon(Icons.arrow_downward),
-                                label: const Text('Request Withdrawal'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue,
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    onPressed: _startOzowTopUp,
+                                    icon: const Icon(Icons.add_card),
+                                    label: const Text('Top Up With Ozow'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                  ),
                                 ),
-                              ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    onPressed: _requestWithdrawal,
+                                    icon: const Icon(Icons.arrow_downward),
+                                    label: const Text('Request Withdrawal'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.blue,
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
                     ),
+                    if (_latestOzowPaymentReference != null) ...[
+                      const SizedBox(height: 12),
+                      Card(
+                        color: Colors.green.withValues(alpha: 0.08),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(Icons.payments_outlined, color: Colors.green),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Latest Ozow Top-Up',
+                                      style: Theme.of(context).textTheme.bodyMedium,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                'Reference: $_latestOzowPaymentReference',
+                                style: TextStyle(color: Colors.grey[300], fontSize: 12),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                'Status: ${_formatOzowStatus(_latestOzowPaymentStatus)}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton.icon(
+                                  onPressed: _isCheckingOzowStatus ? null : _checkLatestOzowPaymentStatus,
+                                  icon: _isCheckingOzowStatus
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(strokeWidth: 2),
+                                        )
+                                      : const Icon(Icons.sync),
+                                  label: Text(_isCheckingOzowStatus ? 'Checking Payment...' : 'Verify Ozow Payment'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 20),
 
                     // Earnings breakdown
@@ -431,7 +715,7 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    '\$${_totalEarned.toStringAsFixed(2)}',
+                                    '${_walletCurrency == 'ZAR' ? 'R' : r'$'}${_totalEarned.toStringAsFixed(2)}',
                                     style: const TextStyle(
                                       fontSize: 20,
                                       fontWeight: FontWeight.bold,
@@ -480,7 +764,7 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    '\$${_totalWithdrawn.toStringAsFixed(2)}',
+                                    '${_walletCurrency == 'ZAR' ? 'R' : r'$'}${_totalWithdrawn.toStringAsFixed(2)}',
                                     style: const TextStyle(
                                       fontSize: 20,
                                       fontWeight: FontWeight.bold,
