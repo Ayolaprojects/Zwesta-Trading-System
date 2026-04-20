@@ -31,6 +31,8 @@ import 'consolidated_reports_screen.dart';
 import 'crypto_strategies_screen.dart';
 import 'enhanced_dashboard_screen.dart';
 import 'financials_screen.dart';
+import 'binance_workspace_screen.dart';
+import 'exness_workspace_screen.dart';
 import 'fxcm_workspace_screen.dart';
 import 'fxcm_withdrawal_screen.dart';
 import 'multi_account_management_screen.dart';
@@ -1064,6 +1066,80 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         'Open FXCM Workspace',
                                         style: GoogleFonts.poppins(
                                           color: const Color(0xFF00E5FF),
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (_normalizeBrokerDisplayName(broker.toString()).toLowerCase() == 'binance') ...[
+                              const SizedBox(height: 8),
+                              InkWell(
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (_) => const BinanceWorkspaceScreen()),
+                                  );
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF3BA2F).withOpacity(0.14),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(color: const Color(0xFFF3BA2F).withOpacity(0.45)),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.candlestick_chart, color: Color(0xFFF3BA2F), size: 14),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Open Binance Workspace',
+                                        style: GoogleFonts.poppins(
+                                          color: const Color(0xFFF3BA2F),
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (_normalizeBrokerDisplayName(broker.toString()).toLowerCase() == 'exness') ...[
+                              const SizedBox(height: 8),
+                              InkWell(
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => ExnessWorkspaceScreen(
+                                        accountData: Map<String, dynamic>.from(connected),
+                                        balanceChange: balanceChange,
+                                        totalWithdrawn: totalWithdrawn,
+                                      ),
+                                    ),
+                                  );
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF00E676).withOpacity(0.14),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(color: const Color(0xFF00E676).withOpacity(0.45)),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.monitor_heart_outlined, color: Color(0xFF00E676), size: 14),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Open Exness Workspace',
+                                        style: GoogleFonts.poppins(
+                                          color: const Color(0xFF00E676),
                                           fontSize: 10,
                                           fontWeight: FontWeight.w600,
                                         ),

@@ -85,6 +85,17 @@ logger.info(f"Runtime infrastructure: {get_runtime_infrastructure_summary()}")
 _forexconnect_bootstrap_attempted = False
 
 
+def get_fxcm_forexconnect_python() -> str:
+    return str(os.getenv('FXCM_FOREXCONNECT_PYTHON', '') or '').strip().strip('"')
+
+
+def get_fxcm_forexconnect_helper_script() -> str:
+    configured = str(os.getenv('FXCM_FOREXCONNECT_HELPER', '') or '').strip().strip('"')
+    if configured:
+        return configured
+    return os.path.join(os.path.dirname(__file__), 'scripts', 'fxcm_forexconnect_helper.py')
+
+
 def ensure_forexconnect_sdk_available() -> bool:
     """Try to make the locally installed ForexConnect SDK importable on Windows."""
     global _forexconnect_bootstrap_attempted
@@ -5042,6 +5053,8 @@ class FXCMConnection(BrokerConnection):
         self.last_error = ''
         self.forexconnect_client = None
         self.forexconnect_mode = False
+        self.forexconnect_helper_mode = False
+        self.forexconnect_helper_python = get_fxcm_forexconnect_python()
 
     def _server_mode(self) -> str:
         server = str(self.credentials.get('server', '') or '').strip().lower()
@@ -5150,7 +5163,72 @@ class FXCMConnection(BrokerConnection):
             logger.error(f"Error sending ForexConnect request: {e}")
             return None
 
+    def _can_use_forexconnect_helper(self) -> bool:
+        helper_python = str(self.forexconnect_helper_python or '').strip().strip('"')
+        helper_script = get_fxcm_forexconnect_helper_script()
+        return bool(helper_python and os.path.exists(helper_python) and os.path.exists(helper_script))
+
+    def _run_forexconnect_helper(self, action: str, *, extra: Dict = None, timeout: int = 45) -> Optional[Dict]:
+        if not self._can_use_forexconnect_helper():
+            self.last_error = (
+                'FXCM ForexConnect helper is not configured. '
+                'Set FXCM_FOREXCONNECT_PYTHON to a Python 3.7 interpreter with forexconnect installed.'
+            )
+            return None
+
+        payload = {
+            'credentials': self.credentials,
+            'extra': extra or {},
+        }
+        helper_script = get_fxcm_forexconnect_helper_script()
+        try:
+            completed = subprocess.run(
+                [self.forexconnect_helper_python, helper_script, action],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception as e:
+            self.last_error = str(e)
+            logger.error(f"Error running FXCM ForexConnect helper: {e}")
+            return None
+
+        stdout = (completed.stdout or '').strip()
+        stderr = (completed.stderr or '').strip()
+        if completed.returncode != 0:
+            self.last_error = stderr or stdout or f'FXCM helper exited with code {completed.returncode}'
+            logger.error(f"FXCM helper failed for {action}: {self.last_error}")
+            return None
+
+        try:
+            result = json.loads(stdout) if stdout else {}
+        except Exception as e:
+            self.last_error = f'Invalid FXCM helper response: {e}'
+            logger.error(f"FXCM helper returned invalid JSON for {action}: {stdout[:500]}")
+            return None
+
+        if result.get('success') is False:
+            self.last_error = str(result.get('error') or 'FXCM helper request failed')
+        else:
+            self.last_error = ''
+        return result
+
     def _login_forexconnect(self) -> bool:
+        if self._can_use_forexconnect_helper():
+            result = self._run_forexconnect_helper('login_check', timeout=60)
+            if result and result.get('success'):
+                account = result.get('account') or {}
+                account_id = str(account.get('account_id') or account.get('accountNumber') or '').strip()
+                if account_id:
+                    self.credentials['account_number'] = account_id
+                self.account_info = account if isinstance(account, dict) else {}
+                self.forexconnect_helper_mode = True
+                self.forexconnect_mode = False
+                self.connected = True
+                self.last_error = ''
+                return True
+
         try:
             ensure_forexconnect_sdk_available()
             from forexconnect import ForexConnect  # type: ignore
@@ -5201,7 +5279,8 @@ class FXCMConnection(BrokerConnection):
         except ImportError:
             self.last_error = (
                 'ForexConnect Python bindings were not found in this backend environment. '
-                'Install the official FXCM ForexConnect SDK or set FOREXCONNECT_HOME to the SDK path.'
+                'Install the official FXCM ForexConnect SDK, set FOREXCONNECT_HOME to the SDK path, '
+                'or configure FXCM_FOREXCONNECT_PYTHON to a Python 3.7 interpreter with forexconnect installed.'
             )
             logger.error(self.last_error)
             return False
@@ -5445,6 +5524,7 @@ class FXCMConnection(BrokerConnection):
             finally:
                 self.forexconnect_client = None
                 self.forexconnect_mode = False
+        self.forexconnect_helper_mode = False
         self.connected = False
         return True
 
@@ -5452,6 +5532,15 @@ class FXCMConnection(BrokerConnection):
         try:
             if not self.connected:
                 return {}
+
+            if self.forexconnect_helper_mode:
+                result = self._run_forexconnect_helper('get_account_info')
+                if not result or result.get('success') is False:
+                    return {}
+                account = result.get('account') or {}
+                if isinstance(account, dict):
+                    self.account_info = account
+                return self.account_info
 
             if self.forexconnect_mode:
                 account = self._get_forexconnect_account_row()
@@ -5521,6 +5610,13 @@ class FXCMConnection(BrokerConnection):
             if not self.connected:
                 return []
 
+            if self.forexconnect_helper_mode:
+                result = self._run_forexconnect_helper('get_positions')
+                if not result or result.get('success') is False:
+                    return []
+                positions = result.get('positions')
+                return positions if isinstance(positions, list) else []
+
             if self.forexconnect_mode:
                 account_id = str(self.credentials.get('account_number', '') or '')
                 positions = []
@@ -5562,6 +5658,19 @@ class FXCMConnection(BrokerConnection):
 
     def place_order(self, symbol: str, order_type: str, volume: float, **kwargs) -> Dict:
         try:
+            if self.forexconnect_helper_mode:
+                result = self._run_forexconnect_helper(
+                    'place_order',
+                    extra={
+                        'symbol': symbol,
+                        'order_type': order_type,
+                        'volume': volume,
+                        'kwargs': kwargs,
+                    },
+                    timeout=60,
+                )
+                return result or {'success': False, 'error': self.last_error or 'FXCM helper order failed'}
+
             if self.forexconnect_mode:
                 from forexconnect import fxcorepy  # type: ignore
 
@@ -5645,6 +5754,14 @@ class FXCMConnection(BrokerConnection):
 
     def close_position(self, position_id: str) -> Dict:
         try:
+            if self.forexconnect_helper_mode:
+                result = self._run_forexconnect_helper(
+                    'close_position',
+                    extra={'position_id': position_id},
+                    timeout=60,
+                )
+                return result or {'success': False, 'error': self.last_error or 'FXCM helper close failed'}
+
             if self.forexconnect_mode:
                 from forexconnect import fxcorepy  # type: ignore
 
@@ -5703,6 +5820,13 @@ class FXCMConnection(BrokerConnection):
         try:
             if not self.connected:
                 return []
+
+            if self.forexconnect_helper_mode:
+                result = self._run_forexconnect_helper('get_trades')
+                if not result or result.get('success') is False:
+                    return []
+                trades = result.get('trades')
+                return trades if isinstance(trades, list) else []
 
             if self.forexconnect_mode:
                 account_id = str(self.credentials.get('account_number', '') or '')
