@@ -31,6 +31,7 @@ import 'consolidated_reports_screen.dart';
 import 'crypto_strategies_screen.dart';
 import 'enhanced_dashboard_screen.dart';
 import 'financials_screen.dart';
+import 'fxcm_workspace_screen.dart';
 import 'fxcm_withdrawal_screen.dart';
 import 'multi_account_management_screen.dart';
 import 'multi_broker_management_screen.dart';
@@ -1038,6 +1039,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 fontSize: 12,
                               ),
                             ),
+                            if (_normalizeBrokerDisplayName(broker.toString()).toLowerCase() == 'fxcm') ...[
+                              const SizedBox(height: 8),
+                              InkWell(
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (_) => const FxcmWorkspaceScreen()),
+                                  );
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF00E5FF).withOpacity(0.14),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.45)),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.space_dashboard_outlined, color: Color(0xFF00E5FF), size: 14),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Open FXCM Workspace',
+                                        style: GoogleFonts.poppins(
+                                          color: const Color(0xFF00E5FF),
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
