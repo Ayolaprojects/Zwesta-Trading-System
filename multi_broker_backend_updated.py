@@ -20882,7 +20882,10 @@ def update_adaptive_signal_threshold_state(
     open_positions: int,
 ) -> None:
     adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
+    best_signal_strength = float(best_signal_strength or 0.0)
+    bot_config['lastBestSignalStrength'] = round(best_signal_strength, 1)
     if bot_config.get('managementState') == 'recovery':
+        bot_config['autoSignalEnvironment'] = 'recovery'
         if _reset_adaptive_signal_threshold(bot_config):
             logger.info(
                 f"🛡️ Bot {bot_id}: Adaptive threshold reset while recovery mode is active "
@@ -20892,6 +20895,13 @@ def update_adaptive_signal_threshold_state(
 
     has_qualifying_signal = configured_signal_hits > 0 or scanner_signal_hits > 0
     if trades_placed > 0 or has_qualifying_signal or open_positions > 0:
+        total_signal_hits = int(configured_signal_hits or 0) + int(scanner_signal_hits or 0)
+        if trades_placed > 0 or total_signal_hits >= 2 or best_signal_strength >= max(base_threshold + 15, 75):
+            bot_config['autoSignalEnvironment'] = 'high'
+        elif best_signal_strength >= max(adaptive_floor, base_threshold - 5):
+            bot_config['autoSignalEnvironment'] = 'warming'
+        else:
+            bot_config['autoSignalEnvironment'] = 'balanced'
         if _reset_adaptive_signal_threshold(bot_config):
             logger.info(
                 f"🎯 Bot {bot_id}: Adaptive threshold reset to base {base_threshold} "
@@ -20901,9 +20911,13 @@ def update_adaptive_signal_threshold_state(
 
     miss_count = int(bot_config.get('adaptiveSignalMissCount') or 0) + 1
     current_offset = int(bot_config.get('adaptiveSignalThresholdOffset') or 0)
-    signal_gap = max(0.0, float(base_threshold) - float(best_signal_strength or 0.0))
+    signal_gap = max(0.0, float(base_threshold) - best_signal_strength)
     reduction_step = ADAPTIVE_SIGNAL_THRESHOLD_LOW_SIGNAL_STEP if signal_gap >= 10.0 else ADAPTIVE_SIGNAL_THRESHOLD_STEP
     new_offset = min(ADAPTIVE_SIGNAL_THRESHOLD_MAX_REDUCTION, current_offset + reduction_step)
+    if best_signal_strength <= adaptive_floor + 5:
+        bot_config['autoSignalEnvironment'] = 'low'
+    else:
+        bot_config['autoSignalEnvironment'] = 'warming'
 
     bot_config['adaptiveSignalMissCount'] = miss_count
     bot_config['adaptiveSignalThresholdOffset'] = new_offset
@@ -21030,6 +21044,25 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
                     )
     else:
         bot_config['managementState'] = 'manual'
+
+    signal_environment = str(bot_config.get('autoSignalEnvironment') or 'balanced').lower()
+    if is_assisted and bot_config.get('managementState') != 'recovery':
+        if signal_environment == 'low':
+            effective['signalThreshold'] = max(adaptive_floor, effective['signalThreshold'] - 6)
+            if 'Medium' not in effective['allowedVolatility'] and not guarded_small_live:
+                effective['allowedVolatility'].append('Medium')
+            bot_config['intelligentScanner'] = True
+        elif signal_environment == 'warming':
+            effective['signalThreshold'] = max(adaptive_floor, effective['signalThreshold'] - 3)
+            if 'Medium' not in effective['allowedVolatility'] and not guarded_small_live:
+                effective['allowedVolatility'].append('Medium')
+        elif signal_environment == 'high':
+            effective['signalThreshold'] = max(adaptive_floor, effective['signalThreshold'] - 2)
+            if profile in {'balanced', 'advanced', 'fast_growth'} and not guarded_small_live:
+                effective['maxOpenPositions'] = min(5, effective['maxOpenPositions'] + 1)
+                effective['maxPositionsPerSymbol'] = min(effective['maxOpenPositions'], max(effective['maxPositionsPerSymbol'], 2 if profile in {'advanced', 'fast_growth'} else 1))
+            if 'Medium' not in effective['allowedVolatility'] and not guarded_small_live:
+                effective['allowedVolatility'].append('Medium')
 
     adaptive_offset = int(bot_config.get('adaptiveSignalThresholdOffset') or 0)
     if adaptive_offset > 0 and bot_config.get('managementState') != 'recovery':
