@@ -13707,6 +13707,7 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
     symbol_universe = build_scanner_symbol_universe(bot_config)
     profile = _normalize_management_profile(bot_config.get('managementProfile'))
     adaptive_offset = int(bot_config.get('adaptiveSignalThresholdOffset') or 0)
+    idle_cycles = int(bot_config.get('adaptiveSignalMissCount') or 0)
     mode_value = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower()
     is_live = mode_value == 'live' or bool(bot_config.get('is_live'))
     conservative_entry_mode = (
@@ -13750,6 +13751,21 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
         bot_config.get('allowAdaptiveRawFallback', bot_config.get('intelligentScanner', False)),
         bool(bot_config.get('intelligentScanner', False)),
     )
+    auto_enable_raw_fallback = (
+        not bot_config.get('open_positions')
+        and bot_config.get('managementMode', 'assisted') != 'manual'
+        and (
+            force_scan
+            or bot_config.get('intelligentScanner', False)
+            or idle_cycles >= ADAPTIVE_SCANNER_TRIGGER_MISSES
+        )
+    )
+    use_raw_signal_fallback = allow_adaptive_raw_fallback or auto_enable_raw_fallback
+    if auto_enable_raw_fallback and not allow_adaptive_raw_fallback:
+        logger.info(
+            f"🧠 Bot {bot_id}: Auto-enabling conservative raw-signal fallback while idle "
+            f"to avoid stale cycles without strategy-approved entries"
+        )
     opportunities = scan_all_opportunities(
         strategy_func,
         account_id,
@@ -13759,7 +13775,7 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
         symbol_universe=symbol_universe,
         fallback_slack=fallback_slack,
         bot_config=bot_config,
-        allow_raw_signal_fallback=force_scan and allow_adaptive_raw_fallback,
+        allow_raw_signal_fallback=use_raw_signal_fallback,
     )
 
     tradeable_opportunities = [opp for opp in opportunities if _is_symbol_tradeable_now(opp.get('symbol', ''))]
@@ -23676,23 +23692,48 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             except Exception as protection_poll_error:
                                 logger.debug(f"🛡️ Bot {bot_id}: Profit protection poll failed: {protection_poll_error}")
                         
-                        # Check if strong signal exists for any symbol
-                        best_signal_strength = 0
+                        # Check if a strategy-approved signal exists for any symbol.
+                        best_signal_strength = 0.0
                         best_signal_symbol = None
-                        
+                        poll_visibility_signal_strength = 0.0
+                        poll_visibility_symbol = None
+                        poll_strategy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+
                         for symbol in bot_config.get('symbols', ['EURUSDm'])[:3]:
-                            signal_strength = evaluate_trade_signal_strength(symbol, {})
-                            if signal_strength > best_signal_strength:
-                                best_signal_strength = signal_strength
+                            poll_market_data = _enrich_market_data_with_bot_context(bot_config, symbol)
+                            raw_signal = evaluate_real_trade_signal(symbol, poll_market_data)
+                            raw_strength = float(raw_signal.get('strength') or 0.0)
+                            if raw_strength > poll_visibility_signal_strength:
+                                poll_visibility_signal_strength = raw_strength
+                                poll_visibility_symbol = symbol
+
+                            trade_params = _get_cached_strategy_params(
+                                poll_strategy_cache,
+                                strategy_func,
+                                symbol,
+                                bot_config['accountId'],
+                                bot_config['riskPerTrade'],
+                                poll_market_data,
+                            )
+                            if not trade_params:
+                                continue
+
+                            strategy_signal = trade_params.get('signal', {})
+                            strategy_strength = float(strategy_signal.get('strength') or 0.0)
+                            if strategy_strength > best_signal_strength:
+                                best_signal_strength = strategy_strength
                                 best_signal_symbol = symbol
-                        
-                        if best_signal_strength >= signal_threshold:
+
+                        if best_signal_strength >= signal_threshold and best_signal_symbol:
                             logger.info(f"🔥 Bot {bot_id}: STRONG SIGNAL DETECTED on {best_signal_symbol}!")
                             logger.info(f"   Signal Strength: {best_signal_strength:.0f}/100 (threshold: {signal_threshold})")
                             logger.info(f"   Executing trade IMMEDIATELY (no waiting)...")
                             break  # Break inner loop, execute trade next cycle
-                        elif best_signal_strength > 0:
-                            logger.debug(f"📊 Bot {bot_id}: Signal on {best_signal_symbol}: {best_signal_strength:.0f}/100 (waiting for {signal_threshold}+)")
+                        elif poll_visibility_signal_strength > 0 and poll_visibility_symbol:
+                            logger.debug(
+                                f"📊 Bot {bot_id}: Raw signal on {poll_visibility_symbol}: "
+                                f"{poll_visibility_signal_strength:.0f}/100, but no strategy-approved setup yet"
+                            )
                 else:
                     # ⏱️ TIME-BASED MODE: Wait fixed interval
                     logger.debug(f"⏳ Bot {bot_id}: Waiting {trading_interval} seconds until next cycle...")
