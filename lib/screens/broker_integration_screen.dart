@@ -167,16 +167,27 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     await prefs.setString(_modePrefKey('mt5_account', _isLiveMode), _accountController.text);
     await prefs.setString(_modePrefKey('mt5_password', _isLiveMode), _passwordController.text);
     await prefs.setString(_modePrefKey('mt5_server', _isLiveMode), _serverController.text);
+    if (_isFxcmBroker) {
+      await prefs.setString(_modePrefKey('fxcm_account', _isLiveMode), _accountController.text);
+      await prefs.setString(_modePrefKey('fxcm_password', _isLiveMode), _passwordController.text);
+      await prefs.setString(_modePrefKey('fxcm_server', _isLiveMode), _serverController.text);
+    }
   }
 
   Future<void> _persistCurrentInputDraft() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('broker', _selectedBroker);
     await prefs.setBool('is_live_mode', _isLiveMode);
-    await prefs.setString('account_number', _accountController.text);
-    await prefs.setString('mt5_account', _accountController.text);
-    await prefs.setString('mt5_password', _passwordController.text);
-    await prefs.setString('mt5_server', _serverController.text);
+    if (_isFxcmBroker) {
+      await prefs.setString('fxcm_account_number', _accountController.text);
+      await prefs.setString('fxcm_password', _passwordController.text);
+      await prefs.setString('fxcm_server', _serverController.text);
+    } else {
+      await prefs.setString('account_number', _accountController.text);
+      await prefs.setString('mt5_account', _accountController.text);
+      await prefs.setString('mt5_password', _passwordController.text);
+      await prefs.setString('mt5_server', _serverController.text);
+    }
     await prefs.setString('broker_api_key', _apiKeyController.text);
     await prefs.setString('broker_username', _usernameController.text);
     await _persistModeScopedCredentials();
@@ -184,12 +195,24 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   Future<void> _restoreModeScopedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
-    final modeAccount = prefs.getString(_modePrefKey('mt5_account', _isLiveMode));
-    final modePassword = prefs.getString(_modePrefKey('mt5_password', _isLiveMode));
-    final modeServer = prefs.getString(_modePrefKey('mt5_server', _isLiveMode));
-    final fallbackAccount = prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '';
-    final fallbackPassword = prefs.getString('mt5_password') ?? '';
-    final fallbackServer = prefs.getString('mt5_server') ?? '';
+    final modeAccount = _isFxcmBroker
+      ? prefs.getString(_modePrefKey('fxcm_account', _isLiveMode))
+      : prefs.getString(_modePrefKey('mt5_account', _isLiveMode));
+    final modePassword = _isFxcmBroker
+      ? prefs.getString(_modePrefKey('fxcm_password', _isLiveMode))
+      : prefs.getString(_modePrefKey('mt5_password', _isLiveMode));
+    final modeServer = _isFxcmBroker
+      ? prefs.getString(_modePrefKey('fxcm_server', _isLiveMode))
+      : prefs.getString(_modePrefKey('mt5_server', _isLiveMode));
+    final fallbackAccount = _isFxcmBroker
+      ? (prefs.getString('fxcm_account_number') ?? '')
+      : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '');
+    final fallbackPassword = _isFxcmBroker
+      ? (prefs.getString('fxcm_password') ?? '')
+      : (prefs.getString('mt5_password') ?? '');
+    final fallbackServer = _isFxcmBroker
+      ? (prefs.getString('fxcm_server') ?? '')
+      : (prefs.getString('mt5_server') ?? '');
     final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
 
     setState(() {
@@ -228,14 +251,25 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       savedBroker.toLowerCase().contains('xm') ? 'Exness' : savedBroker,
     );
     final savedMode = prefs.getBool('is_live_mode') ?? false;
-    final modeAccount = prefs.getString(_modePrefKey('mt5_account', savedMode));
-    final modePassword = prefs.getString(_modePrefKey('mt5_password', savedMode));
-    final modeServer = prefs.getString(_modePrefKey('mt5_server', savedMode));
+    final isFxcmSavedBroker = normalizedSavedBroker.toLowerCase() == 'fxcm';
+    final modeAccount = isFxcmSavedBroker
+      ? prefs.getString(_modePrefKey('fxcm_account', savedMode))
+      : prefs.getString(_modePrefKey('mt5_account', savedMode));
+    final modePassword = isFxcmSavedBroker
+      ? prefs.getString(_modePrefKey('fxcm_password', savedMode))
+      : prefs.getString(_modePrefKey('mt5_password', savedMode));
+    final modeServer = isFxcmSavedBroker
+      ? prefs.getString(_modePrefKey('fxcm_server', savedMode))
+      : prefs.getString(_modePrefKey('mt5_server', savedMode));
     setState(() {
       _selectedBroker = normalizedSavedBroker;
       _isLiveMode = savedMode;  // Load saved mode
-      _accountController.text = modeAccount ?? prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '';
-      _passwordController.text = modePassword ?? prefs.getString('mt5_password') ?? '';
+      _accountController.text = modeAccount ?? (isFxcmSavedBroker
+        ? (prefs.getString('fxcm_account_number') ?? '')
+        : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? ''));
+      _passwordController.text = modePassword ?? (isFxcmSavedBroker
+        ? (prefs.getString('fxcm_password') ?? '')
+        : (prefs.getString('mt5_password') ?? ''));
       _apiKeyController.text = prefs.getString('broker_api_key') ?? '';
       _usernameController.text = prefs.getString('broker_username') ?? '';
       _isConnected = prefs.getBool('broker_connected') ?? false;
@@ -247,7 +281,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       _accountProfit = prefs.getDouble('account_profit') ?? 0;
       _accountCurrency = prefs.getString('account_currency') ?? 'USD';
       _autoReconnectEnabled = prefs.getBool('auto_reconnect_enabled') ?? false;
-      final savedServer = modeServer ?? prefs.getString('mt5_server') ?? '';
+        final savedServer = modeServer ?? (isFxcmSavedBroker
+          ? (prefs.getString('fxcm_server') ?? '')
+          : (prefs.getString('mt5_server') ?? ''));
       final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
       final useSavedServer = !(_selectedBroker.toLowerCase() == 'exness' && savedServer != computedServer);
       _serverController.text = useSavedServer && savedServer.isNotEmpty
@@ -606,8 +642,12 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         if (credentialId != null) {
           await prefs.setString('credential_id', credentialId);
           await prefs.setString('broker_name', _selectedBroker);
-          await prefs.setString('account_number', account.accountNumber);
-          await prefs.setString('mt5_account', account.accountNumber);
+          if (_isFxcmBroker) {
+            await prefs.setString('fxcm_account_number', account.accountNumber);
+          } else {
+            await prefs.setString('account_number', account.accountNumber);
+            await prefs.setString('mt5_account', account.accountNumber);
+          }
         }
 
         await _persistModeScopedCredentials();
@@ -1018,7 +1058,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                     style: GoogleFonts.poppins(
                       fontWeight: FontWeight.w700,
                       fontSize: 14,
-                      color: Colors.blue.shade300,
+                      color: Colors.blue.shade900,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -1026,7 +1066,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                     'Use one of these FXCM login methods:\n\n1. Login ID + Password\n   Use this when the backend supports ForexConnect.\n\n2. Login ID + API Access Token\n   Use a token generated inside FXCM Trading Station.\n\nThe Trading Account ID field below is optional. Leave it blank if you only know your Login ID and let the backend resolve the actual account row.\n\nTo get your API token:\n1. Log into FXCM Trading Station\n2. Open Settings\n3. Click "Generate API Token"\n4. Copy the token into the optional field below',
                     style: GoogleFonts.poppins(
                       fontSize: 12,
-                      color: Colors.white70,
+                      color: const Color(0xFF16324F),
                       height: 1.4,
                     ),
                   ),
@@ -1036,7 +1076,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                     style: GoogleFonts.poppins(
                       fontWeight: FontWeight.w600,
                       fontSize: 11,
-                      color: Colors.orange.shade200,
+                      color: Colors.orange.shade900,
                       height: 1.4,
                     ),
                   ),

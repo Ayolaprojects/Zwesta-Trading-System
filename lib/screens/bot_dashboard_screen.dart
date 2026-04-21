@@ -838,6 +838,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final accountModeLabel = isDemoBot ? 'DEMO' : 'LIVE';
     final symbolStr = symbols is List ? symbols.join(', ') : symbols.toString();
     final runtime = bot['runtimeFormatted'] ?? '--';
+    final pauseReason = (bot['pauseReason'] ?? '').toString().trim();
+    final lastNoTradeReason = (bot['lastNoTradeReason'] ?? '').toString().trim();
+    final idleReason = pauseReason.isNotEmpty ? pauseReason : lastNoTradeReason;
     final drawdownPauseUntilText = bot['drawdownPauseUntil']?.toString();
     final drawdownPauseUntil = drawdownPauseUntilText == null || drawdownPauseUntilText.isEmpty
       ? null
@@ -883,6 +886,37 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         color: const Color(0xFFFFCC80),
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (idleReason.isNotEmpty && openPositionsCount == 0) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF00E5FF).withOpacity(0.10),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.28)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 1),
+                    child: Icon(Icons.info_outline, color: Color(0xFF00E5FF), size: 16),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      idleReason,
+                      style: GoogleFonts.poppins(
+                        color: const Color(0xFFB3F5FF),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),

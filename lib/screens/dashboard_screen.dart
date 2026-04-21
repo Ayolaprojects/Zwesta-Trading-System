@@ -622,7 +622,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           prefs.getString('broker') ??
           '',
     );
-    final accountNumber = (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '').trim();
+    final fallbackAccount = broker.toLowerCase() == 'fxcm'
+        ? (prefs.getString('fxcm_account_number') ?? '')
+        : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '');
+    final accountNumber = fallbackAccount.trim();
     if (broker.isEmpty || accountNumber.isEmpty) {
       return null;
     }

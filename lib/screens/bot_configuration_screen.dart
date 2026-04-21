@@ -1362,16 +1362,24 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   Map<String, dynamic> _recommendedTradingCadence() {
     final strategy = _selectedStrategy.trim().toLowerCase();
+    final profile = _managementProfile.trim().toLowerCase();
 
     if (strategy == 'scalping') {
       return {
         'mode': 'signal-driven',
-        'tradingInterval': 60,
-        'pollInterval': 5,
+        'tradingInterval': 30,
+        'pollInterval': 2,
       };
     }
 
     if (strategy == 'momentum trading' || strategy == 'breakout trading') {
+      if (profile == 'advanced' || profile == 'fast_growth') {
+        return {
+          'mode': 'signal-driven',
+          'tradingInterval': 60,
+          'pollInterval': 5,
+        };
+      }
       return {
         'mode': 'signal-driven',
         'tradingInterval': 90,
@@ -1388,10 +1396,33 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     }
 
     if (_intelligentScanner) {
+      if (profile == 'advanced' || profile == 'fast_growth') {
+        return {
+          'mode': 'signal-driven',
+          'tradingInterval': 60,
+          'pollInterval': 5,
+        };
+      }
       return {
         'mode': 'signal-driven',
         'tradingInterval': 120,
         'pollInterval': 10,
+      };
+    }
+
+    if (profile == 'advanced' || profile == 'fast_growth') {
+      return {
+        'mode': 'signal-driven',
+        'tradingInterval': 60,
+        'pollInterval': 5,
+      };
+    }
+
+    if (profile == 'balanced') {
+      return {
+        'mode': 'signal-driven',
+        'tradingInterval': 90,
+        'pollInterval': 8,
       };
     }
 
