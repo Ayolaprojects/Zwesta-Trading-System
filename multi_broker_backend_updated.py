@@ -2022,10 +2022,14 @@ def _enrich_market_data_with_bot_context(
     return base_market_data
 
 
+def _strategy_cache_key(strategy_func, symbol: str) -> str:
+    return f"{getattr(strategy_func, '__name__', 'strategy')}::{symbol}"
+
+
 def _get_cached_strategy_params(strategy_cache: Dict[str, Optional[Dict[str, Any]]], strategy_func, symbol: str,
                                 account_id: str, risk_per_trade: float,
                                 market_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    cache_key = f"{getattr(strategy_func, '__name__', 'strategy')}::{symbol}"
+    cache_key = _strategy_cache_key(strategy_func, symbol)
     if cache_key in strategy_cache:
         return strategy_cache[cache_key]
 
@@ -5993,7 +5997,18 @@ class FXCMConnection(BrokerConnection):
         if not symbol:
             return None
 
-        symbol = symbol.upper().replace('_', '').replace('/', '')
+        canonical_symbol = normalize_symbol_for_broker(symbol, 'FXCM')
+        if canonical_symbol in FXCM_CONFIGURABLE_SYMBOLS:
+            compact_symbol = canonical_symbol.upper().replace('_', '').replace('/', '')
+            if compact_symbol in {
+                'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'NZDUSD', 'USDCAD', 'XAUUSD', 'XAGUSD'
+            }:
+                symbol = compact_symbol
+            else:
+                return canonical_symbol
+        else:
+            symbol = symbol.upper().replace('_', '').replace('/', '')
+
         symbol_map = {
             'EURUSD': 'EUR/USD',
             'GBPUSD': 'GBP/USD',
@@ -9995,24 +10010,10 @@ def list_commodities():
     """Get list of available trading symbols/commodities WITH live market data"""
     try:
         with market_data_lock:
-            # Build two things:
-            # 1. Flat dictionary for UI market data lookup (by symbol)
-            # 2. Categorized list for symbol selection
-            
-            flat_market_data = {}  # {EURUSD: {signal, trend, etc}, BTCUSD: {signal, trend, etc}, ...}
-            categorized = {
-                'forex': [],
-                'crypto': [],
-                'precious_metals': [],
-                'energy': [],
-                'indices': [],
-                'stocks': [],
-                'zar_pairs': [],
-            }
-            
-            # Exness Standard account symbols (NO 'm' suffix — 'm' is for Standard Cent only)
-            # Verified from user's Exness terminal Market Watch: BTC, XAU/USD, XAG/USD, ETH, USOIL, USD/JPY, EUR/USD, USTEC
-            symbol_config = {
+            broker_name = canonicalize_broker_name(
+                request.args.get('broker') or request.args.get('broker_name') or 'Exness'
+            )
+            symbol_config = FXCM_SYMBOL_CONFIG if broker_name == 'FXCM' else {
                 'forex': [
                     {'symbol': 'EURUSD', 'name': '💱 Euro vs US Dollar', 'min_price': 1.08, 'max_price': 1.12},
                     {'symbol': 'GBPUSD', 'name': '💱 British Pound vs US Dollar', 'min_price': 1.26, 'max_price': 1.30},
@@ -10062,18 +10063,29 @@ def list_commodities():
                     {'symbol': 'ZARJPY', 'name': '💱 South African Rand vs Japanese Yen', 'min_price': 7, 'max_price': 12},
                 ]
             }
+            # Build two things:
+            # 1. Flat dictionary for UI market data lookup (by symbol)
+            # 2. Categorized list for symbol selection
+            
+            flat_market_data = {}  # {EURUSD: {signal, trend, etc}, BTCUSD: {signal, trend, etc}, ...}
+            categorized = {category: [] for category in symbol_config.keys()}
             
             # Build response by merging live data with config
             for category, items in symbol_config.items():
                 for item_config in items:
                     symbol = item_config['symbol']
+                    analysis_symbol = str(item_config.get('analysis_symbol') or symbol)
                     # Get live market data for this symbol (from the updater thread)
                     # Try exact match, then try with 'm' suffix (backward compat with cached data)
-                    live_data = commodity_market_data.get(symbol) or commodity_market_data.get(symbol + 'm')
+                    live_data = (
+                        commodity_market_data.get(symbol)
+                        or commodity_market_data.get(analysis_symbol)
+                        or commodity_market_data.get(analysis_symbol + 'm')
+                    )
                     if not live_data:
-                        live_data = _init_commodity_data(item_config.get('min_price', 1.0), symbol)
+                        live_data = _init_commodity_data(item_config.get('min_price', 1.0), analysis_symbol)
                     # Merge config + live data, but config symbol always wins
-                    merged_item = {**item_config, **live_data, 'symbol': symbol}
+                    merged_item = {**item_config, **live_data, 'symbol': symbol, 'analysisSymbol': analysis_symbol}
                     # Use pre-computed signal from background thread (avoid slow re-evaluation per request)
                     strength_value = _safe_float(
                         live_data.get('signal_strength', live_data.get('signalStrength', 0.0)),
@@ -10082,17 +10094,17 @@ def list_commodities():
                     # Re-evaluate whenever cached strength is missing/zero.
                     # The live MT5 fetcher can populate labels like CONSOLIDATING before the
                     # background signal evaluator has written a non-zero strength.
-                    if strength_value <= 0.0:
-                        evaluated_signal = evaluate_real_trade_signal(symbol, merged_item)
+                    if strength_value <= 0.0 and analysis_symbol in VALID_SYMBOLS:
+                        evaluated_signal = evaluate_real_trade_signal(analysis_symbol, merged_item)
                         strength_value = _safe_float(evaluated_signal.get('strength', 0.0), 0.0)
                         if strength_value > 0.0:
                             merged_item['signal_strength'] = strength_value
                             merged_item['signalStrength'] = strength_value
                             merged_item['signalPercentage'] = round(strength_value, 1)
-                            if symbol in commodity_market_data:
-                                commodity_market_data[symbol]['signal_strength'] = strength_value
-                                commodity_market_data[symbol]['signalStrength'] = strength_value
-                                commodity_market_data[symbol]['signalPercentage'] = round(strength_value, 1)
+                            if analysis_symbol in commodity_market_data:
+                                commodity_market_data[analysis_symbol]['signal_strength'] = strength_value
+                                commodity_market_data[analysis_symbol]['signalStrength'] = strength_value
+                                commodity_market_data[analysis_symbol]['signalPercentage'] = round(strength_value, 1)
                     strength_value = max(0.0, min(100.0, strength_value))
                     merged_item['signal_strength'] = strength_value
                     merged_item['signalStrength'] = strength_value
@@ -10105,10 +10117,11 @@ def list_commodities():
             eurusd_signal = flat_market_data.get('EURUSD', {}).get('signal', 'NO DATA')
             btc_signal = flat_market_data.get('BTCUSD', {}).get('signal', 'NO DATA')
             total_symbols = sum(len(items) for items in categorized.values())
-            logger.info(f"[/api/commodities/list] Returning {total_symbols} Exness symbols: EURUSD={eurusd_signal}, BTCUSD={btc_signal}")
+            logger.info(f"[/api/commodities/list] Returning {total_symbols} {broker_name} symbols: EURUSD={eurusd_signal}, BTCUSD={btc_signal}")
             
             return jsonify({
                 'success': True,
+                'broker': broker_name,
                 'commodities': categorized,  # Nested format for symbol selection
                 'marketData': flat_market_data,  # Flat format for signal lookup
                 'total_symbols': sum(len(v) for v in categorized.values()),
@@ -11272,6 +11285,184 @@ PXBT_VALID_SYMBOLS = {
     'BTCUSDT', 'ETHUSDT',
 }
 
+FXCM_SUPPORTED_CURRENCY_CODES = {'AUD', 'CAD', 'CHF', 'EUR', 'GBP', 'JPY', 'NZD', 'USD'}
+FXCM_SAFE_SYMBOLS = sorted(
+    symbol
+    for symbol in VALID_SYMBOLS
+    if (
+        symbol in {'XAUUSD', 'XAGUSD'}
+        or (
+            len(symbol) == 6
+            and symbol[:3] in FXCM_SUPPORTED_CURRENCY_CODES
+            and symbol[3:] in FXCM_SUPPORTED_CURRENCY_CODES
+        )
+    )
+)
+FXCM_SYMBOL_CONFIG = {
+    'forex': [
+        {'symbol': 'AUD/CNH', 'name': 'Australian Dollar vs. Offshore Chinese Yuan', 'min_price': 4.87375, 'max_price': 4.87470},
+        {'symbol': 'EUR/USD', 'name': 'Euro vs. US Dollar', 'min_price': 1.17198, 'max_price': 1.17917, 'analysis_symbol': 'EURUSD'},
+        {'symbol': 'GBP/USD', 'name': 'Great British Pound vs. US Dollar', 'min_price': 1.34756, 'max_price': 1.35461, 'analysis_symbol': 'GBPUSD'},
+        {'symbol': 'EUR/JPY', 'name': 'Euro vs. Japanese Yen', 'min_price': 187.113, 'max_price': 187.142, 'analysis_symbol': 'EURJPY'},
+        {'symbol': 'USD/JPY', 'name': 'US Dollar vs. Japanese Yen', 'min_price': 158.705, 'max_price': 159.623, 'analysis_symbol': 'USDJPY'},
+        {'symbol': 'GBP/JPY', 'name': 'Great British Pound vs. Japanese Yen', 'min_price': 215.149, 'max_price': 215.179, 'analysis_symbol': 'GBPJPY'},
+        {'symbol': 'AUD/JPY', 'name': 'Australian Dollar vs. Japanese Yen', 'min_price': 113.873, 'max_price': 113.895},
+        {'symbol': 'CHF/JPY', 'name': 'Swiss Franc vs. Japanese Yen', 'min_price': 204.027, 'max_price': 204.071},
+        {'symbol': 'USD/CHF', 'name': 'US Dollar vs. Swiss Franc', 'min_price': 0.78199, 'max_price': 0.78217, 'analysis_symbol': 'USDCHF'},
+        {'symbol': 'GBP/CHF', 'name': 'Great British Pound vs. Swiss Franc', 'min_price': 1.05428, 'max_price': 1.05466},
+        {'symbol': 'AUD/USD', 'name': 'Australian Dollar vs. US Dollar', 'min_price': 0.71304, 'max_price': 0.71864, 'analysis_symbol': 'AUDUSD'},
+        {'symbol': 'EUR/AUD', 'name': 'Euro vs. Australian Dollar', 'min_price': 1.64303, 'max_price': 1.64327},
+        {'symbol': 'EUR/CHF', 'name': 'Euro vs. Swiss Franc', 'min_price': 0.91698, 'max_price': 0.91722},
+        {'symbol': 'EUR/CAD', 'name': 'Euro vs. Canadian Dollar', 'min_price': 1.60332, 'max_price': 1.60365},
+        {'symbol': 'EUR/GBP', 'name': 'Euro vs. Great British Pound', 'min_price': 0.86963, 'max_price': 0.86977, 'analysis_symbol': 'EURGBP'},
+        {'symbol': 'AUD/CAD', 'name': 'Australian Dollar vs. Canadian Dollar', 'min_price': 0.97570, 'max_price': 0.97603},
+        {'symbol': 'NZD/USD', 'name': 'New Zealand Dollar vs. US Dollar', 'min_price': 0.58796, 'max_price': 0.58814, 'analysis_symbol': 'NZDUSD'},
+        {'symbol': 'USD/CAD', 'name': 'US Dollar vs. Canadian Dollar', 'min_price': 1.36740, 'max_price': 1.36755, 'analysis_symbol': 'USDCAD'},
+        {'symbol': 'CAD/JPY', 'name': 'Canadian Dollar vs. Japanese Yen', 'min_price': 116.685, 'max_price': 116.717},
+        {'symbol': 'GBP/AUD', 'name': 'Great British Pound vs. Australian Dollar', 'min_price': 1.88907, 'max_price': 1.88907},
+    ],
+    'forex_ndfs': [
+        {'symbol': 'USD/CLP', 'name': 'US Dollar vs Chilean Peso', 'min_price': 880.5300, 'max_price': 894.3400},
+        {'symbol': 'USD/COP', 'name': 'US Dollar vs Colombian Peso', 'min_price': 3574.66, 'max_price': 3662.17},
+        {'symbol': 'USD/INR', 'name': 'US Dollar vs Indian Rupee', 'min_price': 93.4909, 'max_price': 94.3021},
+        {'symbol': 'USD/KRW', 'name': 'US Dollar vs South Korean Won', 'min_price': 1465.138, 'max_price': 1485.962},
+        {'symbol': 'USD/TWD', 'name': 'US Dollar vs Taiwan New Dollar', 'min_price': 31.40224, 'max_price': 31.61168},
+    ],
+    'treasury': [
+        {'symbol': '5USNote', 'name': 'US 5-Year T-Note Future', 'type': 'Treasury', 'min_price': 118.120, 'max_price': 118.170},
+        {'symbol': '10USNote', 'name': 'US 10-Year T-Note Future', 'type': 'Treasury', 'min_price': 111.159, 'max_price': 111.732},
+        {'symbol': '2USNote', 'name': 'US 2-Year T-Note Future', 'type': 'Treasury', 'min_price': 103.721, 'max_price': 103.888},
+        {'symbol': 'Bobl', 'name': 'Euro Bobl Future', 'type': 'Treasury', 'min_price': 115.634, 'max_price': 116.146},
+        {'symbol': 'Schatz', 'name': 'Euro Schatz Future', 'type': 'Treasury', 'min_price': 105.912, 'max_price': 106.139},
+        {'symbol': 'FED30D', 'name': 'US 30 Day Fed Rate Future', 'type': 'Treasury', 'min_price': 96.347, 'max_price': 96.371},
+        {'symbol': 'EURIBOR3M', 'name': 'Euribor (3 month) Future', 'type': 'Treasury', 'min_price': 97.620, 'max_price': 97.717},
+        {'symbol': 'SONIA3M', 'name': 'SONIA (3 month) Future', 'type': 'Treasury', 'min_price': 96.227, 'max_price': 96.256},
+        {'symbol': 'IBHY', 'name': 'IBHY Future', 'type': 'Treasury', 'min_price': 181.809, 'max_price': 182.556},
+        {'symbol': 'Bund', 'name': 'Euro-Bund Future', 'type': 'Treasury', 'min_price': 125.437, 'max_price': 126.170},
+    ],
+    'indices': [
+        {'symbol': 'UK100', 'name': 'FTSE 100 Index Cash', 'type': 'Index CFD', 'min_price': 10461.24, 'max_price': 10645.15},
+        {'symbol': 'GER30', 'name': 'DAX Performance Index Cash', 'type': 'Index CFD', 'min_price': 24201.42, 'max_price': 24685.57},
+        {'symbol': 'FRA40', 'name': 'CAC 40 Index Cash', 'type': 'Index CFD', 'min_price': 8202.67, 'max_price': 8372.77},
+        {'symbol': 'CHN50', 'name': 'FTSE China A50 Index Cash', 'type': 'Index CFD', 'min_price': 15395.21, 'max_price': 15578.22},
+        {'symbol': 'Volatility Index', 'name': 'Volatility Index Future (VIX)', 'type': 'Index CFD', 'min_price': 20.210, 'max_price': 21.140},
+        {'symbol': 'US2000', 'name': 'Russel 2000 Index Cash', 'type': 'Index CFD', 'min_price': 2763.60, 'max_price': 2819.95},
+        {'symbol': 'US30', 'name': 'Dow Jones Industrial Average Cash', 'type': 'Index CFD', 'min_price': 49200.47, 'max_price': 49899.77, 'analysis_symbol': 'US30'},
+        {'symbol': 'US Equities Basket', 'name': 'US30, SPX500, US2000 and NAS100', 'type': 'Index CFD', 'min_price': 5559.20, 'max_price': 5632.10},
+        {'symbol': 'AUS200', 'name': 'S&P/ASX 200 Index Cash', 'type': 'Index CFD', 'min_price': 8846.33, 'max_price': 8997.64},
+        {'symbol': 'ESP35', 'name': 'Iberian Index (IBEX) Cash', 'type': 'Index CFD', 'min_price': 18028.92, 'max_price': 18386.42},
+        {'symbol': 'HKG33', 'name': 'Hang Seng Index Cash', 'type': 'Index CFD', 'min_price': 26131.49, 'max_price': 26536.00},
+        {'symbol': 'JPN225', 'name': 'Nikkei Index Cash', 'type': 'Index CFD', 'min_price': 58421.40, 'max_price': 59673.42},
+        {'symbol': 'NAS100', 'name': 'Nasdaq Composite Cash', 'type': 'Index CFD', 'min_price': 26475.36, 'max_price': 26778.01, 'analysis_symbol': 'USTEC'},
+        {'symbol': 'SPX500', 'name': 'S&P 500 Index Cash', 'type': 'Index CFD', 'min_price': 7067.35, 'max_price': 7154.17, 'analysis_symbol': 'US500'},
+        {'symbol': 'EUSTX50', 'name': 'Euro Stoxx 50 Index Cash', 'type': 'Index CFD', 'min_price': 5911.45, 'max_price': 6020.00},
+    ],
+    'commodities': [
+        {'symbol': 'Gold', 'name': 'XAU/USD Spot - Gold', 'type': 'Commodity', 'min_price': 4696.93, 'max_price': 4833.76, 'analysis_symbol': 'XAUUSD'},
+        {'symbol': 'Silver', 'name': 'XAG/USD Spot', 'type': 'Commodity', 'min_price': 75.995, 'max_price': 80.391, 'analysis_symbol': 'XAGUSD'},
+        {'symbol': 'SOYF', 'name': 'Soy Future', 'type': 'Commodity', 'min_price': 1164.50, 'max_price': 1179.02},
+        {'symbol': 'USOilSpot', 'name': 'WTI Oil Spot', 'type': 'Commodity', 'min_price': 85.178, 'max_price': 90.860, 'analysis_symbol': 'USOIL'},
+        {'symbol': 'UKOilSpot', 'name': 'Brent Oil Spot', 'type': 'Commodity', 'min_price': 90.004, 'max_price': 95.722, 'analysis_symbol': 'UKOIL'},
+        {'symbol': 'WHEATF', 'name': 'Wheat Future', 'type': 'Commodity', 'min_price': 601.20, 'max_price': 615.18},
+        {'symbol': 'CORNF', 'name': 'Corn Future', 'type': 'Commodity', 'min_price': 450.29, 'max_price': 455.72},
+        {'symbol': 'GasolineF', 'name': 'Gasoline Future', 'type': 'Commodity', 'min_price': 3.0771, 'max_price': 3.2340},
+        {'symbol': 'HeatingOilF', 'name': 'Heating Oil Future', 'type': 'Commodity', 'min_price': 3.4752, 'max_price': 3.7850},
+        {'symbol': 'CoffeeNYF', 'name': 'Coffee Future - New York (Arabica)', 'type': 'Commodity', 'min_price': 278.24, 'max_price': 288.60},
+        {'symbol': 'SugarNYF', 'name': 'Sugar Future - New York (Raw)', 'type': 'Commodity', 'min_price': 13.31, 'max_price': 13.63},
+        {'symbol': 'CarbonF', 'name': 'Carbon Emissions Future', 'type': 'Commodity', 'min_price': 74.77, 'max_price': 76.22},
+        {'symbol': 'LCattleF', 'name': 'Live Cattle Future', 'type': 'Commodity', 'min_price': 242.789, 'max_price': 246.814},
+        {'symbol': 'AlumSpot', 'name': 'Aluminum Spot', 'type': 'Commodity', 'min_price': 3509.75, 'max_price': 3586.90},
+        {'symbol': 'LeadSpot', 'name': 'Lead Spot', 'type': 'Commodity', 'min_price': 1956.39, 'max_price': 2002.30},
+        {'symbol': 'NickelSpot', 'name': 'Nickel Spot', 'type': 'Commodity', 'min_price': 17679.00, 'max_price': 18844.00},
+        {'symbol': 'ZincSpot', 'name': 'Zinc Spot', 'type': 'Commodity', 'min_price': 3388.20, 'max_price': 3465.90},
+        {'symbol': 'Copper', 'name': 'Copper Future', 'type': 'Commodity', 'min_price': 5.9830, 'max_price': 6.0745},
+        {'symbol': 'USOil', 'name': 'WTI Oil Future', 'type': 'Commodity', 'min_price': 85.657, 'max_price': 91.463, 'analysis_symbol': 'USOIL'},
+        {'symbol': 'UKOil', 'name': 'Brent Oil Futures', 'type': 'Commodity', 'min_price': 90.000, 'max_price': 95.722, 'analysis_symbol': 'UKOIL'},
+    ],
+    'stocks': [
+        {'symbol': 'AAPL.ext', 'name': 'Apple (24 Hours)', 'type': 'Stock CFD', 'min_price': 265.26, 'max_price': 273.02, 'analysis_symbol': 'AAPL'},
+        {'symbol': 'AAPL.us', 'name': 'Apple', 'type': 'Stock CFD', 'min_price': 265.26, 'max_price': 273.05, 'analysis_symbol': 'AAPL'},
+        {'symbol': 'NVDA.ext', 'name': 'NVIDIA (24 Hours)', 'type': 'Stock CFD', 'min_price': 199.55, 'max_price': 203.15, 'analysis_symbol': 'NVDA'},
+        {'symbol': 'NVDA.us', 'name': 'NVIDIA', 'type': 'Stock CFD', 'min_price': 199.55, 'max_price': 202.92, 'analysis_symbol': 'NVDA'},
+        {'symbol': 'TSLA.ext', 'name': 'Tesla Motors (24 Hours)', 'type': 'Stock CFD', 'min_price': 387.23, 'max_price': 396.74, 'analysis_symbol': 'TSLA'},
+        {'symbol': 'TSLA.us', 'name': 'Tesla Motors', 'type': 'Stock CFD', 'min_price': 387.25, 'max_price': 394.10, 'analysis_symbol': 'TSLA'},
+    ],
+    'stock_baskets': [
+        {'symbol': 'Magnificent 7 (24 hours)', 'name': 'TSLA.ext, NVDA.ext, MSFT.ext, AMZN.ext, META.ext, AAPL.ext, and GOOG.ext', 'type': 'Stock Basket', 'min_price': 2443.05, 'max_price': 2482.73},
+        {'symbol': 'US Big Tech (FAANG)', 'name': 'META, AAPL, AMZN, NFLX and GOOG', 'type': 'Stock Basket', 'min_price': 9888.05, 'max_price': 10052.92},
+        {'symbol': 'Chinese Ecommerce', 'name': 'BABA, JD, PDD, TCOM and TME', 'type': 'Stock Basket', 'min_price': 3844.07, 'max_price': 3991.98},
+        {'symbol': 'Chinese Technology', 'name': 'BIDU, BILI NTES, IQ and WB', 'type': 'Stock Basket', 'min_price': 2050.41, 'max_price': 2144.29},
+        {'symbol': 'Airlines', 'name': 'AAL, DAL, LUV, JBLU and UAL', 'type': 'Stock Basket', 'min_price': 3143.65, 'max_price': 3259.77},
+        {'symbol': 'Big China Tech (ATMX)', 'name': 'BABA.hk, TENC.hk, MEIT.hk and XIAO.hk', 'type': 'Stock Basket', 'min_price': 10988.86, 'max_price': 11195.69},
+        {'symbol': 'Biotechnology', 'name': 'ABBV, AMGN, BMY, GILD and VRTX', 'type': 'Stock Basket', 'min_price': 4162.29, 'max_price': 4254.45},
+        {'symbol': 'Cannabis', 'name': 'ACB, CGC, CRON, JAZZ, IIPR and TLRY', 'type': 'Stock Basket', 'min_price': 1704.58, 'max_price': 1753.76},
+        {'symbol': 'Casinos', 'name': 'CZR, DKNG, LVS,MGM and WYNN', 'type': 'Stock Basket', 'min_price': 2554.08, 'max_price': 2629.39},
+        {'symbol': 'Cryptocurrency Stocks', 'name': 'BTBB, COIN, HUT, MARA and RIOT', 'type': 'Stock Basket', 'min_price': 5841.77, 'max_price': 6236.93},
+        {'symbol': 'Esports & Gaming', 'name': 'AMD, MSFT, EA, NVDA and SONY', 'type': 'Stock Basket', 'min_price': 16118.23, 'max_price': 16336.11},
+        {'symbol': 'Travel & Hospitality', 'name': 'BKNG, H, HLT, MAR and TRIP', 'type': 'Stock Basket', 'min_price': 6370.62, 'max_price': 6505.71},
+        {'symbol': 'Uranium', 'name': 'CCJ, DNN, NXE and URNM', 'type': 'Stock Basket', 'min_price': 7002.11, 'max_price': 7385.14},
+        {'symbol': 'US Automative', 'name': 'F, GM, HOG, STLA and TSLA', 'type': 'Stock Basket', 'min_price': 4988.73, 'max_price': 5083.30},
+        {'symbol': 'US Banks', 'name': 'BAC, C, COF, JPM and WFC', 'type': 'Stock Basket', 'min_price': 5839.59, 'max_price': 5978.96},
+        {'symbol': 'US Ecommerce', 'name': 'AMZN, EBAY, ETSY, SHOP, W and WMT', 'type': 'Stock Basket', 'min_price': 3105.03, 'max_price': 3159.17},
+        {'symbol': 'Work From Home', 'name': 'CHWY, DASH, PTON, TWLO and ZM', 'type': 'Stock Basket', 'min_price': 1294.19, 'max_price': 1346.85},
+    ],
+    'zar_pairs': [],
+}
+FXCM_CONFIGURABLE_SYMBOLS = {
+    item['symbol']
+    for items in FXCM_SYMBOL_CONFIG.values()
+    for item in items
+}
+FXCM_SYMBOL_ALIASES = {
+    'EURUSD': 'EUR/USD',
+    'GBPUSD': 'GBP/USD',
+    'EURJPY': 'EUR/JPY',
+    'USDJPY': 'USD/JPY',
+    'GBPJPY': 'GBP/JPY',
+    'AUDUSD': 'AUD/USD',
+    'USDCHF': 'USD/CHF',
+    'USDCAD': 'USD/CAD',
+    'NZDUSD': 'NZD/USD',
+    'EURGBP': 'EUR/GBP',
+    'XAU/USD': 'Gold',
+    'XAUUSD': 'Gold',
+    'XAUUSDSPOTGOLD': 'Gold',
+    'GOLD': 'Gold',
+    'XAG/USD': 'Silver',
+    'XAGUSD': 'Silver',
+    'SILVER': 'Silver',
+    'USOIL': 'USOil',
+    'USOILSPOT': 'USOilSpot',
+    'UKOIL': 'UKOil',
+    'UKOILSPOT': 'UKOilSpot',
+    'AAPL.EXT': 'AAPL.ext',
+    'AAPL.US': 'AAPL.us',
+    'NVDA.EXT': 'NVDA.ext',
+    'NVDA.US': 'NVDA.us',
+    'TSLA.EXT': 'TSLA.ext',
+    'TSLA.US': 'TSLA.us',
+    '10USNOTE': '10USNote',
+    'GER30': 'GER30',
+    'NAS100': 'NAS100',
+    'SPX500': 'SPX500',
+    'UK100': 'UK100',
+    'FRA40': 'FRA40',
+    'CHN50': 'CHN50',
+    'US2000': 'US2000',
+    'AUS200': 'AUS200',
+    'ESP35': 'ESP35',
+    'HKG33': 'HKG33',
+    'JPN225': 'JPN225',
+    'EUSTX50': 'EUSTX50',
+    'USDCLP': 'USD/CLP',
+    'USDCOP': 'USD/COP',
+    'USDINR': 'USD/INR',
+    'USDKRW': 'USD/KRW',
+    'USDTWD': 'USD/TWD',
+    'AUDCNH': 'AUD/CNH',
+    'BUND': 'Bund',
+}
+
 SYMBOL_MAPPING = {
     # Backward compatibility: map OLD 'm' suffix symbols to Standard account symbols
     'BTCUSDm': 'BTCUSD', 'ETHUSDm': 'ETHUSD',
@@ -11329,6 +11520,23 @@ def normalize_symbol_for_broker(symbol: str, broker_name: str = None) -> str:
     if not raw_symbol:
         return ''
 
+    if broker_name == 'FXCM':
+        direct_match = next((candidate for candidate in FXCM_CONFIGURABLE_SYMBOLS if candidate.lower() == raw_symbol.lower()), '')
+        if direct_match:
+            return direct_match
+
+        alias = FXCM_SYMBOL_ALIASES.get(raw_symbol.upper())
+        if alias:
+            return alias
+
+        compact = raw_symbol.upper().replace('/', '').replace('_', '').replace(' ', '')
+        alias = FXCM_SYMBOL_ALIASES.get(compact)
+        if alias:
+            return alias
+        if compact in FXCM_SAFE_SYMBOLS:
+            return compact
+        return ''
+
     base_symbol = raw_symbol.split('.')[0].strip()
     lookup_key = base_symbol.upper().replace('/', '').replace('_', '')
     mapped_symbol = SYMBOL_MAPPING.get(base_symbol, SYMBOL_MAPPING.get(lookup_key, lookup_key))
@@ -11346,6 +11554,8 @@ def get_mt5_ready_symbols_for_broker(broker_name: str) -> List[str]:
     normalized_broker = canonicalize_broker_name(broker_name or '')
     if normalized_broker in ('Exness', 'XM', 'XM Global'):
         return [normalize_symbol_for_broker(symbol, normalized_broker) for symbol in sorted(VALID_SYMBOLS)]
+    if normalized_broker == 'FXCM':
+        return list(FXCM_SAFE_SYMBOLS)
     return sorted(VALID_SYMBOLS)
 
 def validate_and_correct_symbols(symbols, broker_name=None):
@@ -11425,6 +11635,22 @@ def validate_and_correct_symbols(symbols, broker_name=None):
                     corrected.append('EURUSD')
 
         return corrected[:5] or ['EURUSD']
+
+    if broker_name == 'FXCM':
+        if not symbols:
+            return ['EURUSD']
+
+        corrected = []
+        for symbol in symbols:
+            mapped = normalize_symbol_for_broker(symbol, broker_name)
+            if mapped and (mapped in FXCM_SAFE_SYMBOLS or mapped in FXCM_CONFIGURABLE_SYMBOLS) and mapped not in corrected:
+                corrected.append(mapped)
+            else:
+                logger.warning(f'⚠️ Unsupported FXCM symbol {symbol} -> defaulting to EURUSD')
+                if 'EURUSD' not in corrected:
+                    corrected.append('EURUSD')
+
+        return corrected[:10] or ['EURUSD']
 
     if broker_name in ('Exness', 'XM', 'XM Global'):
         if not symbols:
@@ -13515,7 +13741,7 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
                 if allow_raw_signal_fallback and raw_strength >= raw_fallback_min_strength:
                     fallback_trade_params = _build_adaptive_raw_trade_params(symbol, market_data, raw_signal)
                 if fallback_trade_params is not None:
-                    strategy_cache[symbol] = fallback_trade_params
+                    strategy_cache[_strategy_cache_key(strategy_func, symbol)] = fallback_trade_params
                     opportunities.append({
                         'symbol': symbol,
                         'strength': raw_strength,

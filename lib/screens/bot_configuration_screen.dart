@@ -1704,8 +1704,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   Future<void> _fetchCommodityData() async {
     setState(() => _isLoadingData = true);
     try {
+      final brokerQuery = _activeBrokerName.isNotEmpty
+          ? '?broker=${Uri.encodeQueryComponent(_brokerService.activeCredential?.broker ?? _activeBrokerName)}'
+          : '';
       final response = await http
-          .get(Uri.parse('${EnvironmentConfig.apiUrl}/api/commodities/list'))
+          .get(Uri.parse('${EnvironmentConfig.apiUrl}/api/commodities/list$brokerQuery'))
           .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
@@ -1831,9 +1834,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
     final categoryEmojis = {
       'forex': '💱',
+      'forex_ndfs': '💱',
       'commodities': '⚡',
+      'precious_metals': '🥇',
+      'energy': '🛢️',
       'indices': '📊',
+      'treasury': '🏦',
       'stocks': '📈',
+      'stock_baskets': '🧺',
+      'zar_pairs': '💱',
     };
 
     apiData.forEach((category, items) {
