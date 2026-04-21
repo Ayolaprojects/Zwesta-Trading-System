@@ -1994,10 +1994,18 @@ def distribute_profit_split_and_commissions(user_id, profit, bot_id):
 
 
 def _get_market_data_for_symbol(symbol: str) -> Dict[str, Any]:
-    if symbol in commodity_market_data:
-        return commodity_market_data[symbol]
-    if symbol.endswith('m') and symbol[:-1] in commodity_market_data:
-        return commodity_market_data[symbol[:-1]]
+    resolved_symbol = _resolve_analysis_symbol(symbol)
+    candidate_symbols = []
+    for candidate in (symbol, resolved_symbol):
+        normalized_candidate = str(candidate or '').strip()
+        if normalized_candidate and normalized_candidate not in candidate_symbols:
+            candidate_symbols.append(normalized_candidate)
+        if normalized_candidate.endswith('m') and normalized_candidate[:-1] not in candidate_symbols:
+            candidate_symbols.append(normalized_candidate[:-1])
+
+    for candidate in candidate_symbols:
+        if candidate in commodity_market_data:
+            return commodity_market_data[candidate]
     return {'current_price': 0, 'volatility_pct': 1.0, 'price_history': [0]}
 
 
@@ -5715,11 +5723,16 @@ class FXCMConnection(BrokerConnection):
                 return trade
         return None
 
-    def _resolve_forexconnect_amount(self, volume: float, instrument: str, account) -> int:
+    def _resolve_fxcm_order_amount(self, volume: float, instrument: str, account=None) -> int:
         requested_volume = max(float(volume or 0), 0.0)
         if requested_volume <= 0:
             return 1
 
+        # Bot sizing is produced in MT5-style lots. FXCM expects trade amounts in units.
+        # Convert lot fractions into units using a 100k contract baseline, then round to the
+        # broker's base unit size when ForexConnect metadata is available.
+        estimated_units = requested_volume * 100000.0
+        base_unit_size = 0
         try:
             login_rules = self.forexconnect_client.login_rules if self.forexconnect_client else None
             trading_settings_provider = getattr(login_rules, 'trading_settings_provider', None)
@@ -5728,9 +5741,10 @@ class FXCMConnection(BrokerConnection):
             logger.debug(f"FXCM base unit lookup failed for {instrument}: {e}")
             base_unit_size = 0
 
-        if base_unit_size > 0 and requested_volume < base_unit_size:
-            return max(int(round(base_unit_size * requested_volume)), 1)
-        return max(int(round(requested_volume)), 1)
+        if base_unit_size > 0:
+            estimated_units = max(base_unit_size, round(estimated_units / base_unit_size) * base_unit_size)
+
+        return max(int(round(estimated_units)), 1)
 
     def _send_forexconnect_request(self, request):
         if not self.forexconnect_client:
@@ -6364,7 +6378,11 @@ class FXCMConnection(BrokerConnection):
                     return {'success': False, 'error': self.last_error}
 
                 buy_sell = fxcorepy.Constants.BUY if str(order_type or '').upper() == 'BUY' else fxcorepy.Constants.SELL
-                amount = self._resolve_forexconnect_amount(volume, str(getattr(offer, 'instrument', symbol) or symbol), account)
+                amount = self._resolve_fxcm_order_amount(volume, str(getattr(offer, 'instrument', symbol) or symbol), account)
+                logger.info(
+                    f"[FXCM ORDER] ForexConnect submit | symbol={symbol} | instrument={getattr(offer, 'instrument', symbol)} "
+                    f"| side={str(order_type or '').upper()} | requested_volume={float(volume or 0):.4f} | amount={amount}"
+                )
                 request = self.forexconnect_client.create_order_request(
                     order_type=fxcorepy.Constants.Orders.TRUE_MARKET_OPEN,
                     ACCOUNT_ID=str(getattr(account, 'account_id', '') or self.credentials.get('account_number', '')),
@@ -6399,11 +6417,17 @@ class FXCMConnection(BrokerConnection):
             if not instrument:
                 return {'success': False, 'error': f'Unsupported FXCM instrument: {symbol}'}
 
+            amount = self._resolve_fxcm_order_amount(volume, instrument)
+            logger.info(
+                f"[FXCM ORDER] REST submit | symbol={symbol} | instrument={instrument} "
+                f"| side={order_type.upper()} | requested_volume={float(volume or 0):.4f} | amount={amount}"
+            )
+
             payload = {
                 'account_id': self.credentials.get('account_number', ''),
                 'symbol': instrument,
                 'is_buy': order_type.upper() == 'BUY',
-                'amount': max(float(volume), 1.0),
+                'amount': amount,
                 'order_type': 'AtMarket',
                 'time_in_force': 'GTC',
             }
@@ -6421,6 +6445,7 @@ class FXCMConnection(BrokerConnection):
                     'tradeId': result.get('tradeId', ''),
                     'symbol': self._display_symbol(instrument),
                     'type': order_type.upper(),
+                    'amount': amount,
                     'broker': 'FXCM',
                 }
             return {'success': False, 'error': resp.text}
@@ -11638,19 +11663,22 @@ def validate_and_correct_symbols(symbols, broker_name=None):
 
     if broker_name == 'FXCM':
         if not symbols:
-            return ['EURUSD']
+            return ['EUR/USD']
 
         corrected = []
         for symbol in symbols:
             mapped = normalize_symbol_for_broker(symbol, broker_name)
-            if mapped and (mapped in FXCM_SAFE_SYMBOLS or mapped in FXCM_CONFIGURABLE_SYMBOLS) and mapped not in corrected:
-                corrected.append(mapped)
-            else:
-                logger.warning(f'⚠️ Unsupported FXCM symbol {symbol} -> defaulting to EURUSD')
-                if 'EURUSD' not in corrected:
-                    corrected.append('EURUSD')
+            is_supported = bool(mapped and (mapped in FXCM_SAFE_SYMBOLS or mapped in FXCM_CONFIGURABLE_SYMBOLS))
+            if is_supported:
+                if mapped not in corrected:
+                    corrected.append(mapped)
+                continue
 
-        return corrected[:10] or ['EURUSD']
+            logger.warning(f'⚠️ Unsupported FXCM symbol {symbol} -> defaulting to EUR/USD')
+            if 'EUR/USD' not in corrected:
+                corrected.append('EUR/USD')
+
+        return corrected[:10] or ['EUR/USD']
 
     if broker_name in ('Exness', 'XM', 'XM Global'):
         if not symbols:
@@ -12447,9 +12475,10 @@ def evaluate_real_trade_signal(symbol: str, market_data: Dict) -> Dict:
         ma_short, ma_long = calculate_moving_averages(price_history, short=10, long=20)
         macd_line, signal_line, histogram = calculate_macd(price_history)
         
-        # Normalize Exness-style symbols for param lookup (e.g. 'EURUSDm' -> 'EURUSD')
-        symbol_key = symbol[:-1] if symbol.endswith('m') else symbol
-        symbol_key = symbol_key.upper()
+        # Normalize broker display symbols to the underlying analysis symbol for param lookup.
+        symbol_key = _resolve_analysis_symbol(str(market_data.get('analysis_symbol') or symbol))
+        if not symbol_key:
+            symbol_key = _normalize_symbol_base(symbol)
 
         # Determine trend — use dead zone around ma_long to avoid flip-flopping
         ma_diff_pct = (current_price - ma_long) / ma_long * 100 if ma_long > 0 else 0
@@ -14707,6 +14736,7 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     if cadence_migrated:
         bot_state['_cadenceMigrationApplied'] = True
     restored_symbols = bot_state.get('symbols') or (row['symbols'].split(',') if row['symbols'] else ['EURUSDm'])
+    original_restored_symbols = [str(symbol).strip() for symbol in restored_symbols if str(symbol).strip()]
     bot_state['symbols'] = validate_and_correct_symbols(restored_symbols, broker_name)
     bot_state['tradeHistory'] = bot_state.get('tradeHistory') or []
     _merge_bot_trade_history_from_db(bot_state, row['bot_id'])
@@ -14757,6 +14787,13 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     bot_state['displayCurrency'] = str(bot_state.get('displayCurrency') or 'USD').upper()
     bot_state['profit'] = bot_state.get('totalProfit', 0.0) or 0.0
 
+    if broker_name == 'FXCM' and bot_state['symbols'] != original_restored_symbols:
+        logger.info(
+            f"🔄 Restored FXCM symbols normalized for bot {row['bot_id']}: "
+            f"{original_restored_symbols} -> {bot_state['symbols']}"
+        )
+        _persist_normalized_bot_symbols(row['bot_id'], bot_state, bot_state['symbols'])
+
     return bot_state
 
 
@@ -14766,6 +14803,41 @@ def _extract_persistable_bot_state(bot_config: Dict[str, Any]) -> Dict[str, Any]
         for key in PERSISTED_BOT_STATE_FIELDS
         if key in bot_config
     }
+
+
+def _persist_normalized_bot_symbols(bot_id: str, bot_config: Dict[str, Any], normalized_symbols: list) -> None:
+    bot_config['symbols'] = normalized_symbols
+    runtime_state = _extract_persistable_bot_state(bot_config)
+    updated_at = datetime.now().isoformat()
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE user_bots
+            SET symbols = ?,
+                runtime_state = ?,
+                updated_at = ?
+            WHERE bot_id = ?
+            ''',
+            (
+                ','.join(normalized_symbols),
+                json.dumps(runtime_state),
+                updated_at,
+                bot_id,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Could not persist normalized symbols for bot {bot_id}: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 _persist_last_time: dict = {}
@@ -20131,6 +20203,30 @@ def _normalize_symbol_base(symbol: str) -> str:
     return normalized
 
 
+def _resolve_analysis_symbol(symbol: str) -> str:
+    raw_symbol = str(symbol or '').strip()
+    if not raw_symbol:
+        return ''
+
+    for items in FXCM_SYMBOL_CONFIG.values():
+        for item in items:
+            configured_symbol = str(item.get('symbol') or '').strip()
+            if configured_symbol and configured_symbol.lower() == raw_symbol.lower():
+                return str(item.get('analysis_symbol') or _normalize_symbol_base(configured_symbol))
+
+    canonical_symbol = normalize_symbol_for_broker(raw_symbol, 'FXCM')
+    if canonical_symbol and canonical_symbol != raw_symbol:
+        for items in FXCM_SYMBOL_CONFIG.values():
+            for item in items:
+                configured_symbol = str(item.get('symbol') or '').strip()
+                if configured_symbol and configured_symbol.lower() == canonical_symbol.lower():
+                    return str(item.get('analysis_symbol') or _normalize_symbol_base(configured_symbol))
+
+    normalized_symbol = _normalize_symbol_base(raw_symbol)
+    mapped_symbol = SYMBOL_MAPPING.get(raw_symbol, SYMBOL_MAPPING.get(normalized_symbol, normalized_symbol))
+    return _normalize_symbol_base(mapped_symbol)
+
+
 def _get_small_live_account_threshold(currency: str) -> float:
     normalized_currency = str(currency or 'USD').strip().upper()
     return SMALL_LIVE_ACCOUNT_THRESHOLDS.get(normalized_currency, SMALL_LIVE_ACCOUNT_THRESHOLDS['USD'])
@@ -22230,10 +22326,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         normalized_symbols = validate_and_correct_symbols(bot_config.get('symbols', ['EURUSDm']), normalized_broker)
         if normalized_symbols != bot_config.get('symbols', []):
             logger.info(f"🔄 Bot {bot_id}: Normalized symbols for {normalized_broker}: {bot_config.get('symbols')} -> {normalized_symbols}")
-            bot_config['symbols'] = normalized_symbols
-            # Force immediate persistence so bot settings survive restarts
-            # even before the periodic runtime-state debounce cycle.
-            persist_bot_runtime_state(bot_id, force=True)
+            _persist_normalized_bot_symbols(bot_id, bot_config, normalized_symbols)
         
         # Get trading mode configuration
         trading_mode = bot_config.get('tradingMode', 'interval')  # 'interval' or 'signal-driven'
@@ -22872,6 +22965,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     scanner_signal_hits = int((bot_config.get('lastScanResults') or {}).get('qualifyingOpportunities') or 0)
                 
                 trades_this_cycle = 0
+                last_order_block_reason = None
                 for symbol in symbols:
                     if bot_stop_flags.get(bot_id, False):
                         break  # Stop requested, exit loop
@@ -23088,9 +23182,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 if order_result.get('success', False):
                                     logger.info(f"✅ Bot {bot_id}: IG order placed on {ig_epic}")
                                 else:
+                                    last_order_block_reason = f"IG rejected {ig_epic}: {order_result.get('error') or 'unknown error'}"
                                     logger.warning(f"Bot {bot_id}: IG order failed on {ig_epic}: {order_result.get('error')}")
                             except Exception as e:
                                 logger.error(f"Bot {bot_id}: IG place_order exception: {e}")
+                                last_order_block_reason = f"IG exception on {symbol}: {e}"
                                 order_result = {'success': False, 'error': str(e)}
                         elif is_fxcm:
                             # FXCM - place order via REST API (FXCMConnection)
@@ -23111,9 +23207,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 if order_result.get('success', False):
                                     logger.info(f"✅ Bot {bot_id}: FXCM order placed on {order_result.get('symbol', symbol)}")
                                 else:
+                                    last_order_block_reason = f"FXCM rejected {symbol}: {order_result.get('error') or 'unknown error'}"
                                     logger.warning(f"Bot {bot_id}: FXCM order failed on {symbol}: {order_result.get('error')}")
                             except Exception as e:
                                 logger.error(f"Bot {bot_id}: FXCM place_order exception: {e}")
+                                last_order_block_reason = f"FXCM exception on {symbol}: {e}"
                                 order_result = {'success': False, 'error': str(e)}
                         elif is_mt5:
                             # MT5 - place order with retry/fallback logic
@@ -23312,10 +23410,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 # Don't log CRITICAL for pause conditions (position limit, market closed, etc.)
                                                 if attempt_symbol in critical_symbols and not order_result.get('is_paused'):
                                                     logger.error(f"❌ CRITICAL SYMBOL FAILED: Bot {bot_id}: {attempt_symbol} failed and NO fallback allowed: {order_result.get('error')}")
+                                                last_order_block_reason = f"{broker_type} rejected {attempt_symbol}: {order_result.get('error') or 'unknown error'}"
                                                 logger.warning(f"Bot {bot_id}: Order failed on {attempt_symbol}: {order_result.get('error')}")
                                                 break
                                 except Exception as e:
                                     logger.error(f"Bot {bot_id}: Exception placing order on {attempt_symbol}: {e}")
+                                    last_order_block_reason = f"{broker_type} exception on {attempt_symbol}: {e}"
                                     if index < len(symbols_to_try) - 1:
                                         continue
                                     break
@@ -23329,9 +23429,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 if order_result.get('success', False):
                                     logger.info(f"✅ Bot {bot_id}: {broker_type} order placed on {order_result.get('symbol', symbol)}")
                                 else:
+                                    last_order_block_reason = f"{broker_type} rejected {symbol}: {order_result.get('error') or 'unknown error'}"
                                     logger.warning(f"Bot {bot_id}: {broker_type} order failed on {symbol}: {order_result.get('error')}")
                             except Exception as e:
                                 logger.error(f"Bot {bot_id}: {broker_type} place_order exception: {e}")
+                                last_order_block_reason = f"{broker_type} exception on {symbol}: {e}"
                                 order_result = {'success': False, 'error': str(e)}
                         
                         # CHECK FOR MARKET PAUSE CONDITIONS - Log pause events
@@ -23505,6 +23607,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     logger.info(f"✅ Bot {bot_id}: Position OPENED | {pos_symbol} {pos_type} @ {matched_pos.get('openPrice', 0)} | Ticket: {pos_ticket}")
                                     trades_placed += 1
                         else:
+                            if order_result and order_result.get('error'):
+                                last_order_block_reason = f"{broker_type} rejected {symbol}: {order_result.get('error')}"
                             logger.warning(f"Bot {bot_id}: Could not place order on {symbol} or EURUSD fallback")
                     
                     except Exception as e:
@@ -23858,6 +23962,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             f"no qualifying setups (best={best_signal_symbol or 'n/a'}:{best_signal_strength:.0f}/100, "
                             f"threshold={signal_threshold}/100)"
                         )
+                    elif last_order_block_reason:
+                        no_trade_reason = last_order_block_reason
                     else:
                         no_trade_reason = 'setup passed signal scan but was blocked by entry filters or broker checks'
                     if no_trade_reason:
@@ -24704,21 +24810,8 @@ def start_bot():
             corrected_symbols = validate_and_correct_symbols(original_symbols, broker_type)
             if corrected_symbols != original_symbols:
                 logger.info(f"📝 Bot {bot_id} symbols corrected: {original_symbols} → {corrected_symbols}")
-                bot_config['symbols'] = corrected_symbols
-                # Update in-memory and database
-                active_bots[bot_id]['symbols'] = corrected_symbols
-                try:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        UPDATE user_bots 
-                        SET symbols = ?, updated_at = ?
-                        WHERE bot_id = ?
-                    ''', (','.join(corrected_symbols), datetime.now().isoformat(), bot_id))
-                    conn.commit()
-                    conn.close()
-                except Exception as e:
-                    logger.warning(f"Could not update bot symbols in DB: {e}")
+                active_bots[bot_id] = bot_config
+                _persist_normalized_bot_symbols(bot_id, bot_config, corrected_symbols)
             
             logger.info(f"✅ Bot {bot_id}: All validation checks passed - ready to start trading")
             
