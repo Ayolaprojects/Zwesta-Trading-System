@@ -594,7 +594,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     setState(() {
       _preferredBrokerDisplay = _normalizeBrokerDisplayName(selected);
-      _portfolioBrokerFilter = _preferredBrokerDisplay;
+      _portfolioBrokerFilter = 'All';
       _reportingCurrency = savedReportingCurrency == 'ZAR' ? 'ZAR' : 'USD';
     });
   }
@@ -854,7 +854,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final preferredFromSelection = _normalizeBrokerDisplayName(_portfolioBrokerFilter);
     final selectedBrokerFilter = brokerOptions.contains(preferredFromSelection)
       ? preferredFromSelection
-      : (brokerOptions.contains(_preferredBrokerDisplay) ? _preferredBrokerDisplay : 'All');
+      : 'All';
 
     final selectedAccounts = selectedBrokerFilter == 'All'
         ? _applyPortfolioBrokerFilter(_filteredBrokerAccounts())
