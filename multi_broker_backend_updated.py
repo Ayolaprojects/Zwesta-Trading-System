@@ -5688,6 +5688,12 @@ class FXCMConnection(BrokerConnection):
     def _normalize_forexconnect_symbol(self, instrument: str) -> str:
         return (instrument or '').replace('/', '').upper()
 
+    def _forexconnect_offer_subscription_status(self, offer) -> str:
+        return str(getattr(offer, 'subscription_status', '') or '').upper()
+
+    def _is_tradeable_forexconnect_offer(self, offer) -> bool:
+        return self._forexconnect_offer_subscription_status(offer) == 'T' and bool(str(getattr(offer, 'offer_id', '') or '').strip())
+
     def _find_forexconnect_offer(self, symbol: str):
         if not self.forexconnect_client:
             return None
@@ -5699,17 +5705,13 @@ class FXCMConnection(BrokerConnection):
             if offers_table is None:
                 return None
 
-            fallback_offer = None
             for offer in offers_table:
                 instrument = str(getattr(offer, 'instrument', '') or '')
                 if self._normalize_forexconnect_symbol(instrument) != requested:
                     continue
-                subscription_status = str(getattr(offer, 'subscription_status', '') or '').upper()
-                if subscription_status == 'T':
+                if self._is_tradeable_forexconnect_offer(offer):
                     return offer
-                if fallback_offer is None:
-                    fallback_offer = offer
-            return fallback_offer
+            return None
         except Exception as e:
             logger.error(f"Error reading ForexConnect offers table: {e}")
             return None
@@ -6389,11 +6391,19 @@ class FXCMConnection(BrokerConnection):
                     BUY_SELL=buy_sell,
                     AMOUNT=amount,
                     OFFER_ID=str(getattr(offer, 'offer_id', '') or ''),
-                    SYMBOL=str(getattr(offer, 'instrument', symbol) or symbol),
                 )
                 response = self._send_forexconnect_request(request)
                 if not response:
-                    return {'success': False, 'error': self.last_error or 'FXCM ForexConnect order failed'}
+                    return {
+                        'success': False,
+                        'error': (
+                            self.last_error
+                            or f"FXCM ForexConnect order failed for {symbol} "
+                               f"(instrument={getattr(offer, 'instrument', symbol)}, "
+                               f"offer_id={getattr(offer, 'offer_id', '')}, amount={amount}, "
+                               f"subscription={self._forexconnect_offer_subscription_status(offer)})"
+                        ),
+                    }
 
                 order_id = str(getattr(response, 'order_id', '') or getattr(request, 'request_id', '') or '')
                 return {

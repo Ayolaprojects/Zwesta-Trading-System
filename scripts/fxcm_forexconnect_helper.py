@@ -30,6 +30,14 @@ def _normalized_symbol(instrument: str) -> str:
     return (instrument or '').replace('/', '').upper()
 
 
+def _offer_subscription_status(offer) -> str:
+    return str(getattr(offer, 'subscription_status', '') or '').upper()
+
+
+def _offer_is_tradeable(offer) -> bool:
+    return _offer_subscription_status(offer) == 'T' and bool(str(getattr(offer, 'offer_id', '') or '').strip())
+
+
 def _account_row_to_dict(account_row) -> Dict[str, Any]:
     balance = float(getattr(account_row, 'balance', 0) or 0)
     equity = float(getattr(account_row, 'equity', balance) or balance)
@@ -93,19 +101,15 @@ def _login(credentials: Dict[str, Any]) -> ForexConnect:
 def _find_offer(fx: ForexConnect, symbol: str):
     requested = _normalized_symbol(symbol)
     offers_table = fx.get_table(ForexConnect.OFFERS)
-    fallback_offer = None
     if offers_table is None:
         return None
     for offer in offers_table:
         instrument = str(getattr(offer, 'instrument', '') or '')
         if _normalized_symbol(instrument) != requested:
             continue
-        subscription_status = str(getattr(offer, 'subscription_status', '') or '').upper()
-        if subscription_status == 'T':
+        if _offer_is_tradeable(offer):
             return offer
-        if fallback_offer is None:
-            fallback_offer = offer
-    return fallback_offer
+    return None
 
 
 def _get_trades_table(fx: ForexConnect):
@@ -129,15 +133,16 @@ def _resolve_amount(fx: ForexConnect, volume: float, instrument: str, account) -
     if requested_volume <= 0:
         return 1
 
+    estimated_units = requested_volume * 100000.0
     try:
         trading_settings_provider = fx.login_rules.trading_settings_provider
         base_unit_size = int(trading_settings_provider.get_base_unit_size(instrument, account))
     except Exception:
         base_unit_size = 0
 
-    if base_unit_size > 0 and requested_volume < base_unit_size:
-        return max(int(round(base_unit_size * requested_volume)), 1)
-    return max(int(round(requested_volume)), 1)
+    if base_unit_size > 0:
+        estimated_units = max(base_unit_size, round(estimated_units / base_unit_size) * base_unit_size)
+    return max(int(round(estimated_units)), 1)
 
 
 def _positions_payload(fx: ForexConnect, credentials: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -201,9 +206,14 @@ def _place_order(fx: ForexConnect, credentials: Dict[str, Any], extra: Dict[str,
         BUY_SELL=buy_sell,
         AMOUNT=amount,
         OFFER_ID=str(getattr(offer, 'offer_id', '') or ''),
-        SYMBOL=instrument,
     )
-    response = fx.send_request(request)
+    try:
+        response = fx.send_request(request)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Instrument is not available for trading. symbol={symbol} instrument={instrument} "
+            f"offer_id={getattr(offer, 'offer_id', '')} subscription={_offer_subscription_status(offer)} amount={amount} error={exc}"
+        ) from exc
     return {
         'success': True,
         'orderId': str(getattr(response, 'order_id', '') or getattr(request, 'request_id', '') or ''),
