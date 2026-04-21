@@ -601,6 +601,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<Map<String, dynamic>?> _loadLocalBrokerSnapshot() async {
     final prefs = await SharedPreferences.getInstance();
+    final rawSnapshot = prefs.getString('verified_broker_snapshot');
+    if (rawSnapshot != null && rawSnapshot.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawSnapshot);
+        if (decoded is Map<String, dynamic> && decoded['connected'] == true) {
+          return decoded;
+        }
+      } catch (_) {}
+    }
+
     final isConnected = prefs.getBool('broker_connected') == true;
     if (!isConnected) {
       return null;

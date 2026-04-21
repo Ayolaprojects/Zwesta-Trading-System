@@ -168,6 +168,66 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     }
   }
 
+  String _normalizeBrokerLabel(dynamic value) {
+    final raw = (value ?? '').toString().trim();
+    if (raw.isEmpty) {
+      return 'MT5';
+    }
+
+    switch (raw.toLowerCase()) {
+      case 'fxm':
+      case 'fxcm':
+        return 'FXCM';
+      case 'binance':
+        return 'Binance';
+      case 'oanda':
+        return 'OANDA';
+      case 'exness':
+        return 'Exness';
+      case 'mt5':
+        return 'MT5';
+      default:
+        return raw
+            .split(RegExp(r'[\s_-]+'))
+            .where((part) => part.isNotEmpty)
+            .map((part) => part[0].toUpperCase() + part.substring(1).toLowerCase())
+            .join(' ');
+    }
+  }
+
+  Color _brokerAccentColor(String brokerLabel) {
+    switch (brokerLabel.toLowerCase()) {
+      case 'binance':
+        return const Color(0xFFF7931A);
+      case 'fxcm':
+        return const Color(0xFF26C6DA);
+      case 'oanda':
+        return const Color(0xFFEF5350);
+      case 'exness':
+        return const Color(0xFF42A5F5);
+      default:
+        return const Color(0xFF2196F3);
+    }
+  }
+
+  String _botConnectionLabel(Map<String, dynamic> bot) {
+    final brokerLabel = _normalizeBrokerLabel(
+      bot['brokerName'] ?? bot['broker_type'] ?? bot['broker'],
+    );
+    final accountNumber = (bot['accountNumber'] ?? bot['account_number'] ?? '')
+        .toString()
+        .trim();
+    final symbol = (bot['symbol'] ?? '').toString().trim().toUpperCase();
+
+    if (symbol.isNotEmpty && symbol != 'MULTI' && symbol != 'N/A') {
+      return '${brokerLabel.toUpperCase()} • $symbol';
+    }
+    if (accountNumber.isNotEmpty) {
+      return '${brokerLabel.toUpperCase()} • $accountNumber';
+    }
+    return brokerLabel.toUpperCase();
+  }
+
   Widget _buildMetaChip(String label, Color color) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -769,6 +829,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final symbols = bot['symbol'] ?? bot['symbols'] ?? 'N/A';
     final strategy = bot['strategy'] ?? 'Auto';
     final brokerType = bot['broker_type'] ?? bot['broker'] ?? 'MT5';
+    final brokerLabel = _botConnectionLabel(bot);
+    final brokerAccent = _brokerAccentColor(_normalizeBrokerLabel(bot['brokerName'] ?? brokerType));
     final displayCurrency = _botDisplayCurrency(bot);
     final tradeAmount = double.tryParse(bot['tradeAmount']?.toString() ?? '0') ?? 0;
     final presetName = (bot['presetName'] ?? '').toString().trim();
@@ -844,24 +906,16 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: brokerType.toString().toUpperCase().contains('BINANCE')
-                              ? const Color(0xFFF7931A).withOpacity(0.2)
-                              : const Color(0xFF2196F3).withOpacity(0.2),
+                            color: brokerAccent.withOpacity(0.2),
                             borderRadius: BorderRadius.circular(6),
                             border: Border.all(
-                              color: brokerType.toString().toUpperCase().contains('BINANCE')
-                                ? const Color(0xFFF7931A).withOpacity(0.5)
-                                : const Color(0xFF2196F3).withOpacity(0.5),
+                              color: brokerAccent.withOpacity(0.5),
                             ),
                           ),
                           child: Text(
-                            brokerType.toString().toUpperCase().contains('BINANCE')
-                              ? 'BINANCE'
-                              : 'MT5',
+                            brokerLabel,
                             style: GoogleFonts.poppins(
-                              color: brokerType.toString().toUpperCase().contains('BINANCE')
-                                ? const Color(0xFFF7931A)
-                                : const Color(0xFF2196F3),
+                              color: brokerAccent,
                               fontSize: 10,
                               fontWeight: FontWeight.w700,
                             ),

@@ -583,6 +583,26 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         await prefs.setDouble('account_profit', _accountProfit);
         await prefs.setBool('is_live_mode', _isLiveMode);
         await prefs.setString('account_currency', currency);
+        await prefs.setString(
+          'verified_broker_snapshot',
+          jsonEncode({
+            'broker': _selectedBroker,
+            'accountNumber': account.accountNumber,
+            'balance': _accountBalance,
+            'equity': _accountEquity,
+            'marginFree': _accountFreeMargin,
+            'margin': _accountMargin,
+            'margin_level': _accountMarginLevel,
+            'total_pl': _accountProfit,
+            'currency': currency,
+            'displayCurrency': currency,
+            'connected': isConnected,
+            'mode': _isLiveMode ? 'Live' : 'Demo',
+            'is_live': _isLiveMode,
+            'last_update': _lastConnectionTime?.toIso8601String(),
+            'dataSource': 'verified_broker_test',
+          }),
+        );
         if (credentialId != null) {
           await prefs.setString('credential_id', credentialId);
           await prefs.setString('broker_name', _selectedBroker);
