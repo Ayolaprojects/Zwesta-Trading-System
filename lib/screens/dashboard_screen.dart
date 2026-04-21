@@ -599,6 +599,108 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  Future<Map<String, dynamic>?> _loadLocalBrokerSnapshot() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isConnected = prefs.getBool('broker_connected') == true;
+    if (!isConnected) {
+      return null;
+    }
+
+    final broker = _normalizeBrokerDisplayName(
+      prefs.getString('preferred_broker_display') ??
+          prefs.getString('broker_name') ??
+          prefs.getString('broker') ??
+          '',
+    );
+    final accountNumber = (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '').trim();
+    if (broker.isEmpty || accountNumber.isEmpty) {
+      return null;
+    }
+
+    final isLive = prefs.getBool('is_live_mode') == true;
+    final balance = prefs.getDouble('account_balance') ?? 0.0;
+    final equity = prefs.getDouble('account_equity') ?? balance;
+    final freeMargin = prefs.getDouble('account_free_margin') ?? 0.0;
+    final margin = prefs.getDouble('account_margin') ?? 0.0;
+    final marginLevel = prefs.getDouble('account_margin_level') ?? 0.0;
+    final profit = prefs.getDouble('account_profit') ?? 0.0;
+    final currency = _normalizeCurrency(prefs.getString('account_currency') ?? 'USD');
+    final lastUpdate = prefs.getString('connection_time');
+
+    return {
+      'broker': broker,
+      'accountNumber': accountNumber,
+      'balance': balance,
+      'equity': equity,
+      'marginFree': freeMargin,
+      'margin': margin,
+      'margin_level': marginLevel,
+      'total_pl': profit,
+      'currency': currency,
+      'displayCurrency': currency,
+      'connected': true,
+      'mode': isLive ? 'Live' : 'Demo',
+      'is_live': isLive,
+      'dataSource': 'local_snapshot',
+      'last_update': lastUpdate,
+      'warning': 'Showing the most recent verified broker snapshot from this device.',
+    };
+  }
+
+  List<Map<String, dynamic>> _mergeLocalSnapshotIntoAccounts(
+    List<Map<String, dynamic>> accounts,
+    Map<String, dynamic>? localSnapshot,
+  ) {
+    if (localSnapshot == null) {
+      return accounts;
+    }
+
+    final merged = List<Map<String, dynamic>>.from(accounts);
+    final snapshotBroker = _normalizeBrokerDisplayName((localSnapshot['broker'] ?? '').toString());
+    final snapshotAccount = (localSnapshot['accountNumber'] ?? '').toString().trim();
+    final snapshotMode = _normalizedModeValue(
+      localSnapshot['mode'],
+      defaultLive: localSnapshot['is_live'] == true,
+    );
+
+    final existingIndex = merged.indexWhere((account) {
+      final broker = _normalizeBrokerDisplayName((account['broker'] ?? '').toString());
+      final accountNumber = (account['accountNumber'] ?? '').toString().trim();
+      final mode = _normalizedModeValue(
+        account['mode'],
+        defaultLive: account['is_live'] == true,
+      );
+      return broker == snapshotBroker && accountNumber == snapshotAccount && mode == snapshotMode;
+    });
+
+    if (existingIndex >= 0) {
+      final existing = Map<String, dynamic>.from(merged[existingIndex]);
+      final existingConnected = existing['connected'] == true;
+      final existingBalance = (existing['balance'] as num?)?.toDouble() ?? 0.0;
+      if (!existingConnected || existingBalance <= 0) {
+        merged[existingIndex] = {
+          ...localSnapshot,
+          ...existing,
+          'connected': true,
+          'balance': existingBalance > 0 ? existing['balance'] : localSnapshot['balance'],
+          'equity': ((existing['equity'] as num?)?.toDouble() ?? 0.0) > 0 ? existing['equity'] : localSnapshot['equity'],
+          'marginFree': ((existing['marginFree'] as num?)?.toDouble() ?? 0.0) > 0 ? existing['marginFree'] : localSnapshot['marginFree'],
+          'margin': existing['margin'] ?? localSnapshot['margin'],
+          'margin_level': existing['margin_level'] ?? localSnapshot['margin_level'],
+          'total_pl': existing['total_pl'] ?? localSnapshot['total_pl'],
+          'currency': existing['currency'] ?? localSnapshot['currency'],
+          'displayCurrency': existing['displayCurrency'] ?? localSnapshot['displayCurrency'],
+          'dataSource': existing['dataSource'] == 'live' ? 'live' : localSnapshot['dataSource'],
+          'warning': existing['warning'] ?? localSnapshot['warning'],
+        };
+      }
+      return merged;
+    }
+
+    merged.add(Map<String, dynamic>.from(localSnapshot));
+    return merged;
+  }
+
   Future<void> _setReportingCurrency(String currency) async {
     final normalized = _normalizeCurrency(currency) == 'ZAR' ? 'ZAR' : 'USD';
     final prefs = await SharedPreferences.getInstance();
@@ -628,6 +730,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _brokerBalancesLoading = true);
     try {
       final prefs = await SharedPreferences.getInstance();
+      final localSnapshot = await _loadLocalBrokerSnapshot();
       final sessionToken = prefs.getString('auth_token');
       if (sessionToken == null || sessionToken.isEmpty) {
         throw Exception('No auth token');
@@ -645,9 +748,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success'] == true && mounted) {
+          final mergedAccounts = _mergeLocalSnapshotIntoAccounts(
+            List<Map<String, dynamic>>.from(data['accounts'] ?? []),
+            localSnapshot,
+          );
           // Calculate balance changes vs session start (set once, never overwritten)
           final newChanges = <String, double>{};
-          for (final account in (data['accounts'] ?? [])) {
+          for (final account in mergedAccounts) {
             final key = '${account['broker']}_${account['accountNumber']}';
             final currentBalance = (account['balance'] as num?)?.toDouble() ?? 0;
             // Only record the starting balance the very first time we see this account
@@ -656,8 +763,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
           
           setState(() {
-            _brokerAccounts = List<Map<String, dynamic>>.from(data['accounts'] ?? []);
-            _totalBrokerBalance = (data['totalBalance'] as num?)?.toDouble() ?? 0;
+            _brokerAccounts = mergedAccounts;
+            _totalBrokerBalance = mergedAccounts.fold<double>(
+              0.0,
+              (sum, account) => sum + ((account['balance'] as num?)?.toDouble() ?? 0.0),
+            );
             _balanceChanges = newChanges;
           });
         }
@@ -666,6 +776,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     } catch (e) {
       print('DEBUG: Broker balance fetch error: $e');
+      final localSnapshot = await _loadLocalBrokerSnapshot();
+      if (mounted && localSnapshot != null) {
+        setState(() {
+          _brokerAccounts = _mergeLocalSnapshotIntoAccounts([], localSnapshot);
+          _totalBrokerBalance = (localSnapshot['balance'] as num?)?.toDouble() ?? 0.0;
+        });
+      }
       rethrow; // Propagate error for retry logic
     } finally {
       if (mounted) setState(() => _brokerBalancesLoading = false);
