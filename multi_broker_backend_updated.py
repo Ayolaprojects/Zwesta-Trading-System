@@ -14379,8 +14379,11 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     bot_state['accountId'] = row['broker_account_id']
     bot_state['credentialId'] = row['credential_id']
     broker_name = canonicalize_broker_name(row['broker_name']) if row['broker_name'] else 'MT5'
+    account_number = str(row['account_number'] or '').strip()
     bot_state['brokerName'] = broker_name
     bot_state['broker_type'] = bot_state.get('broker_type') or broker_name
+    bot_state['accountNumber'] = bot_state.get('accountNumber') or account_number
+    bot_state['account_number'] = bot_state.get('account_number') or bot_state['accountNumber']
     bot_state['mode'] = bot_state.get('mode') or ('live' if row['is_live'] else 'demo')
     if row['credential_id']:
         credential_conn = None
@@ -14442,6 +14445,25 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     elif bot_state['signalThresholdMode'] != 'manual':
         bot_state['signalThresholdMode'] = 'auto'
     bot_state['signalThreshold'] = bot_state.get('signalThreshold') or BOT_MANAGEMENT_PROFILES[bot_state['managementProfile']]['signalThreshold']
+    cadence_floor = _minimum_saved_bot_trade_cadence(
+        bot_state.get('strategy', row['strategy']),
+        bot_state['managementProfile'],
+        bool(bot_state.get('intelligentScanner', False)),
+    )
+    cadence_migrated = False
+    if str(bot_state.get('tradingMode') or '').strip().lower() != cadence_floor['tradingMode']:
+        bot_state['tradingMode'] = cadence_floor['tradingMode']
+        cadence_migrated = True
+    current_trading_interval = int(bot_state.get('tradingInterval') or 0)
+    if current_trading_interval <= 0 or current_trading_interval > cadence_floor['tradingInterval']:
+        bot_state['tradingInterval'] = cadence_floor['tradingInterval']
+        cadence_migrated = True
+    current_poll_interval = int(bot_state.get('pollInterval') or 0)
+    if current_poll_interval <= 0 or current_poll_interval > cadence_floor['pollInterval']:
+        bot_state['pollInterval'] = cadence_floor['pollInterval']
+        cadence_migrated = True
+    if cadence_migrated:
+        bot_state['_cadenceMigrationApplied'] = True
     restored_symbols = bot_state.get('symbols') or (row['symbols'].split(',') if row['symbols'] else ['EURUSDm'])
     bot_state['symbols'] = validate_and_correct_symbols(restored_symbols, broker_name)
     bot_state['tradeHistory'] = bot_state.get('tradeHistory') or []
@@ -14846,6 +14868,7 @@ def load_user_bots_from_database(enabled_only: bool = False):
                 ub.runtime_state,
                 bc.credential_id,
                 bcr.broker_name,
+                bcr.account_number,
                 bcr.is_live,
                 bcr.account_currency,
                 bcr.cached_balance,
@@ -14867,7 +14890,10 @@ def load_user_bots_from_database(enabled_only: bool = False):
             if bot_id in active_bots:
                 continue
 
-            active_bots[bot_id] = _restore_bot_runtime_state(row)
+            restored_bot = _restore_bot_runtime_state(row)
+            active_bots[bot_id] = restored_bot
+            if restored_bot.pop('_cadenceMigrationApplied', False):
+                persist_bot_runtime_state(bot_id, force=True)
             bots_loaded += 1
         
         conn.close()
@@ -19076,6 +19102,37 @@ def _default_strategy_trading_cadence(strategy_name: str, management_profile: st
     return {'tradingMode': 'signal-driven', 'tradingInterval': base_interval, 'pollInterval': base_poll}
 
 
+def _minimum_saved_bot_trade_cadence(
+    strategy_name: str,
+    management_profile: str,
+    intelligent_scanner: bool = False,
+) -> Dict[str, int]:
+    normalized_strategy = str(strategy_name or '').strip().lower()
+    normalized_profile = _normalize_management_profile(management_profile)
+
+    if normalized_strategy == 'scalping':
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 30, 'pollInterval': 2}
+
+    if normalized_strategy in {'momentum trading', 'breakout trading'}:
+        if normalized_profile in {'advanced', 'fast_growth'}:
+            return {'tradingMode': 'signal-driven', 'tradingInterval': 60, 'pollInterval': 5}
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 90, 'pollInterval': 8}
+
+    if normalized_strategy == 'swing trend dca':
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 300, 'pollInterval': 30}
+
+    if intelligent_scanner:
+        if normalized_profile in {'advanced', 'fast_growth'}:
+            return {'tradingMode': 'signal-driven', 'tradingInterval': 60, 'pollInterval': 5}
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 120, 'pollInterval': 10}
+
+    if normalized_profile in {'advanced', 'fast_growth'}:
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 60, 'pollInterval': 5}
+    if normalized_profile == 'balanced':
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 90, 'pollInterval': 8}
+    return {'tradingMode': 'signal-driven', 'tradingInterval': 120, 'pollInterval': 12}
+
+
 def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
     strategy_name = str(bot_config.get('strategy') or '').strip().lower()
     configured_symbols = bot_config.get('symbols') or []
@@ -19155,12 +19212,30 @@ def _resolve_runtime_trade_cadence(
         target_interval = min(target_interval, 180 if base_symbol in {'BTCUSD', 'ETHUSD'} else 240)
         target_poll = min(target_poll, 6 if base_symbol in {'BTCUSD', 'ETHUSD'} else 10)
 
+    # Treat the saved cadence as the maximum wait between scans so migrated
+    # high-frequency bots are not slowed back down by adaptive runtime logic.
+    target_interval = min(target_interval, base_interval)
+    target_poll = min(target_poll, base_poll)
+
     target_interval = max(60, min(target_interval, 600))
     target_poll = max(2, min(target_poll, max(2, target_interval // 2)))
     return {
         'tradingInterval': target_interval,
         'pollInterval': target_poll,
     }
+
+
+def _max_trades_per_30_minutes(bot_config: Dict[str, Any], strategy_name: str) -> int:
+    profile = _normalize_management_profile(bot_config.get('managementProfile'))
+    normalized_strategy = str(strategy_name or '').strip().lower()
+
+    if normalized_strategy == 'scalping':
+        return 6
+    if profile in {'advanced', 'fast_growth'}:
+        return 5
+    if profile == 'balanced':
+        return 4
+    return 3
 
 
 def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -21124,6 +21199,21 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
         warnings,
     )
 
+    cadence_floor = _minimum_saved_bot_trade_cadence(
+        data.get('strategy', 'Trend Following'),
+        management_profile,
+        intelligent_scanner,
+    )
+    if trading_mode != cadence_floor['tradingMode']:
+        trading_mode = cadence_floor['tradingMode']
+        warnings.append('legacy trading mode migrated to signal-driven cadence')
+    if trading_interval > cadence_floor['tradingInterval']:
+        trading_interval = cadence_floor['tradingInterval']
+        warnings.append(f"tradingInterval migrated to {trading_interval}s for active cadence")
+    if poll_interval > cadence_floor['pollInterval']:
+        poll_interval = cadence_floor['pollInterval']
+        warnings.append(f"pollInterval migrated to {poll_interval}s for active cadence")
+
     if management_mode == 'assisted':
         max_open_positions = min(max_open_positions, profile_defaults['maxOpenPositions'])
         max_positions_per_symbol = min(max_positions_per_symbol, profile_defaults['maxPositionsPerSymbol'])
@@ -21482,6 +21572,8 @@ def create_bot():
                 'accountId': account_id,
                 'brokerName': broker_name,
                 'broker_type': broker_name,
+                'accountNumber': account_number,
+                'account_number': account_number,
                 'mode': mode,
                 'credentialId': credential_id,
                 'symbols': symbols,
@@ -22635,7 +22727,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
 
                         # Skip if trend following has already placed 3+ trades in last 30 minutes (over-trading filter)
                         recent_trade_history = bot_config.get('tradeHistory', [])
-                        if strategy_name == 'Trend Following' and recent_trade_history:
+                        if recent_trade_history:
+                            trade_cap_30min = _max_trades_per_30_minutes(bot_config, strategy_name)
                             now_timestamp = datetime.now().timestamp()
                             recent_trades_30min = []
                             for t in recent_trade_history:
@@ -22647,10 +22740,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         recent_trades_30min.append(t)
                                 except:
                                     pass
-                            if len(recent_trades_30min) >= 3:
+                            if len(recent_trades_30min) >= trade_cap_30min:
                                 logger.info(
                                     f"⏭️ Bot {bot_id}: Already placed {len(recent_trades_30min)} trades in last 30min "
-                                    f"- cooling down to avoid over-trading chop"
+                                    f"(limit {trade_cap_30min}) - cooling down to avoid over-trading chop"
                                 )
                                 continue
 
@@ -23471,7 +23564,35 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 adaptive_note = ''
                 if adaptive_offset > 0:
                     adaptive_note = f" | Next threshold: {max(adaptive_threshold_floor, base_signal_threshold - adaptive_offset)}/{base_signal_threshold}"
-                logger.info(f"✅ Bot {bot_id}: Cycle #{trade_cycle} complete | Trades placed: {trades_placed} | Open positions: {open_pos_count} | Total P&L: {bot_config.get('totalProfit', 0):.2f} {display_currency}{adaptive_note}")
+                no_trade_reason = None
+                no_trade_note = ''
+                if trades_placed == 0:
+                    effective_max_open_positions = int(
+                        bot_config.get('effectiveMaxOpenPositions')
+                        or bot_config.get('maxOpenPositions')
+                        or 0
+                    )
+                    if bot_config.get('status') == 'PAUSED' and bot_config.get('pauseReason'):
+                        no_trade_reason = str(bot_config.get('pauseReason'))
+                    elif effective_max_open_positions > 0 and open_pos_count >= effective_max_open_positions:
+                        no_trade_reason = (
+                            f"position limit reached ({open_pos_count}/{effective_max_open_positions})"
+                        )
+                    elif configured_signal_hits == 0 and scanner_signal_hits == 0:
+                        no_trade_reason = (
+                            f"no qualifying setups (best={best_signal_symbol or 'n/a'}:{best_signal_strength:.0f}/100, "
+                            f"threshold={signal_threshold}/100)"
+                        )
+                    else:
+                        no_trade_reason = 'setup passed signal scan but was blocked by entry filters or broker checks'
+                    if no_trade_reason:
+                        bot_config['lastNoTradeReason'] = no_trade_reason
+                        bot_config['lastNoTradeAt'] = datetime.now().isoformat()
+                        no_trade_note = f" | No trade reason: {no_trade_reason}"
+                else:
+                    bot_config['lastNoTradeReason'] = None
+                    bot_config['lastNoTradeAt'] = None
+                logger.info(f"✅ Bot {bot_id}: Cycle #{trade_cycle} complete | Trades placed: {trades_placed} | Open positions: {open_pos_count} | Total P&L: {bot_config.get('totalProfit', 0):.2f} {display_currency}{adaptive_note}{no_trade_note}")
                 
                 # DUAL MODE: TIME-BASED vs SIGNAL-DRIVEN waiting
                 if trading_mode == 'signal-driven':
@@ -23953,6 +24074,8 @@ def quick_create_bot():
                 'accountId': account_id,
                 'brokerName': broker_name,
                 'broker_type': broker_name,
+                'accountNumber': account_number,
+                'account_number': account_number,
                 'mode': mode,
                 'credentialId': credential_id,
                 'symbols': symbols,
@@ -24603,6 +24726,15 @@ def bot_summary():
             bot_mode_value = (bot.get('mode') or 'demo')
             bot_is_live = str(bot_mode_value).lower() == 'live'
             display_currency = _resolve_display_currency_for_mode(bot_mode_value, bot.get('displayCurrency', 'USD'))
+            broker_name = canonicalize_broker_name(bot.get('brokerName') or bot.get('broker_type') or bot.get('broker') or 'MT5')
+            account_number = str(bot.get('accountNumber') or bot.get('account_number') or '').strip()
+            if not account_number:
+                account_id = str(bot.get('accountId') or '').strip()
+                broker_prefix = f"{broker_name}_"
+                if account_id.lower().startswith(broker_prefix.lower()):
+                    account_number = account_id[len(broker_prefix):].strip()
+                elif '_' in account_id:
+                    account_number = account_id.split('_', 1)[1].strip()
             promotion_state = _get_demo_promotion_state(bot, current_profit, total_trades)
             last_strategy_selection = bot.get('lastStrategySelection') if isinstance(bot.get('lastStrategySelection'), dict) else None
             strategy_history = bot.get('strategyHistory') if isinstance(bot.get('strategyHistory'), list) else []
@@ -24688,6 +24820,8 @@ def bot_summary():
                 'enabled': bot.get('enabled', True),
                 'status': 'Active' if bot.get('enabled', True) else 'Inactive',
                 'pauseReason': bot.get('pauseReason'),
+                'lastNoTradeReason': bot.get('lastNoTradeReason'),
+                'lastNoTradeAt': bot.get('lastNoTradeAt'),
                 'stopReason': bot.get('stopReason'),
                 'lastPauseEvent': bot.get('lastPauseEvent'),
                 'displayCurrency': display_currency,
@@ -24714,7 +24848,10 @@ def bot_summary():
                 'managementState': bot.get('managementState', 'normal'),
                 'drawdownPauseUntil': bot.get('drawdownPauseUntil'),
                 'lastTradeTime': last_trade_time,
+                'brokerName': broker_name,
                 'broker_type': bot.get('broker_type', 'MT5'),
+                'accountNumber': account_number,
+                'account_number': account_number,
                 'mode': str(bot_mode_value).upper(),
                 'is_live': bot_is_live,
                 'accountBalance': round(bot.get('accountBalance', 0), 2),
@@ -31195,51 +31332,46 @@ if WEBSOCKET_AVAILABLE and sock is not None:
         Server sends: { 'type': 'price', 'symbol': 'EURUSD', 'bid': 1.2345, 'ask': 1.2347, 'timestamp': ... }
         """
         client_info = {'ws': ws, 'symbols': set(), 'broker': 'Exness'}
-        
+
         with ws_clients_lock:
             ws_clients.append(client_info)
-        
+
         logger.info(f"✅ WebSocket client connected (total: {len(ws_clients)})")
-        
+
         try:
             while True:
                 message = ws.receive()
-                
                 if message is None:
                     break
-                
+
                 try:
                     data = json.loads(message)
-                    action = data.get('action')
-                    
-                    if action == 'subscribe':
-                        symbols = data.get('symbols', [])
-                        broker = data.get('broker', 'Exness')
-                        client_info['symbols'].update(symbols)
-                        client_info['broker'] = broker
-                        logger.info(f"✅ Client subscribed to: {symbols}")
-                        
-                        ws.send(json.dumps({
-                            'type': 'subscribed',
-                            'symbols': list(client_info['symbols']),
-                            'broker': broker,
-                            'timestamp': time.time()
-                        }))
-                    
-                    elif action == 'unsubscribe':
-                        symbols = data.get('symbols', [])
-                        client_info['symbols'].difference_update(symbols)
-                        logger.info(f"Client unsubscribed from: {symbols}")
-                    
-                    elif action == 'ping':
-                        ws.send(json.dumps({
-                            'type': 'pong',
-                            'timestamp': time.time()
-                        }))
-                
                 except json.JSONDecodeError:
-                    pass
-        
+                    continue
+
+                action = data.get('action')
+
+                if action == 'subscribe':
+                    symbols = data.get('symbols', [])
+                    broker = data.get('broker', 'Exness')
+                    client_info['symbols'].update(symbols)
+                    client_info['broker'] = broker
+                    logger.info('Client subscribed to: %s', symbols)
+                    ws.send(json.dumps({
+                        'type': 'subscribed',
+                        'symbols': list(client_info['symbols']),
+                        'broker': broker,
+                        'timestamp': time.time(),
+                    }))
+                elif action == 'unsubscribe':
+                    symbols = data.get('symbols', [])
+                    client_info['symbols'].difference_update(symbols)
+                    logger.info('Client unsubscribed from: %s', symbols)
+                elif action == 'ping':
+                    ws.send(json.dumps({
+                        'type': 'pong',
+                        'timestamp': time.time(),
+                    }))
         except Exception as e:
             logger.debug(f"WebSocket connection ended: {e}")
         finally:
