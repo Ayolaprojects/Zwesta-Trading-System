@@ -11969,6 +11969,16 @@ def _get_symbol_catalog_for_request(broker_name: str) -> Dict[str, List[Dict[str
     if canonicalize_broker_name(broker_name) != 'FXCM':
         return FXCM_SYMBOL_CONFIG
 
+    skip_tradability = str(request.args.get('skip_tradability') or '').strip().lower() in {
+        '1',
+        'true',
+        'yes',
+        'on',
+    }
+    if skip_tradability:
+        logger.info('[FXCM] Skipping tradability lookup for symbol catalog request')
+        return FXCM_SYMBOL_CONFIG
+
     session_token = str(request.headers.get('X-Session-Token') or '').strip()
     credential_id = str(request.args.get('credential_id') or '').strip()
     credential_row = _get_fxcm_credential_for_catalog(session_token, credential_id)

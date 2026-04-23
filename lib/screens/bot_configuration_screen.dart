@@ -1755,11 +1755,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       final activeCredential = _brokerService.activeCredential;
       final queryParameters = <String, String>{};
       final activeBroker = activeCredential?.broker ?? _activeBrokerName;
+      final normalizedBroker = activeBroker.toLowerCase().trim();
       if (activeBroker.isNotEmpty) {
         queryParameters['broker'] = activeBroker;
       }
       if (activeCredential != null && activeCredential.credentialId.isNotEmpty) {
         queryParameters['credential_id'] = activeCredential.credentialId;
+      }
+      if (normalizedBroker == 'fxcm') {
+        queryParameters['skip_tradability'] = '1';
       }
       final uri = Uri.parse(
         '${EnvironmentConfig.apiUrl}/api/commodities/list',
