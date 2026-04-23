@@ -110,6 +110,27 @@ def has_fxcm_connection_credentials(credentials: Optional[Dict[str, Any]]) -> bo
     return bool(api_key or (username and password))
 
 
+def should_run_fxcm_price_fallback() -> bool:
+    explicit_opt_in = str(
+        os.getenv('FXCM_ENABLE_BACKGROUND_PRICE_FALLBACK', '') or ''
+    ).strip().lower() in {'1', 'true', 'yes', 'on'}
+    if explicit_opt_in:
+        return True
+
+    for bot in list(active_bots.values()):
+        broker_name = canonicalize_broker_name(
+            bot.get('brokerName') or bot.get('broker_type') or ''
+        )
+        if broker_name == 'FXCM' and bool(bot.get('enabled', False)):
+            return True
+
+        connection = bot.get('_fxcm_conn')
+        if isinstance(connection, FXCMConnection):
+            return True
+
+    return False
+
+
 _FXCM_LOG_COOLDOWN_SECONDS = 300
 _fxcm_log_cooldowns: Dict[str, float] = {}
 _fxcm_log_cooldown_lock = threading.Lock()
@@ -1059,8 +1080,8 @@ MT5_CONFIG = get_exness_mt5_config()
 
 FXCM_CONFIG = {
     'broker': 'FXCM',
-    'login': os.getenv('FXCM_LOGIN', 'D291208899').strip(),
-    'password': os.getenv('FXCM_PASSWORD', 'Oaxm3').strip(),
+    'login': os.getenv('FXCM_LOGIN', '').strip(),
+    'password': os.getenv('FXCM_PASSWORD', '').strip(),
     'token': os.getenv('FXCM_TOKEN', '').strip(),  # Optional pre-generated API token
     'server': os.getenv('FXCM_SERVER', 'demo').strip(),  # 'demo' or 'real'
     'is_live': os.getenv('FXCM_SERVER', 'demo').strip().lower() == 'real',
@@ -17163,67 +17184,72 @@ def live_market_data_updater():
                 # When MT5 is not connected (e.g. pure-FXCM VPS), pull live bid/ask
                 # from the FXCM ForexConnect helper and seed commodity_market_data so
                 # technical indicators work instead of returning flat RANGING signals.
-                try:
-                    _fxcm_conn = None
-                    # Find any connected FXCM connection from active bots
-                    for _bid, _bot in list(active_bots.items()):
-                        _bconn = _bot.get('_fxcm_conn')
-                        if isinstance(_bconn, FXCMConnection) and _bconn.is_connected():
-                            _fxcm_conn = _bconn
-                            break
-                    # Fallback: build a lightweight FXCM connection from .env credentials
-                    if _fxcm_conn is None:
-                        _fxcm_login = str(os.getenv('FXCM_LOGIN', '') or '').strip()
-                        _fxcm_pw = str(os.getenv('FXCM_PASSWORD', '') or '').strip()
-                        _fxcm_srv = str(os.getenv('FXCM_SERVER', 'demo') or 'demo').strip()
-                        if _fxcm_login and _fxcm_pw:
-                            _fxcm_conn = FXCMConnection(credentials={
-                                'username': _fxcm_login,
-                                'account_number': _fxcm_login,
-                                'password': _fxcm_pw,
-                                'server': _fxcm_srv,
-                                'is_live': _fxcm_srv.lower() in ('real', 'live'),
-                            })
-                    if _fxcm_conn is not None:
-                        _price_result = _fxcm_conn._run_forexconnect_helper('get_prices', timeout=15)
-                        if _price_result and _price_result.get('success'):
-                            _fxcm_prices = _price_result.get('prices') or {}
-                            _fxcm_updated = 0
-                            _special_map = {'GOLD': 'XAUUSD', 'SILVER': 'XAGUSD', 'OIL': 'USOIL'}
-                            with market_data_lock:
-                                now_ts = time.time()
-                                for _instrument, _pdata in _fxcm_prices.items():
-                                    _key = _instrument.replace('/', '').replace(' ', '').upper()
-                                    _key = _special_map.get(_key, _key)
-                                    if _key not in commodity_market_data:
-                                        continue
-                                    _mid = float(_pdata.get('price') or 0)
-                                    if _mid <= 0:
-                                        continue
-                                    commodity_market_data[_key]['current_price'] = _mid
-                                    commodity_market_data[_key]['price'] = _mid
-                                    _hist = commodity_market_data[_key].get('price_history') or []
-                                    if not _hist or _hist[-1] != _mid:
-                                        _hist.append(_mid)
-                                        if len(_hist) > 100:
-                                            _hist = _hist[-100:]
-                                        commodity_market_data[_key]['price_history'] = _hist
-                                    # Re-evaluate signal once we have ≥20 varied data points
-                                    _varied = len(set(round(p, 6) for p in _hist[-20:])) >= 3
-                                    if _varied and len(_hist) >= 20:
-                                        _sig = evaluate_real_trade_signal(_key, commodity_market_data[_key])
-                                        _str = max(0.0, min(100.0, _safe_float(_sig.get('strength'), 0.0)))
-                                        commodity_market_data[_key]['signal_strength'] = _str
-                                        commodity_market_data[_key]['signalStrength'] = _str
-                                        commodity_market_data[_key]['signalPercentage'] = round(_str, 1)
-                                        if _str > 0:
-                                            _pfx = '🟢 ' if 'BUY' in _sig['signal'] else '🔴 ' if 'SELL' in _sig['signal'] else '🟡 '
-                                            commodity_market_data[_key]['signal'] = _pfx + _sig['signal']
-                                    _fxcm_updated += 1
-                            if _fxcm_updated > 0:
-                                logger.info(f"📡 FXCM price fallback: updated {_fxcm_updated} symbols from ForexConnect")
-                except Exception as _fxcm_err:
-                    logger.debug(f"FXCM price fallback error: {_fxcm_err}")
+                if should_run_fxcm_price_fallback():
+                    try:
+                        _fxcm_conn = None
+                        # Find any connected FXCM connection from active bots
+                        for _bid, _bot in list(active_bots.items()):
+                            _bconn = _bot.get('_fxcm_conn')
+                            if isinstance(_bconn, FXCMConnection) and _bconn.is_connected():
+                                _fxcm_conn = _bconn
+                                break
+                        # Fallback: build a lightweight FXCM connection from .env credentials,
+                        # but only when background FXCM fallback is explicitly enabled.
+                        if _fxcm_conn is None:
+                            _fxcm_login = str(os.getenv('FXCM_LOGIN', '') or '').strip()
+                            _fxcm_pw = str(os.getenv('FXCM_PASSWORD', '') or '').strip()
+                            _fxcm_srv = str(os.getenv('FXCM_SERVER', 'demo') or 'demo').strip()
+                            _fxcm_env_fallback_enabled = str(
+                                os.getenv('FXCM_ENABLE_BACKGROUND_PRICE_FALLBACK', '') or ''
+                            ).strip().lower() in {'1', 'true', 'yes', 'on'}
+                            if _fxcm_env_fallback_enabled and _fxcm_login and _fxcm_pw:
+                                _fxcm_conn = FXCMConnection(credentials={
+                                    'username': _fxcm_login,
+                                    'account_number': _fxcm_login,
+                                    'password': _fxcm_pw,
+                                    'server': _fxcm_srv,
+                                    'is_live': _fxcm_srv.lower() in ('real', 'live'),
+                                })
+                        if _fxcm_conn is not None:
+                            _price_result = _fxcm_conn._run_forexconnect_helper('get_prices', timeout=15)
+                            if _price_result and _price_result.get('success'):
+                                _fxcm_prices = _price_result.get('prices') or {}
+                                _fxcm_updated = 0
+                                _special_map = {'GOLD': 'XAUUSD', 'SILVER': 'XAGUSD', 'OIL': 'USOIL'}
+                                with market_data_lock:
+                                    now_ts = time.time()
+                                    for _instrument, _pdata in _fxcm_prices.items():
+                                        _key = _instrument.replace('/', '').replace(' ', '').upper()
+                                        _key = _special_map.get(_key, _key)
+                                        if _key not in commodity_market_data:
+                                            continue
+                                        _mid = float(_pdata.get('price') or 0)
+                                        if _mid <= 0:
+                                            continue
+                                        commodity_market_data[_key]['current_price'] = _mid
+                                        commodity_market_data[_key]['price'] = _mid
+                                        _hist = commodity_market_data[_key].get('price_history') or []
+                                        if not _hist or _hist[-1] != _mid:
+                                            _hist.append(_mid)
+                                            if len(_hist) > 100:
+                                                _hist = _hist[-100:]
+                                            commodity_market_data[_key]['price_history'] = _hist
+                                        # Re-evaluate signal once we have ≥20 varied data points
+                                        _varied = len(set(round(p, 6) for p in _hist[-20:])) >= 3
+                                        if _varied and len(_hist) >= 20:
+                                            _sig = evaluate_real_trade_signal(_key, commodity_market_data[_key])
+                                            _str = max(0.0, min(100.0, _safe_float(_sig.get('strength'), 0.0)))
+                                            commodity_market_data[_key]['signal_strength'] = _str
+                                            commodity_market_data[_key]['signalStrength'] = _str
+                                            commodity_market_data[_key]['signalPercentage'] = round(_str, 1)
+                                            if _str > 0:
+                                                _pfx = '🟢 ' if 'BUY' in _sig['signal'] else '🔴 ' if 'SELL' in _sig['signal'] else '🟡 '
+                                                commodity_market_data[_key]['signal'] = _pfx + _sig['signal']
+                                        _fxcm_updated += 1
+                                if _fxcm_updated > 0:
+                                    logger.info(f"📡 FXCM price fallback: updated {_fxcm_updated} symbols from ForexConnect")
+                    except Exception as _fxcm_err:
+                        logger.debug(f"FXCM price fallback error: {_fxcm_err}")
                 # ─────────────────────────────────────────────────────────────────
             
             time.sleep(update_interval)
