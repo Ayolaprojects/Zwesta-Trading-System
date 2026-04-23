@@ -37,7 +37,7 @@ except ImportError:
     print("[WARNING] flask-sock not installed. WebSocket prices disabled. Install with: pip install flask-sock")
 import logging
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from enum import Enum
 import sys
 import atexit
@@ -4572,8 +4572,21 @@ class MT5Connection(BrokerConnection):
 
             info = self.mt5.account_info()
             if info is None:
-                logger.warning("MT5 account_info() returned None while fetching account details")
+                last_error = None
+                try:
+                    last_error = self.mt5.last_error()
+                except Exception:
+                    last_error = None
+                logger.warning(f"MT5 account_info() returned None while fetching account details; last_error={last_error}")
                 return None
+
+            def _safe_float(value, default: float = 0.0) -> float:
+                try:
+                    if value is None:
+                        return default
+                    return float(value)
+                except (TypeError, ValueError):
+                    return default
             
             # Get positions for aggregate data
             positions = self.mt5.positions_get()
@@ -4586,9 +4599,12 @@ class MT5Connection(BrokerConnection):
             total_pending = len(orders) if orders else 0
             
             # Calculate additional metrics
-            floating_pl = round(float(info.profit), 2) if hasattr(info, 'profit') else 0
-            used_margin = round(float(info.margin), 2)
-            free_margin = round(float(info.margin_free), 2)
+            balance = round(_safe_float(getattr(info, 'balance', None)), 2)
+            equity = round(_safe_float(getattr(info, 'equity', None)), 2)
+            floating_pl = round(_safe_float(getattr(info, 'profit', None)), 2)
+            used_margin = round(_safe_float(getattr(info, 'margin', None)), 2)
+            free_margin = round(_safe_float(getattr(info, 'margin_free', None)), 2)
+            margin_level = round(_safe_float(getattr(info, 'margin_level', None)), 2)
             margin_percentage = (used_margin / (used_margin + free_margin) * 100) if (used_margin + free_margin) > 0 else 0
             account_currency = str(getattr(info, 'currency', 'USD') or 'USD').upper()
             
@@ -4602,15 +4618,15 @@ class MT5Connection(BrokerConnection):
                 'displayCurrency': account_currency,
                 
                 # === BALANCE & EQUITY ===
-                'balance': round(float(info.balance), 2),
-                'equity': round(float(info.equity), 2),
+                'balance': balance,
+                'equity': equity,
                 'floatingPL': floating_pl,
-                'realizedPL': round(float(info.balance) - float(info.equity), 2),  # Closed P&L
+                'realizedPL': round(balance - equity, 2),  # Closed P&L
                 
                 # === MARGIN METRICS ===
                 'margin': used_margin,
                 'marginFree': free_margin,
-                'marginLevel': round(float(info.margin_level), 2),
+                'marginLevel': margin_level,
                 'marginPercentage': round(margin_percentage, 2),
                 'usedMarginPercentage': round((used_margin / (used_margin + free_margin) * 100), 2) if (used_margin + free_margin) > 0 else 0,
                 
@@ -6296,6 +6312,36 @@ class FXCMConnection(BrokerConnection):
             logger.error(f"Error getting FXCM account info: {e}")
 
         return {}
+
+    def get_tradable_symbols(self) -> Optional[List[str]]:
+        try:
+            if self._can_use_forexconnect_helper():
+                result = self._run_forexconnect_helper('list_symbols', timeout=60)
+                if result and result.get('success'):
+                    symbols = result.get('symbols') or []
+                    return [str(symbol).strip() for symbol in symbols if str(symbol).strip()]
+
+            if not self.forexconnect_mode or not self.forexconnect_client:
+                return None
+
+            from forexconnect import ForexConnect  # type: ignore
+
+            offers_table = self.forexconnect_client.get_table(ForexConnect.OFFERS)
+            if offers_table is None:
+                return []
+
+            symbols = []
+            for offer in offers_table:
+                if not self._is_tradeable_forexconnect_offer(offer):
+                    continue
+                instrument = str(getattr(offer, 'instrument', '') or '').strip()
+                if instrument and instrument not in symbols:
+                    symbols.append(instrument)
+            return symbols
+        except Exception as e:
+            self.last_error = str(e)
+            logger.error(f"Error getting FXCM tradable symbols: {e}")
+            return None
 
     def get_positions(self) -> List[Dict]:
         try:
@@ -10048,7 +10094,7 @@ def list_commodities():
             broker_name = canonicalize_broker_name(
                 request.args.get('broker') or request.args.get('broker_name') or 'Exness'
             )
-            symbol_config = FXCM_SYMBOL_CONFIG if broker_name == 'FXCM' else {
+            symbol_config = _get_symbol_catalog_for_request(broker_name) if broker_name == 'FXCM' else {
                 'forex': [
                     {'symbol': 'EURUSD', 'name': '💱 Euro vs US Dollar', 'min_price': 1.08, 'max_price': 1.12},
                     {'symbol': 'GBPUSD', 'name': '💱 British Pound vs US Dollar', 'min_price': 1.26, 'max_price': 1.30},
@@ -10571,6 +10617,7 @@ def get_account_detailed():
             broker_name = canonicalize_broker_name(cred.get('broker_name'))
             account_num = cred['account_number']
             account_info = None
+            skip_cached_snapshot = False
             
             try:
                 # ==================== EXNESS / MT5 ====================
@@ -10599,6 +10646,7 @@ def get_account_detailed():
                                     f"requested {account_num}, active MT5 session returned {fetched_account or 'unknown'}"
                                 )
                                 account_info = None
+                                skip_cached_snapshot = True
                             else:
                                 account_info['broker'] = broker_name
                                 account_info['credential_id'] = cred['credential_id']
@@ -10660,7 +10708,7 @@ def get_account_detailed():
                         oanda_conn.disconnect()
                 
                 # Backup to cached data if live fetch failed
-                if not account_info:
+                if not account_info and not skip_cached_snapshot:
                     cached_balance = float(cred.get('cached_balance') or 0)
                     if cached_balance > 0 or cred.get('cached_equity'):
                         account_info = {
@@ -10678,7 +10726,7 @@ def get_account_detailed():
                             'dataSource': 'cached',
                         }
                 
-                if account_info:
+                if account_info and account_info.get('dataSource') != 'cached':
                     persist_account_snapshot(
                         broker_name,
                         account_num,
@@ -10686,6 +10734,7 @@ def get_account_detailed():
                         credential_id=cred.get('credential_id'),
                         user_id=user_id,
                     )
+                if account_info:
                     accounts_data.append(account_info)
                     
             except Exception as e:
@@ -11592,6 +11641,223 @@ def get_mt5_ready_symbols_for_broker(broker_name: str) -> List[str]:
     if normalized_broker == 'FXCM':
         return list(FXCM_SAFE_SYMBOLS)
     return sorted(VALID_SYMBOLS)
+
+
+def _resolve_user_id_from_session_token(session_token: str) -> Optional[str]:
+    token = str(session_token or '').strip()
+    if not token:
+        return None
+
+    cached_session = TEMP_SESSION_CACHE.get(token)
+    if cached_session:
+        try:
+            expires_at = datetime.fromisoformat(cached_session['expires_at'])
+            if expires_at >= datetime.now():
+                return str(cached_session['user_id'])
+        except Exception:
+            pass
+        TEMP_SESSION_CACHE.pop(token, None)
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT user_id, expires_at
+            FROM user_sessions
+            WHERE token = ? AND is_active = 1
+            ''',
+            (token,),
+        )
+        session = cursor.fetchone()
+        if not session:
+            return None
+
+        expires_at = str(session['expires_at'] or '').strip()
+        if expires_at:
+            try:
+                if datetime.fromisoformat(expires_at) < datetime.now():
+                    return None
+            except Exception:
+                pass
+        return str(session['user_id'])
+    except Exception as exc:
+        logger.warning(f"Could not resolve user from session token for symbol catalog lookup: {exc}")
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _normalize_fxcm_symbol_key(symbol: str) -> str:
+    normalized = normalize_symbol_for_broker(symbol, 'FXCM') or str(symbol or '').strip()
+    return normalized.upper().replace('/', '').replace('_', '').replace(' ', '')
+
+
+def _get_fxcm_symbol_candidate_keys(symbol: str) -> Set[str]:
+    raw_symbol = str(symbol or '').strip()
+    if not raw_symbol:
+        return set()
+
+    raw_key = raw_symbol.upper().replace('/', '').replace('_', '').replace(' ', '')
+    normalized_key = _normalize_fxcm_symbol_key(raw_symbol)
+    candidate_keys: Set[str] = {key for key in {raw_key, normalized_key} if key}
+
+    for items in FXCM_SYMBOL_CONFIG.values():
+        for item in items:
+            configured_symbol = str(item.get('symbol') or '').strip()
+            configured_key = _normalize_fxcm_symbol_key(configured_symbol)
+            if configured_symbol.lower() == raw_symbol.lower() or configured_key in candidate_keys:
+                if configured_key:
+                    candidate_keys.add(configured_key)
+                analysis_symbol = str(item.get('analysis_symbol') or '').strip()
+                if analysis_symbol:
+                    candidate_keys.add(_normalize_fxcm_symbol_key(analysis_symbol))
+    return candidate_keys
+
+
+def _get_fxcm_safe_symbol_catalog() -> Dict[str, List[Dict[str, Any]]]:
+    safe_keys = {_normalize_fxcm_symbol_key(symbol) for symbol in FXCM_SAFE_SYMBOLS}
+    filtered_config: Dict[str, List[Dict[str, Any]]] = {}
+    for category, items in FXCM_SYMBOL_CONFIG.items():
+        filtered_items = []
+        for item in items:
+            configured_symbol = str(item.get('symbol') or '')
+            candidate_keys = _get_fxcm_symbol_candidate_keys(configured_symbol)
+            if candidate_keys & safe_keys:
+                filtered_items.append(item)
+        if filtered_items:
+            filtered_config[category] = filtered_items
+    return filtered_config
+
+
+def _get_fxcm_tradable_symbol_keys(*, credential_row: Optional[Dict[str, Any]] = None, broker_conn=None) -> Optional[Set[str]]:
+    tradable_symbols: Optional[List[str]] = None
+    if broker_conn is not None and hasattr(broker_conn, 'get_tradable_symbols'):
+        try:
+            tradable_symbols = broker_conn.get_tradable_symbols()
+        except Exception as exc:
+            logger.warning(f"Could not read FXCM tradable symbols from active connection: {exc}")
+            tradable_symbols = None
+    elif credential_row is not None:
+        fxcm_conn = FXCMConnection({
+            'broker': 'FXCM',
+            'account_number': credential_row.get('account_number'),
+            'username': credential_row.get('username'),
+            'password': credential_row.get('password'),
+            'server': credential_row.get('server'),
+            'is_live': bool(credential_row.get('is_live')),
+            'api_key': credential_row.get('api_key'),
+        })
+        try:
+            tradable_symbols = fxcm_conn.get_tradable_symbols()
+            if tradable_symbols is None and fxcm_conn.connect():
+                tradable_symbols = fxcm_conn.get_tradable_symbols()
+        finally:
+            fxcm_conn.disconnect()
+
+    if not tradable_symbols:  # None or empty list — unknown tradability, allow all symbols
+        return None
+
+    tradable_keys: Set[str] = set()
+    for symbol in tradable_symbols:
+        tradable_keys.update(_get_fxcm_symbol_candidate_keys(symbol))
+    return tradable_keys
+
+
+def _filter_fxcm_symbols_for_tradability(symbols: List[str], tradable_symbol_keys: Optional[Set[str]]) -> List[str]:
+    if tradable_symbol_keys is None:
+        return list(symbols)
+
+    filtered_symbols: List[str] = []
+    for symbol in symbols:
+        candidate_keys = _get_fxcm_symbol_candidate_keys(symbol)
+        if candidate_keys & tradable_symbol_keys:
+            if symbol not in filtered_symbols:
+                filtered_symbols.append(symbol)
+    return filtered_symbols
+
+
+def _get_fxcm_credential_for_catalog(session_token: str, credential_id: str = '') -> Optional[Dict[str, Any]]:
+    user_id = _resolve_user_id_from_session_token(session_token)
+    if not user_id:
+        return None
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if credential_id:
+            cursor.execute(
+                '''
+                  SELECT credential_id, broker_name, account_number, username, password, server,
+                      is_live, api_key
+                FROM broker_credentials
+                WHERE user_id = ? AND credential_id = ? AND is_active = 1
+                ''',
+                (user_id, credential_id),
+            )
+            row = cursor.fetchone()
+            if row and canonicalize_broker_name(row['broker_name']) == 'FXCM':
+                return dict(row)
+
+        cursor.execute(
+            '''
+                 SELECT credential_id, broker_name, account_number, username, password, server,
+                     is_live, api_key
+            FROM broker_credentials
+            WHERE user_id = ? AND is_active = 1 AND broker_name = 'FXCM'
+            ORDER BY updated_at DESC, created_at DESC, credential_id DESC
+            LIMIT 1
+            ''',
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as exc:
+        logger.warning(f"Could not resolve FXCM credential for symbol catalog lookup: {exc}")
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _filter_fxcm_symbol_catalog_for_credential(symbol_config: Dict[str, List[Dict[str, Any]]], credential_row: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    allowed_keys = _get_fxcm_tradable_symbol_keys(credential_row=credential_row)
+    if allowed_keys is None:
+        # ForexConnect login unavailable at catalog-request time — show the full configured
+        # catalog so users can select any symbol.  Actual tradability is checked per-trade.
+        logger.info("[FXCM] Tradability check unavailable — returning full symbol catalog")
+        return symbol_config
+
+    filtered_config: Dict[str, List[Dict[str, Any]]] = {}
+    for category, items in symbol_config.items():
+        filtered_items = []
+        for item in items:
+            candidate_keys = _get_fxcm_symbol_candidate_keys(str(item.get('symbol') or ''))
+            if candidate_keys & allowed_keys:
+                filtered_items.append(item)
+        if filtered_items:
+            filtered_config[category] = filtered_items
+
+    logger.info(
+        f"[FXCM] Filtered symbol catalog for credential {credential_row.get('credential_id')}: "
+        f"{sum(len(items) for items in filtered_config.values())} tradable symbols"
+    )
+    return filtered_config
+
+
+def _get_symbol_catalog_for_request(broker_name: str) -> Dict[str, List[Dict[str, Any]]]:
+    if canonicalize_broker_name(broker_name) != 'FXCM':
+        return FXCM_SYMBOL_CONFIG
+
+    session_token = str(request.headers.get('X-Session-Token') or '').strip()
+    credential_id = str(request.args.get('credential_id') or '').strip()
+    credential_row = _get_fxcm_credential_for_catalog(session_token, credential_id)
+    if not credential_row:
+        return _get_fxcm_safe_symbol_catalog()
+    return _filter_fxcm_symbol_catalog_for_credential(FXCM_SYMBOL_CONFIG, credential_row)
 
 def validate_and_correct_symbols(symbols, broker_name=None):
     """Validate symbols based on broker type and correct old/unavailable ones when possible."""
@@ -14317,7 +14583,7 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         'profitLock': 80.0,
         'drawdownPausePercent': 5.0,
         'drawdownPauseHours': 6.0,
-        'allowedVolatility': ['Very Low', 'Low', 'Medium', 'High'],
+        'allowedVolatility': ['Very Low', 'Low', 'Medium', 'High', 'Very High'],
         'autoSwitch': True,
         'dynamicSizing': True,
         'managementMode': 'assisted',
@@ -14360,8 +14626,8 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         'lastSizingAdjustment': None,
         'promotionReadyAt': None,
         'promotionExpiredAt': None,
-        'intelligentScanner': False,
-        'allowAdaptiveRawFallback': False,
+        'intelligentScanner': True,
+        'allowAdaptiveRawFallback': True,
         'lastScanResults': None,
         'profitProtection': dict(DEFAULT_PROFIT_PROTECTION_CONFIG),
         'symbolReentryCooldowns': {},
@@ -14952,7 +15218,7 @@ def _get_bot_thread_credentials(bot_config: Dict[str, Any]) -> Optional[Dict[str
         cursor = conn.cursor()
         cursor.execute(
             '''
-            SELECT broker_name, account_number, password, server, is_live, api_key
+            SELECT broker_name, account_number, username, password, server, is_live, api_key
             FROM broker_credentials
             WHERE credential_id = ?
             ''',
@@ -14970,6 +15236,27 @@ def _get_bot_thread_credentials(bot_config: Dict[str, Any]) -> Optional[Dict[str
                 'api_secret': credential_row['password'],
                 'account_number': credential_row['account_number'],
                 'server': credential_row['server'] or 'spot',
+                'is_live': bool(credential_row['is_live']),
+            }
+
+        if broker_name == 'FXCM':
+            _username = ''
+            try:
+                _username = credential_row['username'] or ''
+            except (IndexError, KeyError):
+                pass
+            if not _username:
+                try:
+                    _username = credential_row['account_number'] or ''
+                except (IndexError, KeyError):
+                    pass
+            return {
+                'api_key': credential_row['api_key'] or '',
+                'username': _username,
+                'password': credential_row['password'] or '',
+                'account_number': credential_row['account_number'],
+                'server': credential_row['server'],
+                'broker': broker_name,
                 'is_live': bool(credential_row['is_live']),
             }
 
@@ -15148,8 +15435,9 @@ def stop_bot_runtime(bot_id: str, bot_config: Dict[str, Any]) -> Dict[str, Any]:
     # OPTIMIZATION: Clean up cached connections for this bot to free memory
     user_id = bot_config.get('user_id', '')
     account = bot_config.get('account_number', bot_config.get('accountId', 'unknown'))
+    broker_label = canonicalize_broker_name(bot_config.get('brokerName') or bot_config.get('broker_type') or 'Exness')
     if user_id and account:
-        cache_key = f"{user_id}|Exness|{account}"
+        cache_key = f"{user_id}|{broker_label}|{account}"
         with broker_connection_cache_lock:
             if cache_key in broker_connection_cache:
                 broker_connection_cache.pop(cache_key)
@@ -16737,6 +17025,73 @@ def live_market_data_updater():
                 elif update_failed_count >= 5:
                     logger.debug(f"⚠️  Still waiting for MT5 live prices... ({update_failed_count} attempts)")
                     # Still continue to serve cached prices
+
+                # ── FXCM ForexConnect price fallback ─────────────────────────────
+                # When MT5 is not connected (e.g. pure-FXCM VPS), pull live bid/ask
+                # from the FXCM ForexConnect helper and seed commodity_market_data so
+                # technical indicators work instead of returning flat RANGING signals.
+                try:
+                    _fxcm_conn = None
+                    # Find any connected FXCM connection from active bots
+                    for _bid, _bot in list(active_bots.items()):
+                        _bconn = _bot.get('_fxcm_conn')
+                        if isinstance(_bconn, FXCMConnection) and _bconn.is_connected():
+                            _fxcm_conn = _bconn
+                            break
+                    # Fallback: build a lightweight FXCM connection from .env credentials
+                    if _fxcm_conn is None:
+                        _fxcm_login = str(os.getenv('FXCM_LOGIN', '') or '').strip()
+                        _fxcm_pw = str(os.getenv('FXCM_PASSWORD', '') or '').strip()
+                        _fxcm_srv = str(os.getenv('FXCM_SERVER', 'demo') or 'demo').strip()
+                        if _fxcm_login and _fxcm_pw:
+                            _fxcm_conn = FXCMConnection(credentials={
+                                'username': _fxcm_login,
+                                'account_number': _fxcm_login,
+                                'password': _fxcm_pw,
+                                'server': _fxcm_srv,
+                                'is_live': _fxcm_srv.lower() in ('real', 'live'),
+                            })
+                    if _fxcm_conn is not None:
+                        _price_result = _fxcm_conn._run_forexconnect_helper('get_prices', timeout=15)
+                        if _price_result and _price_result.get('success'):
+                            _fxcm_prices = _price_result.get('prices') or {}
+                            _fxcm_updated = 0
+                            _special_map = {'GOLD': 'XAUUSD', 'SILVER': 'XAGUSD', 'OIL': 'USOIL'}
+                            with market_data_lock:
+                                now_ts = time.time()
+                                for _instrument, _pdata in _fxcm_prices.items():
+                                    _key = _instrument.replace('/', '').replace(' ', '').upper()
+                                    _key = _special_map.get(_key, _key)
+                                    if _key not in commodity_market_data:
+                                        continue
+                                    _mid = float(_pdata.get('price') or 0)
+                                    if _mid <= 0:
+                                        continue
+                                    commodity_market_data[_key]['current_price'] = _mid
+                                    commodity_market_data[_key]['price'] = _mid
+                                    _hist = commodity_market_data[_key].get('price_history') or []
+                                    if not _hist or _hist[-1] != _mid:
+                                        _hist.append(_mid)
+                                        if len(_hist) > 100:
+                                            _hist = _hist[-100:]
+                                        commodity_market_data[_key]['price_history'] = _hist
+                                    # Re-evaluate signal once we have ≥20 varied data points
+                                    _varied = len(set(round(p, 6) for p in _hist[-20:])) >= 3
+                                    if _varied and len(_hist) >= 20:
+                                        _sig = evaluate_real_trade_signal(_key, commodity_market_data[_key])
+                                        _str = max(0.0, min(100.0, _safe_float(_sig.get('strength'), 0.0)))
+                                        commodity_market_data[_key]['signal_strength'] = _str
+                                        commodity_market_data[_key]['signalStrength'] = _str
+                                        commodity_market_data[_key]['signalPercentage'] = round(_str, 1)
+                                        if _str > 0:
+                                            _pfx = '🟢 ' if 'BUY' in _sig['signal'] else '🔴 ' if 'SELL' in _sig['signal'] else '🟡 '
+                                            commodity_market_data[_key]['signal'] = _pfx + _sig['signal']
+                                    _fxcm_updated += 1
+                            if _fxcm_updated > 0:
+                                logger.info(f"📡 FXCM price fallback: updated {_fxcm_updated} symbols from ForexConnect")
+                except Exception as _fxcm_err:
+                    logger.debug(f"FXCM price fallback error: {_fxcm_err}")
+                # ─────────────────────────────────────────────────────────────────
             
             time.sleep(update_interval)
             
@@ -19158,14 +19513,15 @@ UNIVERSAL_ADAPTATION_MIN_SAMPLE_TRADES = 6
 UNIVERSAL_ADAPTATION_RECENT_TRADE_WINDOW = 8
 UNIVERSAL_ADAPTATION_COOLDOWN_MINUTES = 30
 UNIVERSAL_ADAPTATION_SUCCESS_WIN_RATE = 60.0
-UNIVERSAL_ADAPTATION_STRUGGLE_WIN_RATE = 35.0
-LOSS_STREAK_PAUSE_AFTER = 2
-LOSS_STREAK_PAUSE_MINUTES = 20
-LOSS_STREAK_HARD_PAUSE_AFTER = 3
-LOSS_STREAK_HARD_PAUSE_MINUTES = 60
+UNIVERSAL_ADAPTATION_STRUGGLE_WIN_RATE = 45.0
+LOSS_STREAK_PAUSE_AFTER = 1
+LOSS_STREAK_PAUSE_MINUTES = 30
+LOSS_STREAK_HARD_PAUSE_AFTER = 2
+LOSS_STREAK_HARD_PAUSE_MINUTES = 90
 LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES = 30
 MAX_ASSISTED_SYMBOLS_PER_CYCLE = 2
-MIN_RISK_REWARD_RATIO = 1.5
+MIN_RISK_REWARD_RATIO = 1.0
+FXCM_MIN_RISK_REWARD_RATIO = float(os.getenv('FXCM_MIN_RISK_REWARD_RATIO', '0.8'))
 PERFORMANCE_SIZING_WINDOW = 6
 PERFORMANCE_SIZING_MIN_SAMPLE = 3
 PERFORMANCE_SIZING_MAX_BOOST = 2.0
@@ -19183,6 +19539,13 @@ UPSWING_RETRACE_CLOSE_SHARE = 0.45
 # Defaults (USD / demo fallback)
 HARD_LOSS_PER_TRADE_LIMIT = 6.0          # USD hard cap per trade
 STALE_LOSS_THRESHOLD = -1.5             # Min USD loss before stale check kicks in
+
+
+def get_min_risk_reward_ratio_for_broker(broker_name: str) -> float:
+    normalized_broker = canonicalize_broker_name(broker_name or '')
+    if normalized_broker == 'FXCM':
+        return max(0.5, FXCM_MIN_RISK_REWARD_RATIO)
+    return MIN_RISK_REWARD_RATIO
 STALE_LOSS_MINUTES = 12                 # Position must be at least this old (minutes)
 # ZAR limits — scaled proportionally to account balance in live mode
 # e.g. R100 account → R1.50 hard cap, R200 → R3, R500 → R7.50, R1000+ → R15
@@ -19280,15 +19643,15 @@ BOT_MANAGEMENT_PROFILES = {
         'dynamicSizing': True,
     },
     'fast_growth': {
-        'riskPerTrade': 20.0,
-        'maxDailyLoss': 120.0,
+        'riskPerTrade': 30.0,
+        'maxDailyLoss': 160.0,
         'profitLock': 90.0,
         'drawdownPausePercent': 10.0,
         'drawdownPauseHours': 3.0,
-        'maxOpenPositions': 4,
+        'maxOpenPositions': 6,
         'maxPositionsPerSymbol': 2,
-        'signalThreshold': 30,
-        'allowedVolatility': ['Low', 'Medium'],
+        'signalThreshold': 35,
+        'allowedVolatility': ['Low', 'Medium', 'High'],
         'autoSwitch': True,
         'dynamicSizing': True,
     },
@@ -21624,8 +21987,8 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
         'managementMode': management_mode,
         'managementProfile': management_profile,
         'allowCrossMarketReallocation': _coerce_bool(
-            data.get('allowCrossMarketReallocation', intelligent_settings.get('allowCrossMarketReallocation', False)),
-            False,
+            data.get('allowCrossMarketReallocation', intelligent_settings.get('allowCrossMarketReallocation', True)),
+            True,
         ),
         'displayCurrency': display_currency,
         'warnings': warnings,
@@ -21742,7 +22105,7 @@ def create_bot():
                 return jsonify({'success': False, 'error': 'User not found'}), 404
 
             cursor.execute('''
-                SELECT credential_id, broker_name, account_number, is_live, api_key, password, server, is_active,
+                SELECT credential_id, broker_name, account_number, username, is_live, api_key, password, server, is_active,
                        account_currency, cached_balance, cached_margin_free
                 FROM broker_credentials
                 WHERE credential_id = ? AND user_id = ?
@@ -21781,6 +22144,15 @@ def create_bot():
             if not requested_mode:
                 requested_mode = mode
                 logger.info(f"Bot create request did not specify mode; inferring mode={requested_mode} from credential {credential_id}")
+
+            if canonicalize_broker_name(broker_name) == 'FXCM':
+                username = str(credential_data.get('username') or '').strip()
+                password = str(credential_data.get('password') or '').strip()
+                if not username or not password:
+                    return jsonify({
+                        'success': False,
+                        'error': 'FXCM credential is missing Login ID or password. Reconnect the FXCM account with Login ID + Password before creating a bot.'
+                    }), 400
 
             # Fail fast for Binance credentials so users don't create bots that silently fail at runtime.
             if canonicalize_broker_name(broker_name) == 'Binance':
@@ -21822,6 +22194,11 @@ def create_bot():
             if not raw_symbols:
                 raw_symbols = ['EURUSDm']  # Default fallback
             symbols = validate_and_correct_symbols(raw_symbols, broker_name)
+            if broker_name == 'FXCM':
+                # Skip live tradability check at creation time — ForexConnect login is not
+                # always available at this point and false-rejects valid symbols.
+                # Symbols are validated when the bot actually places trades.
+                logger.info(f"[FXCM] Bot creation with {len(symbols)} symbol(s): {symbols}")
             strategy = data.get('strategy', 'Trend Following')
             
             # ✅ GET ACCOUNT CURRENCY from credentials (demo USD vs live ZAR)
@@ -22385,7 +22762,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
             """Determine symbol category from its name"""
             symbol_upper = symbol.upper()
             # Check commodities FIRST (XAU/XAG contain USD but are commodities, not forex)
-            if any(com in symbol_upper for com in ['XAU', 'XAG', 'OIL', 'GAS', 'WHEAT']):
+            if any(com in symbol_upper for com in ['XAU', 'XAG', 'OIL', 'GAS', 'WHEAT', 'GOLD', 'SILVER']):
                 return 'COMMODITIES'
             elif any(crypto in symbol_upper for crypto in ['BTC', 'ETH', 'XRP', 'USDT']):
                 return 'CRYPTO'
@@ -22731,25 +23108,16 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         continue
 
                                 # ==================== AUTO-PAUSE CHECK: MT5 AutoTrading ====================
-                                # If MT5 is ready but AutoTrading is disabled, pause bot with clear reason
-                                # This catches the case where MT5 terminal lost AutoTrading enable mid-session
+                                # If MT5 is ready but AutoTrading is disabled, warn and skip cycle
+                                # (Do NOT permanently disable bot - AutoTrading may be re-enabled)
                                 try:
                                     import MetaTrader5 as mt5_check
                                     term_info = mt5_check.terminal_info()
                                     if term_info and not term_info.trade_allowed:
-                                        logger.error(f"❌ Bot {bot_id}: MT5 AutoTrading is DISABLED - pausing bot")
-                                        logger.error(f"   To resume: Enable AutoTrading in MT5, then restart this bot")
-                                        bot_config['status'] = 'paused'
-                                        bot_config['pauseReason'] = 'MT5 AutoTrading disabled - enable in terminal and restart'
-                                        bot_config['enabled'] = False
-                                        persist_bot_runtime_state(bot_id)
-                                        conn = get_db_connection()
-                                        cursor = conn.cursor()
-                                        cursor.execute('UPDATE user_bots SET status=?, enabled=0 WHERE bot_id=?', ('paused', bot_id))
-                                        conn.commit()
-                                        conn.close()
-                                        running_bots[bot_id] = False
-                                        return
+                                        logger.warning(f"⚠️ Bot {bot_id}: MT5 AutoTrading is DISABLED - skipping cycle (will retry)")
+                                        logger.warning(f"   Enable AutoTrading in MT5 toolbar to resume trading")
+                                        time.sleep(trading_interval)
+                                        continue
                                 except Exception as auto_pause_e:
                                     logger.debug(f"Bot {bot_id}: AutoTrading check: {auto_pause_e}")
 
@@ -23129,9 +23497,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         sl_pips = max(_safe_float(trade_params.get('stop_loss'), 0.0), 0.0)
                         tp_pips = max(_safe_float(trade_params.get('take_profit'), 0.0), 0.0)
                         rr_ratio = (tp_pips / sl_pips) if sl_pips > 0 else 0.0
-                        if rr_ratio < MIN_RISK_REWARD_RATIO:
+                        min_rr_ratio = get_min_risk_reward_ratio_for_broker(broker_type)
+                        if rr_ratio < min_rr_ratio:
                             logger.info(
-                                f"⏭️ Bot {bot_id}: Skipping {symbol} - reward:risk {rr_ratio:.2f} below minimum {MIN_RISK_REWARD_RATIO:.2f}"
+                                f"⏭️ Bot {bot_id}: Skipping {symbol} - reward:risk {rr_ratio:.2f} below minimum {min_rr_ratio:.2f}"
                             )
                             continue
 
@@ -23217,8 +23586,13 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 if order_result.get('success', False):
                                     logger.info(f"✅ Bot {bot_id}: FXCM order placed on {order_result.get('symbol', symbol)}")
                                 else:
-                                    last_order_block_reason = f"FXCM rejected {symbol}: {order_result.get('error') or 'unknown error'}"
-                                    logger.warning(f"Bot {bot_id}: FXCM order failed on {symbol}: {order_result.get('error')}")
+                                    err_msg = order_result.get('error') or 'unknown error'
+                                    last_order_block_reason = f"FXCM rejected {symbol}: {err_msg}"
+                                    logger.warning(f"Bot {bot_id}: FXCM order failed on {symbol}: {err_msg}")
+                                    # Skip symbols that are not subscribed on the account — retrying won't help
+                                    if 'not available for trading' in str(err_msg).lower() or 'subscription' in str(err_msg).lower():
+                                        logger.info(f"⏭️ Bot {bot_id}: Skipping {symbol} — not subscribed on FXCM account (status D/V)")
+                                        continue
                             except Exception as e:
                                 logger.error(f"Bot {bot_id}: FXCM place_order exception: {e}")
                                 last_order_block_reason = f"FXCM exception on {symbol}: {e}"
@@ -24238,6 +24612,9 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
             password = str(cred.get('password') or '').strip()
             account_number = cred['account_number']
             is_live = bool(cred['is_live'])
+            # ForexConnect stores login ID in account_number — use as username fallback
+            if not username and account_number:
+                username = str(account_number).strip()
 
             if not has_fxcm_connection_credentials({
                 'api_key': api_key,
@@ -24818,13 +25195,17 @@ def start_bot():
             # This prevents users from being shown old symbols and ensures trades use valid ones
             original_symbols = bot_config.get('symbols', ['EURUSDm'])
             corrected_symbols = validate_and_correct_symbols(original_symbols, broker_type)
+            # NOTE: FXCM live tradability filter intentionally skipped here — ForexConnect
+            # availability at start time is not guaranteed and causes false rejections.
+            # Symbols are validated per-trade when orders are placed.
             if corrected_symbols != original_symbols:
                 logger.info(f"📝 Bot {bot_id} symbols corrected: {original_symbols} → {corrected_symbols}")
+                bot_config['symbols'] = corrected_symbols
                 active_bots[bot_id] = bot_config
                 _persist_normalized_bot_symbols(bot_id, bot_config, corrected_symbols)
-            
+
             logger.info(f"✅ Bot {bot_id}: All validation checks passed - ready to start trading")
-            
+
             # Validate symbols are available
             validated_symbols = validate_and_correct_symbols(bot_config.get('symbols', ['EURUSDm']), broker_type)
             bot_config['symbols'] = validated_symbols
@@ -26500,6 +26881,13 @@ def cleanup_expired_demo_bots_worker():
 
             for bot_id, bot in list(active_bots.items()):
                 if str(bot.get('mode') or 'demo').strip().lower() != 'demo':
+                    continue
+
+                # Skip cleanup for external real-broker bots (FXCM, Binance, etc.)
+                # These use the broker's own demo accounts and are not subject to the
+                # internal demo-promotion evaluation/expiry system.
+                _broker_name_val = str(bot.get('brokerName') or bot.get('broker_type') or '').strip().upper()
+                if _broker_name_val and _broker_name_val not in {'MT5'}:
                     continue
 
                 total_profit = float(bot.get('totalProfit', 0) or 0)

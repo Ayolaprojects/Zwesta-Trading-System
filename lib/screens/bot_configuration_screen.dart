@@ -61,6 +61,42 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     10000,
     20000,
   ];
+
+  static const List<Map<String, String>> _fxcmFallbackSymbols = [
+    {'symbol': 'EUR/USD', 'name': 'Euro vs. US Dollar', 'category': 'Forex'},
+    {
+      'symbol': 'GBP/USD',
+      'name': 'Great British Pound vs. US Dollar',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'USD/JPY',
+      'name': 'US Dollar vs. Japanese Yen',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'AUD/USD',
+      'name': 'Australian Dollar vs. US Dollar',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'USD/CHF',
+      'name': 'US Dollar vs. Swiss Franc',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'NZD/USD',
+      'name': 'New Zealand Dollar vs. US Dollar',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'USD/CAD',
+      'name': 'US Dollar vs. Canadian Dollar',
+      'category': 'Forex',
+    },
+    {'symbol': 'Gold', 'name': 'XAU/USD Spot - Gold', 'category': 'Commodity'},
+    {'symbol': 'Silver', 'name': 'XAG/USD Spot', 'category': 'Commodity'},
+  ];
   static const List<Map<String, String>> _binanceSymbols = [
     // --- Tier 1: Large Cap ---
     {
@@ -1704,11 +1740,27 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   Future<void> _fetchCommodityData() async {
     setState(() => _isLoadingData = true);
     try {
-      final brokerQuery = _activeBrokerName.isNotEmpty
-          ? '?broker=${Uri.encodeQueryComponent(_brokerService.activeCredential?.broker ?? _activeBrokerName)}'
-          : '';
+      final prefs = await SharedPreferences.getInstance();
+      final sessionToken = prefs.getString('auth_token') ?? '';
+      final activeCredential = _brokerService.activeCredential;
+      final queryParameters = <String, String>{};
+      final activeBroker = activeCredential?.broker ?? _activeBrokerName;
+      if (activeBroker.isNotEmpty) {
+        queryParameters['broker'] = activeBroker;
+      }
+      if (activeCredential != null && activeCredential.credentialId.isNotEmpty) {
+        queryParameters['credential_id'] = activeCredential.credentialId;
+      }
+      final uri = Uri.parse(
+        '${EnvironmentConfig.apiUrl}/api/commodities/list',
+      ).replace(queryParameters: queryParameters.isEmpty ? null : queryParameters);
       final response = await http
-          .get(Uri.parse('${EnvironmentConfig.apiUrl}/api/commodities/list$brokerQuery'))
+          .get(
+            uri,
+            headers: {
+              if (sessionToken.isNotEmpty) 'X-Session-Token': sessionToken,
+            },
+          )
           .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
@@ -1736,7 +1788,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       print('Error fetching commodity data: $e');
       // Use default fallback symbols if API fails so save button still works
       setState(() {
-        tradingSymbols = [
+        tradingSymbols = _activeBrokerName == 'fxcm'
+            ? List<Map<String, String>>.from(_fxcmFallbackSymbols)
+            : [
           {
             'symbol': 'BTCUSD',
             'name': '₿ Bitcoin (BTC/USD)',
@@ -1789,6 +1843,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             'category': 'Stocks',
           },
         ];
+        _selectedSymbols = _remapSelectedSymbolsToAvailable(
+          tradingSymbols
+              .map((item) => item['symbol'])
+              .whereType<String>()
+              .toList(),
+        );
         _isLoadingData = false;
       });
     }
@@ -2909,6 +2969,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                               cred,
                                             );
                                           });
+                                          _fetchTradingData();
                                         }
                                       },
                                       backgroundColor: Colors.grey.withOpacity(

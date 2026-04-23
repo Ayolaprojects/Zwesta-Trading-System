@@ -38,6 +38,15 @@ def _offer_is_tradeable(offer) -> bool:
     return _offer_subscription_status(offer) == 'T' and bool(str(getattr(offer, 'offer_id', '') or '').strip())
 
 
+def _offer_summary(offer) -> Dict[str, Any]:
+    return {
+        'instrument': str(getattr(offer, 'instrument', '') or ''),
+        'subscription_status': _offer_subscription_status(offer),
+        'offer_id': str(getattr(offer, 'offer_id', '') or ''),
+        'tradeable': _offer_is_tradeable(offer),
+    }
+
+
 def _account_row_to_dict(account_row) -> Dict[str, Any]:
     balance = float(getattr(account_row, 'balance', 0) or 0)
     equity = float(getattr(account_row, 'equity', balance) or balance)
@@ -98,18 +107,93 @@ def _login(credentials: Dict[str, Any]) -> ForexConnect:
     return fx
 
 
-def _find_offer(fx: ForexConnect, symbol: str):
+def _find_offer_details(fx: ForexConnect, symbol: str) -> Dict[str, Any]:
     requested = _normalized_symbol(symbol)
     offers_table = fx.get_table(ForexConnect.OFFERS)
     if offers_table is None:
-        return None
+        return {
+            'requested': requested,
+            'tradeable_offer': None,
+            'matching_offers': [],
+        }
+
+    matching_offers: List[Dict[str, Any]] = []
     for offer in offers_table:
         instrument = str(getattr(offer, 'instrument', '') or '')
         if _normalized_symbol(instrument) != requested:
             continue
+        offer_payload = _offer_summary(offer)
+        matching_offers.append(offer_payload)
         if _offer_is_tradeable(offer):
-            return offer
-    return None
+            return {
+                'requested': requested,
+                'tradeable_offer': offer,
+                'matching_offers': matching_offers,
+            }
+    return {
+        'requested': requested,
+        'tradeable_offer': None,
+        'matching_offers': matching_offers,
+    }
+
+
+def _find_offer(fx: ForexConnect, symbol: str):
+    return _find_offer_details(fx, symbol).get('tradeable_offer')
+
+
+def _debug_symbol_payload(fx: ForexConnect, credentials: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    symbol = str(extra.get('symbol', '') or '')
+    if not symbol:
+        raise RuntimeError('Missing symbol for debug_symbol')
+
+    details = _find_offer_details(fx, symbol)
+    account = _get_account_row(fx, credentials)
+    return {
+        'success': True,
+        'symbol': symbol,
+        'requested': details.get('requested'),
+        'matching_offers': details.get('matching_offers') or [],
+        'account_id': str(getattr(account, 'account_id', '') or credentials.get('account_number', '')),
+        'dataSource': 'forexconnect-helper',
+    }
+
+
+def _prices_payload(fx: ForexConnect) -> Dict[str, Any]:
+    """Return current bid/ask prices for all tradeable symbols."""
+    offers_table = fx.get_table(ForexConnect.OFFERS)
+    prices: Dict[str, Dict] = {}
+    if offers_table is not None:
+        for offer in offers_table:
+            if not _offer_is_tradeable(offer):
+                continue
+            instrument = str(getattr(offer, 'instrument', '') or '').strip()
+            if not instrument:
+                continue
+            bid = float(getattr(offer, 'bid', 0) or 0)
+            ask = float(getattr(offer, 'ask', 0) or 0)
+            if bid > 0 and ask > 0:
+                prices[instrument] = {'bid': bid, 'ask': ask, 'price': (bid + ask) / 2}
+    return {'success': True, 'prices': prices, 'dataSource': 'forexconnect-helper'}
+
+
+def _tradable_symbols_payload(fx: ForexConnect, credentials: Dict[str, Any]) -> Dict[str, Any]:
+    account = _get_account_row(fx, credentials)
+    offers_table = fx.get_table(ForexConnect.OFFERS)
+    symbols: List[str] = []
+    if offers_table is not None:
+        for offer in offers_table:
+            if not _offer_is_tradeable(offer):
+                continue
+            instrument = str(getattr(offer, 'instrument', '') or '').strip()
+            if instrument and instrument not in symbols:
+                symbols.append(instrument)
+
+    return {
+        'success': True,
+        'account_id': str(getattr(account, 'account_id', '') or credentials.get('account_number', '')),
+        'symbols': symbols,
+        'dataSource': 'forexconnect-helper',
+    }
 
 
 def _get_trades_table(fx: ForexConnect):
@@ -189,12 +273,61 @@ def _trades_payload(fx: ForexConnect, credentials: Dict[str, Any]) -> List[Dict[
     return trades
 
 
+def _try_subscribe_offer(fx: ForexConnect, offer_id: str) -> bool:
+    """Attempt to change an offer's subscription status to Trading ('T').
+    Returns True if the request was accepted, False if unsupported / failed."""
+    try:
+        request = fx.create_order_request(
+            order_type='ChangeSubscriptionStatus',
+            OFFER_ID=offer_id,
+            SUBSCRIPTION_STATUS='T',
+        )
+        fx.send_request(request)
+        return True
+    except Exception:
+        pass
+    try:
+        # Alternative: via IO2GRequestFactory if exposed
+        factory = getattr(fx, 'request_factory', None) or getattr(fx, '_request_factory', None)
+        if factory is not None:
+            req = factory.createChangeOfferSubscriptionRequest(offer_id, 'T')
+            fx.send_request(req)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _place_order(fx: ForexConnect, credentials: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
     account = _get_account_row(fx, credentials)
     symbol = str(extra.get('symbol', '') or '')
-    offer = _find_offer(fx, symbol)
+    offer_details = _find_offer_details(fx, symbol)
+    offer = offer_details.get('tradeable_offer')
+
+    # If not tradeable but present, try to subscribe it first
     if not offer:
-        raise RuntimeError(f'Unsupported FXCM instrument: {symbol}')
+        matching_offers = offer_details.get('matching_offers') or []
+        for mo in matching_offers:
+            status = str(mo.get('subscription_status', '') or '').upper()
+            if status in ('D', 'V'):
+                offer_id = str(mo.get('offer_id', '') or '')
+                if offer_id and _try_subscribe_offer(fx, offer_id):
+                    # Re-check after subscribing
+                    offer_details = _find_offer_details(fx, symbol)
+                    offer = offer_details.get('tradeable_offer')
+                break
+
+    if not offer:
+        matching_offers = offer_details.get('matching_offers') or []
+        if matching_offers:
+            raise RuntimeError(
+                'Instrument is not available for trading. '
+                f'symbol={symbol} requested={offer_details.get("requested")} matching_offers={matching_offers}'
+            )
+        raise RuntimeError(
+            'Instrument is not available for trading. '
+            f'symbol={symbol} requested={offer_details.get("requested")} matching_offers=[]'
+        )
 
     order_type = str(extra.get('order_type', '') or '').upper()
     buy_sell = fxcorepy.Constants.BUY if order_type == 'BUY' else fxcorepy.Constants.SELL
@@ -282,8 +415,33 @@ def main() -> int:
             result = {'success': True, 'positions': _positions_payload(fx, credentials)}
         elif action == 'get_trades':
             result = {'success': True, 'trades': _trades_payload(fx, credentials)}
+        elif action == 'get_prices':
+            result = _prices_payload(fx)
+        elif action == 'list_symbols':
+            result = _tradable_symbols_payload(fx, credentials)
+        elif action == 'subscribe_symbol':
+            symbol = str(extra.get('symbol', '') or '')
+            if not symbol:
+                raise RuntimeError('Missing symbol for subscribe_symbol')
+            details = _find_offer_details(fx, symbol)
+            offer = details.get('tradeable_offer')
+            if offer:
+                result = {'success': True, 'already_tradeable': True, 'symbol': symbol}
+            else:
+                matching = details.get('matching_offers') or []
+                subscribed = False
+                for mo in matching:
+                    offer_id = str(mo.get('offer_id', '') or '')
+                    if offer_id:
+                        subscribed = _try_subscribe_offer(fx, offer_id)
+                        if subscribed:
+                            break
+                result = {'success': subscribed, 'symbol': symbol, 'matching_offers': matching,
+                          'error': None if subscribed else 'Could not change subscription status via API'}
         elif action == 'place_order':
             result = _place_order(fx, credentials, extra)
+        elif action == 'debug_symbol':
+            result = _debug_symbol_payload(fx, credentials, extra)
         elif action == 'close_position':
             result = _close_position(fx, credentials, extra)
         else:
