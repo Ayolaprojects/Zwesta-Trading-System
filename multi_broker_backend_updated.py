@@ -15309,6 +15309,45 @@ def _persist_normalized_bot_symbols(bot_id: str, bot_config: Dict[str, Any], nor
                 pass
 
 
+def _prune_fxcm_blocked_symbol(
+    bot_id: str,
+    bot_config: Dict[str, Any],
+    blocked_symbol: Any,
+    *,
+    broker_conn=None,
+) -> bool:
+    normalized_symbols = validate_and_correct_symbols(
+        bot_config.get('symbols') or ['EUR/USD'],
+        'FXCM',
+    )
+    blocked_keys = _get_fxcm_symbol_candidate_keys(str(blocked_symbol or ''))
+    if not blocked_keys:
+        return False
+
+    remaining_symbols = [
+        symbol
+        for symbol in normalized_symbols
+        if not (_get_fxcm_symbol_candidate_keys(symbol) & blocked_keys)
+    ]
+    if broker_conn is not None and remaining_symbols:
+        tradable_keys = _get_fxcm_tradable_symbol_keys(broker_conn=broker_conn)
+        tradable_symbols = _filter_fxcm_symbols_for_tradability(remaining_symbols, tradable_keys)
+        if tradable_symbols:
+            remaining_symbols = tradable_symbols
+
+    if not remaining_symbols or remaining_symbols == normalized_symbols:
+        return False
+
+    logger.info(
+        f"🔄 Bot {bot_id}: Removed blocked FXCM symbol {blocked_symbol} from bot symbols: "
+        f"{normalized_symbols} -> {remaining_symbols}"
+    )
+    _persist_normalized_bot_symbols(bot_id, bot_config, remaining_symbols)
+    if bot_id in active_bots:
+        active_bots[bot_id]['symbols'] = remaining_symbols
+    return True
+
+
 _persist_last_time: dict = {}
 
 def persist_bot_runtime_state(bot_id: str, force: bool = False):
@@ -23051,15 +23090,21 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 logger.info(f"🔄 Bot {bot_id}: Trade cycle #{trade_cycle} starting at {datetime.now().isoformat()}")
                 
                 # ==================== CHECK MARKET HOURS ====================
-                # Get first symbol from symbols list (symbols is stored as list in bot_config)
+                # Only pause the entire bot if every configured symbol is closed.
                 symbols_list = bot_config.get('symbols', ['EURUSDm'])
                 logger.info(f"[BOT {bot_id}] symbols_list from config: {symbols_list}")
-                symbol_to_trade = symbols_list[0] if symbols_list else 'EURUSDm'
-                logger.info(f"[BOT {bot_id}] symbol_to_trade: {symbol_to_trade}")
-                is_open, market_status = is_market_open_for_symbol(symbol_to_trade)
-                
-                if not is_open:
-                    logger.info(f"⏸️  Bot {bot_id}: {market_status} - will wait for next cycle")
+                market_status_by_symbol = {}
+                open_symbols_for_cycle = []
+                for configured_symbol in symbols_list or ['EURUSDm']:
+                    is_open, market_status = is_market_open_for_symbol(configured_symbol)
+                    market_status_by_symbol[configured_symbol] = (is_open, market_status)
+                    if is_open:
+                        open_symbols_for_cycle.append(configured_symbol)
+
+                if not open_symbols_for_cycle:
+                    first_symbol = (symbols_list or ['EURUSDm'])[0]
+                    first_status = market_status_by_symbol.get(first_symbol, (False, 'Market closed'))[1]
+                    logger.info(f"⏸️  Bot {bot_id}: {first_status} - all configured symbols are currently closed")
                     logger.info(f"   ⏰ Next check in {trading_interval} seconds")
                     time.sleep(trading_interval)
                     continue
@@ -23582,6 +23627,14 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         break  # Stop requested, exit loop
                     
                     try:
+                        symbol_is_open, symbol_market_status = market_status_by_symbol.get(symbol, (None, None))
+                        if symbol_is_open is None:
+                            symbol_is_open, symbol_market_status = is_market_open_for_symbol(symbol)
+                            market_status_by_symbol[symbol] = (symbol_is_open, symbol_market_status)
+                        if not symbol_is_open:
+                            logger.info(f"⏭️ Bot {bot_id}: Skipping {symbol} - {symbol_market_status}")
+                            continue
+
                         if not should_trade_symbol_based_on_risk_management(bot_config, symbol):
                             continue
 
@@ -23824,6 +23877,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     logger.warning(f"Bot {bot_id}: FXCM order failed on {symbol}: {err_msg}")
                                     # Skip symbols that are not subscribed on the account — retrying won't help
                                     if 'not available for trading' in str(err_msg).lower() or 'subscription' in str(err_msg).lower():
+                                        _prune_fxcm_blocked_symbol(
+                                            bot_id,
+                                            bot_config,
+                                            symbol,
+                                            broker_conn=fxcm_conn,
+                                        )
                                         logger.info(f"⏭️ Bot {bot_id}: Skipping {symbol} — not subscribed on FXCM account (status D/V)")
                                         continue
                             except Exception as e:
@@ -25429,9 +25488,15 @@ def start_bot():
             # This prevents users from being shown old symbols and ensures trades use valid ones
             original_symbols = bot_config.get('symbols', ['EURUSDm'])
             corrected_symbols = validate_and_correct_symbols(original_symbols, broker_type)
-            # NOTE: FXCM live tradability filter intentionally skipped here — ForexConnect
-            # availability at start time is not guaranteed and causes false rejections.
-            # Symbols are validated per-trade when orders are placed.
+            if broker_type == 'FXCM':
+                tradable_keys = _get_fxcm_tradable_symbol_keys(broker_conn=broker_conn)
+                tradable_symbols = _filter_fxcm_symbols_for_tradability(corrected_symbols, tradable_keys)
+                if tradable_symbols and tradable_symbols != corrected_symbols:
+                    logger.info(
+                        f"🔄 Bot {bot_id}: Filtered FXCM symbols by tradability: "
+                        f"{corrected_symbols} -> {tradable_symbols}"
+                    )
+                    corrected_symbols = tradable_symbols
             if corrected_symbols != original_symbols:
                 logger.info(f"📝 Bot {bot_id} symbols corrected: {original_symbols} → {corrected_symbols}")
                 bot_config['symbols'] = corrected_symbols
