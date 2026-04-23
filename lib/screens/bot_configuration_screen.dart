@@ -63,6 +63,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   ];
 
   static const List<Map<String, String>> _fxcmFallbackSymbols = [
+    {'symbol': 'AUD/CNH', 'name': 'Australian Dollar vs. Offshore Chinese Yuan', 'category': 'Forex'},
     {'symbol': 'EUR/USD', 'name': 'Euro vs. US Dollar', 'category': 'Forex'},
     {
       'symbol': 'GBP/USD',
@@ -80,8 +81,58 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'category': 'Forex',
     },
     {
+      'symbol': 'EUR/JPY',
+      'name': 'Euro vs. Japanese Yen',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'GBP/JPY',
+      'name': 'Great British Pound vs. Japanese Yen',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'AUD/JPY',
+      'name': 'Australian Dollar vs. Japanese Yen',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'CHF/JPY',
+      'name': 'Swiss Franc vs. Japanese Yen',
+      'category': 'Forex',
+    },
+    {
       'symbol': 'USD/CHF',
       'name': 'US Dollar vs. Swiss Franc',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'GBP/CHF',
+      'name': 'Great British Pound vs. Swiss Franc',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'EUR/AUD',
+      'name': 'Euro vs. Australian Dollar',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'EUR/CHF',
+      'name': 'Euro vs. Swiss Franc',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'EUR/CAD',
+      'name': 'Euro vs. Canadian Dollar',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'EUR/GBP',
+      'name': 'Euro vs. Great British Pound',
+      'category': 'Forex',
+    },
+    {
+      'symbol': 'AUD/CAD',
+      'name': 'Australian Dollar vs. Canadian Dollar',
       'category': 'Forex',
     },
     {
@@ -94,8 +145,23 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'name': 'US Dollar vs. Canadian Dollar',
       'category': 'Forex',
     },
-    {'symbol': 'Gold', 'name': 'XAU/USD Spot - Gold', 'category': 'Commodity'},
-    {'symbol': 'Silver', 'name': 'XAG/USD Spot', 'category': 'Commodity'},
+    {'symbol': 'US30', 'name': 'Dow Jones Industrial Average Cash', 'category': 'Indices'},
+    {'symbol': 'GER30', 'name': 'DAX Performance Index Cash', 'category': 'Indices'},
+    {'symbol': 'UK100', 'name': 'FTSE 100 Index Cash', 'category': 'Indices'},
+    {'symbol': 'NAS100', 'name': 'Nasdaq Composite Cash', 'category': 'Indices'},
+    {'symbol': 'SPX500', 'name': 'S&P 500 Index Cash', 'category': 'Indices'},
+    {'symbol': 'Gold', 'name': 'XAU/USD Spot - Gold', 'category': 'Commodities'},
+    {'symbol': 'Silver', 'name': 'XAG/USD Spot', 'category': 'Commodities'},
+    {'symbol': 'USOilSpot', 'name': 'WTI Oil Spot', 'category': 'Commodities'},
+    {'symbol': 'UKOilSpot', 'name': 'Brent Oil Spot', 'category': 'Commodities'},
+    {'symbol': '5USNote', 'name': 'US 5-Year T-Note Future', 'category': 'Treasury'},
+    {'symbol': '10USNote', 'name': 'US 10-Year T-Note Future', 'category': 'Treasury'},
+    {'symbol': '2USNote', 'name': 'US 2-Year T-Note Future', 'category': 'Treasury'},
+    {'symbol': 'Bobl', 'name': 'Euro Bobl Future', 'category': 'Treasury'},
+    {'symbol': 'Schatz', 'name': 'Euro Schatz Future', 'category': 'Treasury'},
+    {'symbol': 'FED30D', 'name': 'US 30 Day Fed Rate Future', 'category': 'Treasury'},
+    {'symbol': 'EURIBOR3M', 'name': 'Euribor (3 month) Future', 'category': 'Treasury'},
+    {'symbol': 'SONIA3M', 'name': 'SONIA (3 month) Future', 'category': 'Treasury'},
   ];
   static const List<Map<String, String>> _binanceSymbols = [
     // --- Tier 1: Large Cap ---
@@ -1744,11 +1810,19 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       return;
     }
 
+    if (_activeBrokerName == 'fxcm') {
+      _preloadFxcmSymbols();
+      await _fetchCommodityData(showLoading: false);
+      return;
+    }
+
     await _fetchCommodityData();
   }
 
-  Future<void> _fetchCommodityData() async {
-    setState(() => _isLoadingData = true);
+  Future<void> _fetchCommodityData({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() => _isLoadingData = true);
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token') ?? '';
@@ -1808,6 +1882,20 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       print('Error fetching commodity data: $e');
       _loadFallbackSymbols();
     }
+  }
+
+  void _preloadFxcmSymbols() {
+    setState(() {
+      commodityMarketData = {};
+      tradingSymbols = List<Map<String, String>>.from(_fxcmFallbackSymbols);
+      _selectedSymbols = _remapSelectedSymbolsToAvailable(
+        tradingSymbols
+            .map((item) => item['symbol'])
+            .whereType<String>()
+            .toList(),
+      );
+      _isLoadingData = false;
+    });
   }
 
   void _loadFallbackSymbols() {
