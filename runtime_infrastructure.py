@@ -5,6 +5,16 @@ from typing import Any, Dict, Optional
 
 
 DEFAULT_SQLITE_PATH = r'C:\backend\zwesta_trading.db'
+KNOWN_VPS_SQLITE_PATH = r'C:\zwesta-trader\Zwesta Flutter App\zwesta_trading.db'
+
+
+def _default_sqlite_candidates() -> list[str]:
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    return [
+        KNOWN_VPS_SQLITE_PATH,
+        os.path.join(module_dir, 'zwesta_trading.db'),
+        DEFAULT_SQLITE_PATH,
+    ]
 
 
 def _load_local_dotenv() -> None:
@@ -27,7 +37,15 @@ def get_database_backend() -> str:
 
 
 def get_database_path() -> str:
-    return os.getenv('DATABASE_PATH', DEFAULT_SQLITE_PATH).strip() or DEFAULT_SQLITE_PATH
+    configured_path = os.getenv('DATABASE_PATH', '').strip()
+    if configured_path:
+        return configured_path
+
+    for candidate in _default_sqlite_candidates():
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    return _default_sqlite_candidates()[0]
 
 
 def get_database_url() -> str:

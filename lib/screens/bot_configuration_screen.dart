@@ -1881,7 +1881,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           setState(() {
             // Get market data for signal display (flat dict: {EURUSD: {signal, trend, ...}, ...})
             final marketDataResponse = data['marketData'] ?? {};
-            commodityMarketData = marketDataResponse.cast<String, dynamic>();
+            commodityMarketData = _buildCommodityMarketDataIndex(
+              marketDataResponse as Map,
+              commoditiesList,
+            );
 
             // Get commodities list for symbol selection (nested by category)
             tradingSymbols = builtSymbols;
@@ -2037,6 +2040,95 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return (double.tryParse(rawValue.toString()) ?? 0.0).clamp(0.0, 100.0);
   }
 
+  Map<String, dynamic> _buildCommodityMarketDataIndex(
+    Map marketDataResponse,
+    Map commoditiesList,
+  ) {
+    final normalized = <String, dynamic>{};
+
+    void storeAlias(String key, dynamic value) {
+      final alias = key.trim();
+      if (alias.isEmpty) {
+        return;
+      }
+      normalized[alias] = value;
+      normalized.putIfAbsent(_normalizeSymbolBase(alias), () => value);
+    }
+
+    marketDataResponse.forEach((key, value) {
+      final entry = _normalizeMarketDataEntry(value);
+      if (entry.isEmpty) {
+        return;
+      }
+      storeAlias(key.toString(), entry);
+      final analysisSymbol =
+          entry['analysisSymbol']?.toString() ??
+          entry['analysis_symbol']?.toString();
+      if (analysisSymbol != null && analysisSymbol.isNotEmpty) {
+        storeAlias(analysisSymbol, entry);
+      }
+    });
+
+    commoditiesList.forEach((category, items) {
+      if (items is! List) {
+        return;
+      }
+      for (final item in items) {
+        if (item is! Map) {
+          continue;
+        }
+        final symbol = item['symbol']?.toString() ?? '';
+        if (symbol.isEmpty) {
+          continue;
+        }
+
+        final existing = _normalizeMarketDataEntry(normalized[symbol]);
+        final merged = <String, dynamic>{
+          ...item.map((key, value) => MapEntry(key.toString(), value)),
+          ...existing,
+        };
+        storeAlias(symbol, merged);
+
+        final analysisSymbol =
+            item['analysis_symbol']?.toString() ??
+            item['analysisSymbol']?.toString() ??
+            '';
+        if (analysisSymbol.isNotEmpty) {
+          storeAlias(analysisSymbol, merged);
+        }
+      }
+    });
+
+    return normalized;
+  }
+
+  Map<String, dynamic> _resolveCommodityMarketEntry(Map<String, String> symbol) {
+    final symbolCode = symbol['symbol'] ?? '';
+    final analysisSymbol = symbol['analysisSymbol'] ?? '';
+    final resolved = _normalizeMarketDataEntry(
+      commodityMarketData[symbolCode] ??
+          commodityMarketData[_normalizeSymbolBase(symbolCode)] ??
+          (analysisSymbol.isNotEmpty ? commodityMarketData[analysisSymbol] : null) ??
+          (analysisSymbol.isNotEmpty
+              ? commodityMarketData[_normalizeSymbolBase(analysisSymbol)]
+              : null),
+    );
+
+    if (resolved.isNotEmpty) {
+      return resolved;
+    }
+
+    return {
+      if (symbol['tradeabilityStatus'] != null)
+        'tradeabilityStatus': symbol['tradeabilityStatus'],
+      if (symbol['tradeabilityLabel'] != null)
+        'tradeabilityLabel': symbol['tradeabilityLabel'],
+      if (symbol['tradeabilityReason'] != null)
+        'tradeabilityReason': symbol['tradeabilityReason'],
+      if (analysisSymbol.isNotEmpty) 'analysisSymbol': analysisSymbol,
+    };
+  }
+
   Map<String, dynamic> _normalizeMarketDataEntry(dynamic rawEntry) {
     if (rawEntry is Map<String, dynamic>) {
       return rawEntry;
@@ -2069,6 +2161,37 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         return Colors.amber;
       default:
         return Colors.amber; // no data yet — show amber (neutral) not invisible grey
+    }
+  }
+
+  String _marketTradeabilityStatus(Map<String, dynamic> marketData) {
+    return (marketData['tradeabilityStatus'] ?? 'tradeable').toString();
+  }
+
+  String _marketTradeabilityLabel(Map<String, dynamic> marketData) {
+    final status = _marketTradeabilityStatus(marketData);
+    final explicitLabel = marketData['tradeabilityLabel']?.toString();
+    if (explicitLabel != null && explicitLabel.isNotEmpty) {
+      return explicitLabel;
+    }
+    switch (status) {
+      case 'visible_only':
+        return 'VISIBLE ONLY';
+      case 'unavailable':
+        return 'CLOSED/UNAVAILABLE';
+      default:
+        return 'TRADEABLE';
+    }
+  }
+
+  Color _marketTradeabilityColor(Map<String, dynamic> marketData) {
+    switch (_marketTradeabilityStatus(marketData)) {
+      case 'visible_only':
+        return Colors.orangeAccent;
+      case 'unavailable':
+        return Colors.redAccent;
+      default:
+        return Colors.greenAccent;
     }
   }
 
@@ -2109,6 +2232,16 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 'symbol': symbol,
                 'name': '$emoji $name',
                 'category': categoryName,
+                'analysisSymbol':
+                    item['analysis_symbol']?.toString() ??
+                    item['analysisSymbol']?.toString() ??
+                    '',
+                'tradeabilityStatus':
+                    item['tradeabilityStatus']?.toString() ?? '',
+                'tradeabilityLabel':
+                    item['tradeabilityLabel']?.toString() ?? '',
+                'tradeabilityReason':
+                    item['tradeabilityReason']?.toString() ?? '',
               });
             }
           }
@@ -3335,9 +3468,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
                                     // Get market data for this symbol directly (API now uses correct keys)
                                     final marketData =
-                                      _normalizeMarketDataEntry(
-                                        commodityMarketData[symbolCode],
-                                      );
+                                      _resolveCommodityMarketEntry(symbol);
                                     final binanceData =
                                       _binancePairAnalytics[symbolCode] ??
                                       const {};
@@ -3355,6 +3486,17 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     );
                                     final signalStrength =
                                       _marketSignalStrength(marketData);
+                                    final tradeabilityStatus =
+                                      _marketTradeabilityStatus(marketData);
+                                    final tradeabilityLabel =
+                                      _marketTradeabilityLabel(marketData);
+                                    final tradeabilityColor =
+                                      _marketTradeabilityColor(marketData);
+                                    final tradeabilityReason =
+                                      marketData['tradeabilityReason']?.toString();
+                                    final isUnavailableFxcmSymbol =
+                                      !isBinanceSymbol &&
+                                      tradeabilityStatus == 'unavailable';
                                     final edgePct = _safeToDouble(
                                     binanceData['edgePct'],
                                     );
@@ -3373,6 +3515,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       : '${change > 0 ? '+' : ''}${change.toStringAsFixed(2)}%';
                                     final recommendation = isBinanceSymbol
                                       ? '${binanceData['analysis'] ?? 'Selected Binance pair will follow your strategy.'} | Est. win rate ${winRate.toStringAsFixed(0)}%'
+                                      : isUnavailableFxcmSymbol &&
+                                              tradeabilityReason != null &&
+                                              tradeabilityReason.isNotEmpty
+                                      ? tradeabilityReason
                                       : (marketData['recommendation'] ??
                                         'No data available');
                                     final volatility = isBinanceSymbol
@@ -3395,7 +3541,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       ),
                                       child: CheckboxListTile(
                                         value: _isSymbolSelected(symbolCode),
-                                        onChanged: (value) {
+                                        onChanged: isUnavailableFxcmSymbol
+                                            ? null
+                                            : (value) {
                                           setState(() {
                                             if (value ?? false) {
                                               if (!_isSymbolSelected(
@@ -3420,7 +3568,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           });
                                         },
                                         title: Column(
-                                          crossAxisAlignment:
+                                        },
                                               CrossAxisAlignment.start,
                                           children: [
                                             Text(
@@ -3532,6 +3680,35 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                                     ),
                                                   ),
                                                 ),
+                                                if (!isBinanceSymbol)
+                                                  Container(
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 6,
+                                                          vertical: 2,
+                                                        ),
+                                                    decoration: BoxDecoration(
+                                                      color: tradeabilityColor
+                                                          .withOpacity(0.18),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            3,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: tradeabilityColor
+                                                            .withOpacity(0.45),
+                                                      ),
+                                                    ),
+                                                    child: Text(
+                                                      tradeabilityLabel,
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        color: tradeabilityColor,
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                      ),
+                                                    ),
+                                                  ),
                                                 Container(
                                                   padding:
                                                       const EdgeInsets.symmetric(

@@ -81,7 +81,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     'Exness': 'Exness-MT5Trial9',
     'Darwinex': 'Darwinex MT5',
     'IG Markets': 'REST-API',
-    'FXM': 'FXM-Live',
+    'FXM': 'REST-API',
     'AvaTrade': 'Ava-Real',
     'FP Markets': 'FPMarkets-Live',
     'Zulu Trade (SA)': 'ZuluTrade ZA',
