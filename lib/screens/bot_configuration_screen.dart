@@ -886,19 +886,16 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'AMD',
       'GBPJPY',
       'EURJPY',
-      // FXCM commodity/index names (after normalization)
-      'GOLD',       // FXCM 'Gold'
-      'SILVER',     // FXCM 'Silver'
-      'USOILSPOT',  // FXCM 'USOilSpot'
-      'UKOILSPOT',  // FXCM 'UKOilSpot'
-      'USOIL',      // FXCM 'USOil' future
-      'UKOIL',      // FXCM 'UKOil' future
-      'NAS100',     // FXCM Nasdaq
-      'GER30',      // FXCM DAX
-      'UK100',      // FXCM FTSE
-      'JPN225',     // FXCM Nikkei
-      'SPX500',     // FXCM S&P 500
-      'US2000',     // FXCM Russell 2000
+      'GOLD',
+      'SILVER',
+      'USOILSPOT',
+      'UKOILSPOT',
+      'NAS100',
+      'GER30',
+      'UK100',
+      'JPN225',
+      'SPX500',
+      'US2000',
     };
 
     const stableSymbols = {
