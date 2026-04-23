@@ -15166,6 +15166,16 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         bot_state['managementProfile'],
         broker_name,
     )
+    fxcm_threshold_migrated = False
+    if (
+        broker_name == 'FXCM'
+        and bot_state['managementMode'] != 'manual'
+        and bot_state['signalThresholdMode'] == 'auto'
+    ):
+        current_threshold = int(_safe_float(bot_state.get('signalThreshold'), 0.0))
+        if current_threshold <= 0 or current_threshold > 40:
+            bot_state['signalThreshold'] = 40
+            fxcm_threshold_migrated = True
     cadence_floor = _minimum_saved_bot_trade_cadence(
         bot_state.get('strategy', row['strategy']),
         bot_state['managementProfile'],
@@ -15243,6 +15253,15 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
             f"{original_restored_symbols} -> {bot_state['symbols']}"
         )
         _persist_normalized_bot_symbols(row['bot_id'], bot_state, bot_state['symbols'])
+    elif fxcm_threshold_migrated:
+        logger.info(
+            f"🔧 Migrated FXCM signal threshold to 40 for bot {row['bot_id']}"
+        )
+        _persist_normalized_bot_symbols(
+            row['bot_id'],
+            bot_state,
+            bot_state['symbols'],
+        )
 
     return bot_state
 
@@ -19854,10 +19873,8 @@ def _default_signal_threshold_for_broker_profile(
     default_threshold = int(profile_defaults['signalThreshold'])
 
     if normalized_broker == 'FXCM':
-        if normalized_profile == 'beginner':
-            return 45
-        if normalized_profile == 'balanced':
-            return 50
+        if normalized_profile in {'beginner', 'balanced'}:
+            return 40
 
     return default_threshold
 
