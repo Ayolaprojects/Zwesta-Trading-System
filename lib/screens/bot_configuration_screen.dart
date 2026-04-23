@@ -1990,6 +1990,13 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     });
   }
 
+  double _safeToDouble(dynamic value, [double fallback = 0.0]) {
+    if (value is num) {
+      return value.toDouble();
+    }
+    return double.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
   List<Map<String, String>> _curateFxcmSymbols(
     List<Map<String, String>> symbols,
   ) {
@@ -3300,64 +3307,65 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                 child: ListView.builder(
                                   itemCount: _filteredTradingSymbols.length,
                                   itemBuilder: (context, index) {
+                                  try {
                                     final symbol =
-                                        _filteredTradingSymbols[index];
-                                    final symbolCode = symbol['symbol']!;
+                                      _filteredTradingSymbols[index];
+                                    final symbolCode =
+                                      symbol['symbol'] ?? 'Unknown';
                                     final isBinanceSymbol = _isBinanceBroker;
                                     final traditionalBucket =
-                                        _traditionalVolatilityBucket(
-                                          symbolCode,
-                                        );
+                                      _traditionalVolatilityBucket(
+                                      symbolCode,
+                                      );
                                     final traditionalBucketColor =
-                                        _traditionalVolatilityColor(
-                                          traditionalBucket,
-                                        );
+                                      _traditionalVolatilityColor(
+                                      traditionalBucket,
+                                      );
 
                                     // Get market data for this symbol directly (API now uses correct keys)
                                     final marketData =
-                                        commodityMarketData[symbolCode] ?? {};
+                                      commodityMarketData[symbolCode] ?? {};
                                     final binanceData =
-                                        _binancePairAnalytics[symbolCode] ??
-                                        const {};
+                                      _binancePairAnalytics[symbolCode] ??
+                                      const {};
                                     final trend =
-                                        marketData['trend'] ?? 'NEUTRAL';
+                                      marketData['trend'] ?? 'NEUTRAL';
                                     final signalColor = _marketSignalColor(
-                                      isBinanceSymbol: isBinanceSymbol,
-                                      trend: trend.toString(),
+                                    isBinanceSymbol: isBinanceSymbol,
+                                    trend: trend.toString(),
                                     );
                                     final isBullish = isBinanceSymbol
-                                        ? true
-                                        : trend == 'UP';
-                                    final change = (marketData['change'] ?? 0)
-                                        .toDouble();
+                                      ? true
+                                      : trend == 'UP';
+                                    final change = _safeToDouble(
+                                    marketData['change'],
+                                    );
                                     final signalStrength =
-                                        _marketSignalStrength(marketData);
-                                    final edgePct =
-                                        (binanceData['edgePct'] as num?)
-                                            ?.toDouble() ??
-                                        0.0;
-                                    final winRate =
-                                        (binanceData['winRate'] as num?)
-                                            ?.toDouble() ??
-                                        0.0;
+                                      _marketSignalStrength(marketData);
+                                    final edgePct = _safeToDouble(
+                                    binanceData['edgePct'],
+                                    );
+                                    final winRate = _safeToDouble(
+                                    binanceData['winRate'],
+                                    );
                                     final signal = isBinanceSymbol
-                                        ? 'EDGE ${edgePct.toStringAsFixed(1)}%'
-                                        : (marketData['signal'] ??
-                                              '🟡 NEUTRAL');
+                                      ? 'EDGE ${edgePct.toStringAsFixed(1)}%'
+                                      : (marketData['signal'] ??
+                                        '🟡 NEUTRAL');
                                     final visiblePercentageLabel =
-                                        isBinanceSymbol
-                                        ? '${edgePct.toStringAsFixed(1)}% edge • ${winRate.toStringAsFixed(0)}% win'
-                                        : signalStrength > 0
-                                        ? '${signalStrength.toStringAsFixed(signalStrength >= 10 ? 0 : 1)}% signal'
-                                        : '${change > 0 ? '+' : ''}${change.toStringAsFixed(2)}%';
+                                      isBinanceSymbol
+                                      ? '${edgePct.toStringAsFixed(1)}% edge • ${winRate.toStringAsFixed(0)}% win'
+                                      : signalStrength > 0
+                                      ? '${signalStrength.toStringAsFixed(signalStrength >= 10 ? 0 : 1)}% signal'
+                                      : '${change > 0 ? '+' : ''}${change.toStringAsFixed(2)}%';
                                     final recommendation = isBinanceSymbol
-                                        ? '${binanceData['analysis'] ?? 'Selected Binance pair will follow your strategy.'} | Est. win rate ${winRate.toStringAsFixed(0)}%'
-                                        : (marketData['recommendation'] ??
-                                              'No data available');
+                                      ? '${binanceData['analysis'] ?? 'Selected Binance pair will follow your strategy.'} | Est. win rate ${winRate.toStringAsFixed(0)}%'
+                                      : (marketData['recommendation'] ??
+                                        'No data available');
                                     final volatility = isBinanceSymbol
-                                        ? '${binanceData['risk'] ?? 'Medium'} risk'
-                                        : (marketData['volatility'] ??
-                                              'Unknown');
+                                      ? '${binanceData['risk'] ?? 'Medium'} risk'
+                                      : (marketData['volatility'] ??
+                                        'Unknown');
 
                                     return Container(
                                       margin: const EdgeInsets.only(bottom: 8),
@@ -3402,7 +3410,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
-                                            Text(symbol['name']!),
+                                            Text(
+                                              symbol['name'] ?? symbolCode,
+                                            ),
                                             const SizedBox(height: 6),
                                             Wrap(
                                               spacing: 8,
@@ -3472,7 +3482,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                               runSpacing: 6,
                                               children: [
                                                 Text(
-                                                  symbol['category']!,
+                                                  symbol['category'] ??
+                                                      'General',
                                                   style: const TextStyle(
                                                     fontSize: 11,
                                                   ),
@@ -3557,7 +3568,32 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           ],
                                         ),
                                       ),
-                                    );
+                                      );
+                                    } catch (e) {
+                                      return Container(
+                                        margin: const EdgeInsets.only(bottom: 8),
+                                        decoration: BoxDecoration(
+                                          border: Border.all(
+                                            color: Colors.orangeAccent,
+                                          ),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                          color: Colors.orangeAccent
+                                              .withOpacity(0.08),
+                                        ),
+                                        child: ListTile(
+                                          title: Text(
+                                            _filteredTradingSymbols[index]['symbol'] ??
+                                                'Unknown symbol',
+                                          ),
+                                          subtitle: Text(
+                                            'FXCM symbol row fallback: $e',
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      );
+                                    }
                                   },
                                 ),
                               ),
