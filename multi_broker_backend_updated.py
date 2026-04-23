@@ -1077,6 +1077,11 @@ _fxcm_bearer_token = None
 _fxcm_session = None
 _fxcm_lock = threading.Lock()
 
+# FXCM result cache — avoids repeated ForexConnect subprocess logins for position polls
+# Key: credential_id, Value: {account_info, positions, account_id, ts}
+_fxcm_result_cache: Dict[str, Dict] = {}
+_FXCM_CACHE_TTL = 25  # seconds — positions/account cached for this long
+
 
 def _fxcm_base_url() -> str:
     return _FXCM_BASE_URLS.get(FXCM_CONFIG['server'], _FXCM_BASE_URLS['demo'])
@@ -5891,6 +5896,25 @@ class FXCMConnection(BrokerConnection):
 
     def _login_forexconnect(self) -> bool:
         if self._can_use_forexconnect_helper():
+            # Check if we have a recent cached login result — avoid redundant subprocess login
+            cred_id = str(self.credentials.get('credential_id') or '').strip()
+            now = time.monotonic()
+            cached = _fxcm_result_cache.get(cred_id) if cred_id else None
+            # Use account_ts (set by login_check) or ts (set by get_positions) as freshness indicator
+            cache_age = now - max(cached.get('account_ts', 0), cached.get('ts', 0)) if cached else _FXCM_CACHE_TTL + 1
+            if cached and cache_age < _FXCM_CACHE_TTL and cached.get('account_id'):
+                # Cache is fresh — reuse without spawning a subprocess
+                cached_account = cached.get('account_info') or {}
+                cached_account_id = str(cached.get('account_id') or '').strip()
+                if cached_account_id:
+                    self.credentials['account_number'] = cached_account_id
+                self.account_info = cached_account
+                self.forexconnect_helper_mode = True
+                self.forexconnect_mode = False
+                self.connected = True
+                self.last_error = ''
+                return True
+
             result = self._run_forexconnect_helper('login_check', timeout=60)
             if result and result.get('success'):
                 account = result.get('account') or {}
@@ -5902,6 +5926,13 @@ class FXCMConnection(BrokerConnection):
                 self.forexconnect_mode = False
                 self.connected = True
                 self.last_error = ''
+                # Seed account cache (positions will be fetched separately on first get_positions call)
+                if cred_id:
+                    entry = _fxcm_result_cache.setdefault(cred_id, {})
+                    entry['account_info'] = self.account_info
+                    entry['account_id'] = account_id
+                    entry['account_ts'] = now
+                    # Don't set 'ts' here — let get_positions set it after actually fetching
                 return True
 
         try:
@@ -6242,12 +6273,24 @@ class FXCMConnection(BrokerConnection):
                 return {}
 
             if self.forexconnect_helper_mode:
+                cred_id = str(self.credentials.get('credential_id') or '').strip()
+                now = time.monotonic()
+                cached = _fxcm_result_cache.get(cred_id) if cred_id else None
+                cache_age = now - max(cached.get('account_ts', 0), cached.get('ts', 0)) if cached else _FXCM_CACHE_TTL + 1
+                if cached and cache_age < _FXCM_CACHE_TTL and cached.get('account_info'):
+                    return dict(cached['account_info'])
+
                 result = self._run_forexconnect_helper('get_account_info')
                 if not result or result.get('success') is False:
                     return {}
                 account = result.get('account') or {}
                 if isinstance(account, dict):
                     self.account_info = account
+                    if cred_id:
+                        entry = _fxcm_result_cache.setdefault(cred_id, {})
+                        entry['account_info'] = account
+                        entry['account_id'] = str(account.get('account_id') or account.get('accountNumber') or '')
+                        entry['account_ts'] = now
                 return self.account_info
 
             if self.forexconnect_mode:
@@ -6349,11 +6392,22 @@ class FXCMConnection(BrokerConnection):
                 return []
 
             if self.forexconnect_helper_mode:
+                cred_id = str(self.credentials.get('credential_id') or '').strip()
+                now = time.monotonic()
+                cached = _fxcm_result_cache.get(cred_id) if cred_id else None
+                if cached and (now - cached.get('ts', 0)) < _FXCM_CACHE_TTL and 'positions' in cached:
+                    return list(cached['positions'])
+
                 result = self._run_forexconnect_helper('get_positions')
                 if not result or result.get('success') is False:
                     return []
                 positions = result.get('positions')
-                return positions if isinstance(positions, list) else []
+                positions = positions if isinstance(positions, list) else []
+                if cred_id:
+                    entry = _fxcm_result_cache.setdefault(cred_id, {})
+                    entry['positions'] = positions
+                    entry['ts'] = now
+                return positions
 
             if self.forexconnect_mode:
                 account_id = str(self.credentials.get('account_number', '') or '')
@@ -24675,6 +24729,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 'server': cred.get('server'),
                 'connection': 'Real' if is_live else 'Demo',
                 'is_live': is_live,
+                'credential_id': credential_id,
             })
             if fxcm_conn.connect():
                 logger.info(f"✅ {context_label}: Connected to FXCM ({account_number or 'FXCM'})")
