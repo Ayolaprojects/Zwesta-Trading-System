@@ -1333,15 +1333,30 @@ def get_dashboard_accounts():
     })
 
 # ==================== DUAL EXNESS TERMINAL PATHS ====================
-EXNESS_DEMO_PATH = os.getenv('EXNESS_DEMO_PATH', r'C:\MT5\Exness-Demo').strip()
-EXNESS_LIVE_PATH = os.getenv('EXNESS_LIVE_PATH', r'C:\MT5\Exness-Live').strip()
+def _normalize_mt5_path_hint(path: str) -> Optional[str]:
+    normalized_path = str(path or '').strip().strip('"').strip("'")
+    if not normalized_path:
+        return None
 
-if os.path.exists(EXNESS_DEMO_PATH):
+    normalized_path = os.path.normpath(normalized_path)
+    executable_names = {'terminal64.exe', 'terminal.exe'}
+    path_parts = normalized_path.split(os.sep)
+    for index, part in enumerate(path_parts):
+        if part.lower() in executable_names:
+            return os.sep.join(path_parts[:index + 1])
+
+    return normalized_path
+
+
+EXNESS_DEMO_PATH = _normalize_mt5_path_hint(os.getenv('EXNESS_DEMO_PATH', r'C:\MT5\Exness-Demo'))
+EXNESS_LIVE_PATH = _normalize_mt5_path_hint(os.getenv('EXNESS_LIVE_PATH', r'C:\MT5\Exness-Live'))
+
+if EXNESS_DEMO_PATH and os.path.exists(EXNESS_DEMO_PATH):
     logger.info(f"[DUAL MT5] ✅ Exness DEMO terminal: {EXNESS_DEMO_PATH}")
 else:
     logger.warning(f"[DUAL MT5] ⚠️  Exness DEMO terminal NOT FOUND: {EXNESS_DEMO_PATH}")
 
-if os.path.exists(EXNESS_LIVE_PATH):
+if EXNESS_LIVE_PATH and os.path.exists(EXNESS_LIVE_PATH):
     logger.info(f"[DUAL MT5] ✅ Exness LIVE terminal: {EXNESS_LIVE_PATH}")
 else:
     logger.warning(f"[DUAL MT5] ⚠️  Exness LIVE terminal NOT FOUND: {EXNESS_LIVE_PATH}")
@@ -14412,9 +14427,19 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
         or int(bot_config.get('consecutiveLosses') or 0) > 0
     )
     fallback_slack = 0 if conservative_entry_mode else min(8, max(5, adaptive_offset))
+    normalized_broker_type = canonicalize_broker_name(broker_type)
+    fxcm_tradable_symbol_keys: Optional[Set[str]] = None
+    fxcm_tradable_lookup_attempted = False
     
     def _is_symbol_tradeable_now(symbol_to_test: str) -> bool:
         """Best-effort tradability check to avoid selecting closed/illiquid symbols."""
+        nonlocal fxcm_tradable_symbol_keys, fxcm_tradable_lookup_attempted
+        if normalized_broker_type == 'FXCM':
+            if not fxcm_tradable_lookup_attempted:
+                fxcm_tradable_symbol_keys = _get_fxcm_tradable_symbol_keys(broker_conn=active_conn)
+                fxcm_tradable_lookup_attempted = True
+            candidate_keys = _get_fxcm_symbol_candidate_keys(symbol_to_test)
+            return fxcm_tradable_symbol_keys is None or bool(candidate_keys & fxcm_tradable_symbol_keys)
         if not (is_mt5 and mt5_conn and getattr(mt5_conn, 'mt5', None)):
             return True
         try:
@@ -21891,7 +21916,14 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
     profile = _normalize_management_profile(bot_config.get('managementProfile'))
     is_assisted = bot_config.get('managementMode', 'assisted') != 'manual'
     guarded_small_live = _is_guarded_small_live_account(bot_config, 2.0)
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName')
+        or bot_config.get('broker_type')
+        or bot_config.get('broker')
+        or ''
+    )
     defaults = BOT_MANAGEMENT_PROFILES.get(profile, BOT_MANAGEMENT_PROFILES['beginner'])
+    broker_default_signal_threshold = _default_signal_threshold_for_broker_profile(profile, broker_name)
     adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
     crypto_only_threshold = _crypto_only_signal_threshold(bot_config.get('symbols') or [])
     signal_threshold_mode = str(bot_config.get('signalThresholdMode') or 'auto').lower()
@@ -21905,7 +21937,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
         'mode': 'assisted' if is_assisted else 'manual',
         'maxOpenPositions': int(bot_config.get('maxOpenPositions') or defaults['maxOpenPositions']),
         'maxPositionsPerSymbol': int(bot_config.get('maxPositionsPerSymbol') or defaults['maxPositionsPerSymbol']),
-        'signalThreshold': int(bot_config.get('signalThreshold') or defaults['signalThreshold']),
+        'signalThreshold': int(bot_config.get('signalThreshold') or broker_default_signal_threshold),
         'allowedVolatility': list(bot_config.get('allowedVolatility') or defaults['allowedVolatility']),
     }
 
@@ -21913,7 +21945,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
         effective['maxOpenPositions'] = min(effective['maxOpenPositions'], defaults['maxOpenPositions'])
         effective['maxPositionsPerSymbol'] = min(effective['maxPositionsPerSymbol'], defaults['maxPositionsPerSymbol'])
         if signal_threshold_mode == 'auto':
-            target_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
+            target_threshold = crypto_only_threshold if crypto_only_threshold is not None else broker_default_signal_threshold
             effective['signalThreshold'] = max(adaptive_floor, int(target_threshold))
         effective['allowedVolatility'] = [
             level for level in effective['allowedVolatility'] if level in defaults['allowedVolatility']
@@ -21923,7 +21955,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
             effective['maxOpenPositions'] = 1
             effective['maxPositionsPerSymbol'] = 1
             if signal_threshold_mode == 'auto':
-                target_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
+                target_threshold = crypto_only_threshold if crypto_only_threshold is not None else broker_default_signal_threshold
                 effective['signalThreshold'] = max(adaptive_floor, int(target_threshold))
             effective['allowedVolatility'] = [
                 level for level in effective['allowedVolatility'] if level in ['Very Low', 'Low', 'Medium']
@@ -21933,7 +21965,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
             effective['maxOpenPositions'] = min(effective['maxOpenPositions'], 2)
             effective['maxPositionsPerSymbol'] = 1
             if signal_threshold_mode == 'auto':
-                target_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
+                target_threshold = crypto_only_threshold if crypto_only_threshold is not None else broker_default_signal_threshold
                 effective['signalThreshold'] = max(adaptive_floor, int(target_threshold))
             effective['allowedVolatility'] = [
                 level for level in effective['allowedVolatility'] if level in ['Low', 'Medium']
@@ -21985,7 +22017,7 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
                 idle_minutes = (datetime.now() - latest_trade_dt).total_seconds() / 60.0
                 if idle_minutes >= 30:
                     bot_config['managementState'] = 'normal'
-                    relaxed_threshold = crypto_only_threshold if crypto_only_threshold is not None else defaults['signalThreshold']
+                    relaxed_threshold = crypto_only_threshold if crypto_only_threshold is not None else broker_default_signal_threshold
                     if guarded_small_live:
                         relaxed_threshold = max(relaxed_threshold, 65)
                     effective['signalThreshold'] = min(effective['signalThreshold'], relaxed_threshold)
@@ -23394,8 +23426,13 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     if term_info and not term_info.trade_allowed:
                                         logger.warning(f"⚠️ Bot {bot_id}: MT5 AutoTrading is DISABLED - skipping cycle (will retry)")
                                         logger.warning(f"   Enable AutoTrading in MT5 toolbar to resume trading")
-                                        time.sleep(trading_interval)
-                                        continue
+                                        if DEPLOYMENT_MODE != 'VPS':
+                                            time.sleep(trading_interval)
+                                            continue
+                                        logger.warning(
+                                            f"   Proceeding anyway in VPS mode because MT5 readiness already confirmed the order path; "
+                                            f"the terminal AutoTrading flag can be stale during account switching"
+                                        )
                                 except Exception as auto_pause_e:
                                     logger.debug(f"Bot {bot_id}: AutoTrading check: {auto_pause_e}")
 
@@ -23461,6 +23498,22 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 
                 trades_placed = 0
                 symbols = bot_config.get('symbols', ['EURUSDm'])
+
+                if canonicalize_broker_name(broker_type) == 'FXCM':
+                    tradable_symbol_keys = _get_fxcm_tradable_symbol_keys(broker_conn=active_conn)
+                    filtered_symbols = _filter_fxcm_symbols_for_tradability(list(symbols), tradable_symbol_keys)
+                    if filtered_symbols and filtered_symbols != list(symbols):
+                        logger.info(
+                            f"🔄 Bot {bot_id}: Filtered FXCM configured symbols for active account tradability: "
+                            f"{list(symbols)} -> {filtered_symbols}"
+                        )
+                        symbols = filtered_symbols
+                        _persist_normalized_bot_symbols(bot_id, bot_config, filtered_symbols)
+                    elif tradable_symbol_keys is not None and not filtered_symbols:
+                        logger.info(
+                            f"🧭 Bot {bot_id}: None of the configured FXCM symbols are currently tradeable on this account; "
+                            f"scanner will rely on the broader valid FXCM universe for this cycle"
+                        )
 
                 if bot_config.get('managementMode', 'assisted') != 'manual' and len(symbols) > MAX_ASSISTED_SYMBOLS_PER_CYCLE:
                     symbols = list(symbols[:MAX_ASSISTED_SYMBOLS_PER_CYCLE])
@@ -23873,18 +23926,57 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     logger.info(f"✅ Bot {bot_id}: FXCM order placed on {order_result.get('symbol', symbol)}")
                                 else:
                                     err_msg = order_result.get('error') or 'unknown error'
-                                    last_order_block_reason = f"FXCM rejected {symbol}: {err_msg}"
-                                    logger.warning(f"Bot {bot_id}: FXCM order failed on {symbol}: {err_msg}")
-                                    # Skip symbols that are not subscribed on the account — retrying won't help
-                                    if 'not available for trading' in str(err_msg).lower() or 'subscription' in str(err_msg).lower():
-                                        _prune_fxcm_blocked_symbol(
-                                            bot_id,
-                                            bot_config,
-                                            symbol,
-                                            broker_conn=fxcm_conn,
+                                    err_msg_lower = str(err_msg).lower()
+                                    if 'maximum quantity violated' in err_msg_lower or 'ora-20134' in err_msg_lower:
+                                        retry_volumes = []
+                                        for reduction_factor in (0.5, 0.25, 0.1):
+                                            retry_volume = max(0.01, round(float(adjusted_volume or 0.0) * reduction_factor, 2))
+                                            if retry_volume < float(adjusted_volume or 0.0) and retry_volume not in retry_volumes:
+                                                retry_volumes.append(retry_volume)
+
+                                        for retry_volume in retry_volumes:
+                                            logger.warning(
+                                                f"↩️ Bot {bot_id}: FXCM quantity limit hit on {symbol}; retrying with smaller volume {retry_volume:.2f}"
+                                            )
+                                            retry_result = fxcm_conn.place_order(
+                                                symbol=symbol,
+                                                order_type=order_type,
+                                                volume=retry_volume,
+                                            )
+                                            if retry_result.get('success', False):
+                                                order_result = retry_result
+                                                adjusted_volume = retry_volume
+                                                err_msg = ''
+                                                err_msg_lower = ''
+                                                logger.info(
+                                                    f"✅ Bot {bot_id}: FXCM order placed on {retry_result.get('symbol', symbol)} after downsizing to {retry_volume:.2f}"
+                                                )
+                                                break
+
+                                            err_msg = retry_result.get('error') or err_msg
+                                            err_msg_lower = str(err_msg).lower()
+
+                                    if order_result.get('success', False):
+                                        logger.info(f"✅ Bot {bot_id}: FXCM order placed on {order_result.get('symbol', symbol)}")
+                                    else:
+                                        err_msg = order_result.get('error') or err_msg or 'unknown error'
+                                        last_order_block_reason = f"FXCM rejected {symbol}: {err_msg}"
+                                        logger.warning(f"Bot {bot_id}: FXCM order failed on {symbol}: {err_msg}")
+                                        # Skip symbols that are not subscribed on the account — retrying won't help
+                                        is_fxcm_subscription_error = (
+                                            ('not available for trading' in err_msg_lower or 'subscription' in err_msg_lower)
+                                            and 'maximum quantity violated' not in err_msg_lower
+                                            and 'ora-20134' not in err_msg_lower
                                         )
-                                        logger.info(f"⏭️ Bot {bot_id}: Skipping {symbol} — not subscribed on FXCM account (status D/V)")
-                                        continue
+                                        if is_fxcm_subscription_error:
+                                            _prune_fxcm_blocked_symbol(
+                                                bot_id,
+                                                bot_config,
+                                                symbol,
+                                                broker_conn=fxcm_conn,
+                                            )
+                                            logger.info(f"⏭️ Bot {bot_id}: Skipping {symbol} — not subscribed on FXCM account (status D/V)")
+                                            continue
                             except Exception as e:
                                 logger.error(f"Bot {bot_id}: FXCM place_order exception: {e}")
                                 last_order_block_reason = f"FXCM exception on {symbol}: {e}"
