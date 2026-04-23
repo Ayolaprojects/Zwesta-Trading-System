@@ -1775,93 +1775,103 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
+        final commoditiesList = data['commodities'] as Map? ?? {};
+        final builtSymbols = _buildSymbolsFromApiData(commoditiesList);
 
-        setState(() {
-          // Get market data for signal display (flat dict: {EURUSD: {signal, trend, ...}, ...})
-          final marketDataResponse = data['marketData'] ?? {};
-          commodityMarketData = marketDataResponse.cast<String, dynamic>();
+        if (builtSymbols.isNotEmpty) {
+          setState(() {
+            // Get market data for signal display (flat dict: {EURUSD: {signal, trend, ...}, ...})
+            final marketDataResponse = data['marketData'] ?? {};
+            commodityMarketData = marketDataResponse.cast<String, dynamic>();
 
-          // Get commodities list for symbol selection (nested by category)
-          final commoditiesList = data['commodities'] as Map? ?? {};
-          tradingSymbols = _buildSymbolsFromApiData(commoditiesList);
-          _selectedSymbols = _remapSelectedSymbolsToAvailable(
-            tradingSymbols
-                .map((item) => item['symbol'])
-                .whereType<String>()
-                .toList(),
-          );
-          _applyCryptoSelectionSafetyDefaults();
-          _isLoadingData = false;
-        });
+            // Get commodities list for symbol selection (nested by category)
+            tradingSymbols = builtSymbols;
+            _selectedSymbols = _remapSelectedSymbolsToAvailable(
+              tradingSymbols
+                  .map((item) => item['symbol'])
+                  .whereType<String>()
+                  .toList(),
+            );
+            _applyCryptoSelectionSafetyDefaults();
+            _isLoadingData = false;
+          });
+          return;
+        }
       }
+      // Non-200 response or empty symbol list — fall through to use broker fallback symbols
+      _loadFallbackSymbols();
     } catch (e) {
       print('Error fetching commodity data: $e');
-      // Use default fallback symbols if API fails so save button still works
-      setState(() {
-        tradingSymbols = _activeBrokerName == 'fxcm'
-            ? List<Map<String, String>>.from(_fxcmFallbackSymbols)
-            : [
-          {
-            'symbol': 'BTCUSD',
-            'name': '₿ Bitcoin (BTC/USD)',
-            'category': 'Crypto',
-          },
-          {
-            'symbol': 'ETHUSD',
-            'name': 'Ethereum (ETH/USD)',
-            'category': 'Crypto',
-          },
-          {
-            'symbol': 'XAUUSD',
-            'name': '🥇 Gold (XAU/USD)',
-            'category': 'Precious Metals',
-          },
-          {
-            'symbol': 'EURUSD',
-            'name': '💱 Euro vs US Dollar',
-            'category': 'Forex',
-          },
-          {
-            'symbol': 'USDJPY',
-            'name': '💱 US Dollar vs Japanese Yen',
-            'category': 'Forex',
-          },
-          {
-            'symbol': 'GBPUSD',
-            'name': '💱 British Pound vs US Dollar',
-            'category': 'Forex',
-          },
-          {
-            'symbol': 'AUDUSD',
-            'name': '💱 Australian Dollar vs US Dollar',
-            'category': 'Forex',
-          },
-          {
-            'symbol': 'USDCAD',
-            'name': '💱 US Dollar vs Canadian Dollar',
-            'category': 'Forex',
-          },
-          {
-            'symbol': 'NVDA',
-            'name': '📈 NVIDIA Corporation',
-            'category': 'Stocks',
-          },
-          {'symbol': 'AAPL', 'name': '📈 Apple Inc.', 'category': 'Stocks'},
-          {
-            'symbol': 'MSFT',
-            'name': '📈 Microsoft Corporation',
-            'category': 'Stocks',
-          },
-        ];
-        _selectedSymbols = _remapSelectedSymbolsToAvailable(
-          tradingSymbols
-              .map((item) => item['symbol'])
-              .whereType<String>()
-              .toList(),
-        );
-        _isLoadingData = false;
-      });
+      _loadFallbackSymbols();
     }
+  }
+
+  void _loadFallbackSymbols() {
+    setState(() {
+      commodityMarketData = {}; // clear stale data so fallback items render with correct neutral styling
+      tradingSymbols = _activeBrokerName == 'fxcm'
+          ? List<Map<String, String>>.from(_fxcmFallbackSymbols)
+          : [
+        {
+          'symbol': 'BTCUSD',
+          'name': '₿ Bitcoin (BTC/USD)',
+          'category': 'Crypto',
+        },
+        {
+          'symbol': 'ETHUSD',
+          'name': 'Ethereum (ETH/USD)',
+          'category': 'Crypto',
+        },
+        {
+          'symbol': 'XAUUSD',
+          'name': '🥇 Gold (XAU/USD)',
+          'category': 'Precious Metals',
+        },
+        {
+          'symbol': 'EURUSD',
+          'name': '💱 Euro vs US Dollar',
+          'category': 'Forex',
+        },
+        {
+          'symbol': 'USDJPY',
+          'name': '💱 US Dollar vs Japanese Yen',
+          'category': 'Forex',
+        },
+        {
+          'symbol': 'GBPUSD',
+          'name': '💱 British Pound vs US Dollar',
+          'category': 'Forex',
+        },
+        {
+          'symbol': 'AUDUSD',
+          'name': '💱 Australian Dollar vs US Dollar',
+          'category': 'Forex',
+        },
+        {
+          'symbol': 'USDCAD',
+          'name': '💱 US Dollar vs Canadian Dollar',
+          'category': 'Forex',
+        },
+        {
+          'symbol': 'NVDA',
+          'name': '📈 NVIDIA Corporation',
+          'category': 'Stocks',
+        },
+        {'symbol': 'AAPL', 'name': '📈 Apple Inc.', 'category': 'Stocks'},
+        {
+          'symbol': 'MSFT',
+          'name': '📈 Microsoft Corporation',
+          'category': 'Stocks',
+        },
+      ];
+      _selectedSymbols = _remapSelectedSymbolsToAvailable(
+        tradingSymbols
+            .map((item) => item['symbol'])
+            .whereType<String>()
+            .toList(),
+      );
+      _isLoadingData = false;
+    });
   }
 
   double _marketSignalStrength(Map<String, dynamic> marketData) {
