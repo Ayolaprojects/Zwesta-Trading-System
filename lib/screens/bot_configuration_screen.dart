@@ -886,6 +886,19 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'AMD',
       'GBPJPY',
       'EURJPY',
+      // FXCM commodity/index names (after normalization)
+      'GOLD',       // FXCM 'Gold'
+      'SILVER',     // FXCM 'Silver'
+      'USOILSPOT',  // FXCM 'USOilSpot'
+      'UKOILSPOT',  // FXCM 'UKOilSpot'
+      'USOIL',      // FXCM 'USOil' future
+      'UKOIL',      // FXCM 'UKOil' future
+      'NAS100',     // FXCM Nasdaq
+      'GER30',      // FXCM DAX
+      'UK100',      // FXCM FTSE
+      'JPN225',     // FXCM Nikkei
+      'SPX500',     // FXCM S&P 500
+      'US2000',     // FXCM Russell 2000
     };
 
     const stableSymbols = {
@@ -3103,7 +3116,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Showing ${_filteredTradingSymbols.length} of ${tradingSymbols.length} symbols, ordered from stable to high volatility.',
+                      _selectedTraditionalVolatilityFilter == 'All'
+                        ? '${tradingSymbols.length} symbols available, ordered from stable to high volatility.'
+                        : 'Showing ${_filteredTradingSymbols.length} of ${tradingSymbols.length} symbols in the \'${_selectedTraditionalVolatilityFilter}\' category.',
                       style: TextStyle(fontSize: 11, color: Colors.grey[400]),
                     ),
                     if (_hiddenSelectedSymbolCount > 0)
@@ -3195,10 +3210,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       margin: const EdgeInsets.only(bottom: 8),
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: signalColor.withOpacity(0.35),
+                                          color: signalColor.withOpacity(
+                                            marketData.isEmpty ? 0.55 : 0.35,
+                                          ),
                                         ),
                                         borderRadius: BorderRadius.circular(8),
-                                        color: signalColor.withOpacity(0.06),
+                                        color: signalColor.withOpacity(
+                                          marketData.isEmpty ? 0.14 : 0.06,
+                                        ),
                                       ),
                                       child: CheckboxListTile(
                                         value: _isSymbolSelected(symbolCode),
