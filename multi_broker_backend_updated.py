@@ -12399,6 +12399,37 @@ SYMBOL_PARAMETERS = {
         'volatility_low': 1.0,
         'max_hold_minutes': 90,
     },
+    # ZAR PAIRS - High volatility, wide spreads, trending behaviour — requires strong signal
+    'GBPZAR': {
+        'atr_multiplier': 2.0,
+        'stop_loss_pips': 300,   # Wide stop: ~300 pips at pip value ~$0.04 each
+        'take_profit_pips': 600,
+        'max_slippage': 0.003,
+        'min_signal_strength': 72,  # Only trade very strong setups
+        'volatility_high': 1.5,
+        'volatility_low': 0.3,
+        'mean_reversion_incompatible': True,  # Trending pair — Mean Reversion is blocked
+    },
+    'USDZAR': {
+        'atr_multiplier': 2.0,
+        'stop_loss_pips': 250,
+        'take_profit_pips': 500,
+        'max_slippage': 0.003,
+        'min_signal_strength': 72,
+        'volatility_high': 1.2,
+        'volatility_low': 0.2,
+        'mean_reversion_incompatible': True,
+    },
+    'ZARJPY': {
+        'atr_multiplier': 2.0,
+        'stop_loss_pips': 200,
+        'take_profit_pips': 400,
+        'max_slippage': 0.003,
+        'min_signal_strength': 72,
+        'volatility_high': 1.0,
+        'volatility_low': 0.2,
+        'mean_reversion_incompatible': True,
+    },
 }
 
 # Default parameters for symbols not in the list
@@ -13343,9 +13374,15 @@ def mean_reversion_strategy(symbol, account_id, risk_amount, market_data=None):
     """
     if market_data is None:
         market_data = commodity_market_data.get(symbol, {})
-    
-    signal_eval = evaluate_real_trade_signal(symbol, market_data)
+
+    # Block Mean Reversion on strongly-trending symbols (e.g. ZAR pairs).
+    # These pairs trend persistently; mean reversion trades against the move and incur large losses.
     params = _get_effective_symbol_params(symbol, market_data)
+    if params.get('mean_reversion_incompatible'):
+        logger.debug(f"[Mean Reversion] Skipping {symbol} — incompatible trending pair")
+        return None
+
+    signal_eval = evaluate_real_trade_signal(symbol, market_data)
     min_signal_strength = params['effective_min_signal_strength']
     
     # Mean reversion works best when price is extreme (RSI <30 or >70)
@@ -14673,7 +14710,7 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         'strategy': row['strategy'],
         'enabled': bool(row['enabled']),
         'riskPerTrade': 20.0,
-        'maxDailyLoss': 60.0,
+        'maxDailyLoss': 150.0,
         'maxOpenPositions': 5,
         'maxPositionsPerSymbol': 5,
         'profitLock': 80.0,
