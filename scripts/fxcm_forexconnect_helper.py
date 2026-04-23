@@ -217,7 +217,16 @@ def _resolve_amount(fx: ForexConnect, volume: float, instrument: str, account) -
     if requested_volume <= 0:
         return 1
 
-    estimated_units = requested_volume * 100000.0
+    normalized_instrument = _normalized_symbol(instrument)
+    asset_contract_baseline = 100000.0
+    if normalized_instrument in {
+        'XAUUSD', 'XAGUSD', 'USOIL', 'UKOIL', 'USOILSPOT', 'UKOILSPOT',
+        'US30', 'GER30', 'NAS100', 'SPX500', 'UK100', '5USNOTE', '10USNOTE',
+        '2USNOTE', 'BOBL', 'SCHATZ', 'FED30D', 'EURIBOR3M', 'SONIA3M',
+    }:
+        asset_contract_baseline = 1.0
+
+    estimated_units = requested_volume * asset_contract_baseline
     try:
         trading_settings_provider = fx.login_rules.trading_settings_provider
         base_unit_size = int(trading_settings_provider.get_base_unit_size(instrument, account))

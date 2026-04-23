@@ -1858,9 +1858,6 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (activeCredential != null && activeCredential.credentialId.isNotEmpty) {
         queryParameters['credential_id'] = activeCredential.credentialId;
       }
-      if (normalizedBroker == 'fxcm') {
-        queryParameters['skip_tradability'] = '1';
-      }
       final uri = Uri.parse(
         '${EnvironmentConfig.apiUrl}/api/commodities/list',
       ).replace(queryParameters: queryParameters.isEmpty ? null : queryParameters);
@@ -2038,6 +2035,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     }
 
     return (double.tryParse(rawValue.toString()) ?? 0.0).clamp(0.0, 100.0);
+  }
+
+  Map<String, dynamic> _normalizeMarketDataEntry(dynamic rawEntry) {
+    if (rawEntry is Map<String, dynamic>) {
+      return rawEntry;
+    }
+    if (rawEntry is Map) {
+      return rawEntry.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+    }
+    return const <String, dynamic>{};
   }
 
   Color _marketSignalColor({
@@ -3326,7 +3335,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
                                     // Get market data for this symbol directly (API now uses correct keys)
                                     final marketData =
-                                      commodityMarketData[symbolCode] ?? {};
+                                      _normalizeMarketDataEntry(
+                                        commodityMarketData[symbolCode],
+                                      );
                                     final binanceData =
                                       _binancePairAnalytics[symbolCode] ??
                                       const {};
@@ -3571,7 +3582,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                         ),
                                       ),
                                       );
-                                    } catch (e) {
+                                    } catch (_) {
+                                      final fallbackSymbol =
+                                          _filteredTradingSymbols[index];
+                                      final fallbackCode =
+                                          fallbackSymbol['symbol'] ??
+                                          'Unknown symbol';
                                       return Container(
                                         margin: const EdgeInsets.only(bottom: 8),
                                         decoration: BoxDecoration(
@@ -3585,11 +3601,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                         ),
                                         child: ListTile(
                                           title: Text(
-                                            _filteredTradingSymbols[index]['symbol'] ??
-                                                'Unknown symbol',
+                                            fallbackSymbol['name'] ?? fallbackCode,
                                           ),
                                           subtitle: Text(
-                                            'FXCM symbol row fallback: $e',
+                                            fallbackSymbol['category'] ?? 'General',
                                             maxLines: 2,
                                             overflow: TextOverflow.ellipsis,
                                           ),
