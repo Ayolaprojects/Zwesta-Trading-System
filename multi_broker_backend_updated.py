@@ -17205,7 +17205,7 @@ def _init_commodity_data(price, symbol_name):
         'current_price': price,
         'price_history': [price] * 20,  # 20 historical prices for indicators
         'change': 0,
-        'trend': 'FLAT',
+        'trend': 'RANGING',
         'volatility': 'Medium',
         'volatility_pct': 0.1,
         'signal': '🟡 INITIALIZING',

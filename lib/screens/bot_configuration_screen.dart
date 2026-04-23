@@ -1895,9 +1895,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       case 'DOWN':
         return Colors.red;
       case 'RANGING':
+      case 'FLAT':
+      case 'NEUTRAL':
+      case 'CONSOLIDATING':
         return Colors.amber;
       default:
-        return Colors.blueGrey;
+        return Colors.amber; // no data yet — show amber (neutral) not invisible grey
     }
   }
 
