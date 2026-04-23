@@ -1440,13 +1440,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       return _cryptoOnlyAutoThreshold;
     }
 
+    final isFxcmBroker = _activeBrokerName == 'fxcm';
+
     switch (profile) {
       case 'small_account':
         return 30;
       case 'beginner':
-        return 60;
+        return isFxcmBroker ? 45 : 60;
       case 'balanced':
-        return 45;
+        return isFxcmBroker ? 50 : 45;
       case 'advanced':
         return 30;
       case 'fast_growth':

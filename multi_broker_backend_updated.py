@@ -14675,7 +14675,10 @@ def initialize_demo_bots():
             'managementMode': 'assisted',
             'managementProfile': 'beginner',
             'managementState': 'normal',
-            'signalThreshold': 70,
+            'signalThreshold': _default_signal_threshold_for_broker_profile(
+                'beginner',
+                bot_config.get('brokerName') or bot_config.get('broker_type') or '',
+            ),
             'displayCurrency': 'USD',
             'mode': 'demo',
             'totalTrades': 0,
@@ -14735,6 +14738,7 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     daily_profit = float(row['daily_profit'] or 0.0)
     cached_balance = float(row['cached_balance'] or 0.0)
     cached_equity = float(row['cached_equity'] or cached_balance)
+    broker_name = canonicalize_broker_name(row['broker_name']) if row['broker_name'] else 'MT5'
     return {
         'mode': 'live' if row['is_live'] else 'demo',
         'symbols': row['symbols'].split(',') if row['symbols'] else ['EURUSDm'],
@@ -14753,7 +14757,10 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         'managementMode': 'assisted',
         'managementProfile': 'beginner',
         'managementState': 'normal',
-        'signalThreshold': 70,
+        'signalThreshold': _default_signal_threshold_for_broker_profile(
+            'beginner',
+            broker_name,
+        ),
         'adaptiveSignalThresholdOffset': 0,
         'adaptiveSignalMissCount': 0,
         'adaptiveSignalThresholdReason': None,
@@ -15155,7 +15162,10 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         bot_state['signalThresholdMode'] = 'auto'
     elif bot_state['signalThresholdMode'] != 'manual':
         bot_state['signalThresholdMode'] = 'auto'
-    bot_state['signalThreshold'] = bot_state.get('signalThreshold') or BOT_MANAGEMENT_PROFILES[bot_state['managementProfile']]['signalThreshold']
+    bot_state['signalThreshold'] = bot_state.get('signalThreshold') or _default_signal_threshold_for_broker_profile(
+        bot_state['managementProfile'],
+        broker_name,
+    )
     cadence_floor = _minimum_saved_bot_trade_cadence(
         bot_state.get('strategy', row['strategy']),
         bot_state['managementProfile'],
@@ -16065,7 +16075,11 @@ def update_bot_config(bot_id):
             live_balance_basis,
             account_currency,
         )
-        sanitized_risk_config = sanitize_bot_risk_config(effective_data, account_currency)
+        sanitized_risk_config = sanitize_bot_risk_config(
+            effective_data,
+            account_currency,
+            broker_name,
+        )
         if guard_warnings:
             sanitized_risk_config['warnings'] = guard_warnings + sanitized_risk_config.get('warnings', [])
         if capital_safety_warnings:
@@ -19826,6 +19840,27 @@ BOT_MANAGEMENT_PROFILES = {
     },
 }
 
+
+def _default_signal_threshold_for_broker_profile(
+    management_profile: Any,
+    broker_name: Any,
+) -> int:
+    normalized_profile = _normalize_management_profile(management_profile)
+    normalized_broker = canonicalize_broker_name(broker_name)
+    profile_defaults = BOT_MANAGEMENT_PROFILES.get(
+        normalized_profile,
+        BOT_MANAGEMENT_PROFILES['balanced'],
+    )
+    default_threshold = int(profile_defaults['signalThreshold'])
+
+    if normalized_broker == 'FXCM':
+        if normalized_profile == 'beginner':
+            return 45
+        if normalized_profile == 'balanced':
+            return 50
+
+    return default_threshold
+
 SUPPORTED_DISPLAY_CURRENCIES = {'USD', 'ZAR', 'GBP'}
 SMALL_LIVE_ACCOUNT_THRESHOLDS = {
     'USD': 100.0,
@@ -21939,7 +21974,11 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
     return effective
 
 
-def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[str, Any]:
+def sanitize_bot_risk_config(
+    data: Dict,
+    account_currency: str = 'USD',
+    broker_name: str = '',
+) -> Dict[str, Any]:
     """Normalize bot risk configuration before persisting or trading.
     
     Args:
@@ -21961,6 +22000,10 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
     )
     management_mode = 'manual' if not _coerce_bool(intelligent_settings.get('enabled', True), True) else 'assisted'
     profile_defaults = BOT_MANAGEMENT_PROFILES[management_profile]
+    default_signal_threshold = _default_signal_threshold_for_broker_profile(
+        management_profile,
+        broker_name,
+    )
 
     raw_risk_per_trade = data.get('riskPerTrade')
     if raw_risk_per_trade is None and data.get('riskPercent') is not None:
@@ -22059,14 +22102,14 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
     if signal_threshold_mode == 'manual':
         signal_threshold = _clamp_int_value(
             'signalThreshold',
-            data.get('signalThreshold', profile_defaults['signalThreshold']),
+            data.get('signalThreshold', default_signal_threshold),
             ADAPTIVE_SIGNAL_THRESHOLD_MIN,
             90,
-            profile_defaults['signalThreshold'],
+            default_signal_threshold,
             warnings,
         )
     else:
-        signal_threshold = int(crypto_only_threshold if crypto_only_threshold is not None else profile_defaults['signalThreshold'])
+        signal_threshold = int(crypto_only_threshold if crypto_only_threshold is not None else default_signal_threshold)
 
     allowed_volatility = data.get('allowedVolatility') or profile_defaults['allowedVolatility']
     if not isinstance(allowed_volatility, list):
@@ -22131,7 +22174,7 @@ def sanitize_bot_risk_config(data: Dict, account_currency: str = 'USD') -> Dict[
         max_open_positions = min(max_open_positions, profile_defaults['maxOpenPositions'])
         max_positions_per_symbol = min(max_positions_per_symbol, profile_defaults['maxPositionsPerSymbol'])
         if signal_threshold_mode == 'auto':
-            target_threshold = crypto_only_threshold if crypto_only_threshold is not None else profile_defaults['signalThreshold']
+            target_threshold = crypto_only_threshold if crypto_only_threshold is not None else default_signal_threshold
             signal_threshold = max(signal_threshold, int(target_threshold))
         allowed_volatility = [level for level in allowed_volatility if level in profile_defaults['allowedVolatility']] or list(profile_defaults['allowedVolatility'])
 
@@ -22388,7 +22431,11 @@ def create_bot():
                 live_balance_basis,
                 account_currency,
             )
-            sanitized_risk_config = sanitize_bot_risk_config(effective_data, account_currency)
+            sanitized_risk_config = sanitize_bot_risk_config(
+                effective_data,
+                account_currency,
+                broker_name,
+            )
             if guard_warnings:
                 sanitized_risk_config['warnings'] = guard_warnings + sanitized_risk_config.get('warnings', [])
             if capital_safety_warnings:
