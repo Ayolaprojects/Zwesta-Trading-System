@@ -10094,7 +10094,49 @@ def list_commodities():
             broker_name = canonicalize_broker_name(
                 request.args.get('broker') or request.args.get('broker_name') or 'Exness'
             )
-            symbol_config = _get_symbol_catalog_for_request(broker_name) if broker_name == 'FXCM' else {
+            if broker_name == 'FXCM':
+                symbol_config = _get_symbol_catalog_for_request(broker_name)
+            elif broker_name == 'Binance':
+                symbol_config = {
+                    'crypto_tier1': [
+                        {'symbol': 'BTCUSDT', 'name': '₿ Bitcoin', 'type': 'Crypto', 'lucrative': True, 'min_price': 40000, 'max_price': 120000, 'analysis_symbol': 'BTCUSD'},
+                        {'symbol': 'ETHUSDT', 'name': 'Ξ Ethereum', 'type': 'Crypto', 'lucrative': True, 'min_price': 2000, 'max_price': 8000, 'analysis_symbol': 'ETHUSD'},
+                        {'symbol': 'BNBUSDT', 'name': 'BNB', 'type': 'Crypto', 'min_price': 300, 'max_price': 900},
+                        {'symbol': 'SOLUSDT', 'name': 'Solana', 'type': 'Crypto', 'lucrative': True, 'min_price': 80, 'max_price': 350},
+                        {'symbol': 'XRPUSDT', 'name': 'XRP', 'type': 'Crypto', 'min_price': 0.4, 'max_price': 4.0},
+                        {'symbol': 'ADAUSDT', 'name': 'Cardano', 'type': 'Crypto', 'min_price': 0.2, 'max_price': 2.0},
+                        {'symbol': 'DOGEUSDT', 'name': 'Dogecoin', 'type': 'Crypto', 'min_price': 0.05, 'max_price': 1.0},
+                    ],
+                    'crypto_tier2': [
+                        {'symbol': 'AVAXUSDT', 'name': 'Avalanche', 'type': 'Crypto', 'min_price': 15, 'max_price': 120},
+                        {'symbol': 'MATICUSDT', 'name': 'Polygon', 'type': 'Crypto', 'min_price': 0.3, 'max_price': 3.0},
+                        {'symbol': 'LINKUSDT', 'name': 'Chainlink', 'type': 'Crypto', 'min_price': 5, 'max_price': 50},
+                        {'symbol': 'LTCUSDT', 'name': 'Litecoin', 'type': 'Crypto', 'min_price': 50, 'max_price': 400},
+                        {'symbol': 'TRXUSDT', 'name': 'TRON', 'type': 'Crypto', 'min_price': 0.05, 'max_price': 0.5},
+                        {'symbol': 'DOTUSDT', 'name': 'Polkadot', 'type': 'Crypto', 'min_price': 3, 'max_price': 30},
+                        {'symbol': 'ATOMUSDT', 'name': 'Cosmos', 'type': 'Crypto', 'min_price': 4, 'max_price': 40},
+                    ],
+                    'crypto_defi': [
+                        {'symbol': 'AAVEUSDT', 'name': 'Aave', 'type': 'Crypto', 'min_price': 50, 'max_price': 500},
+                        {'symbol': 'UNIUSDT', 'name': 'Uniswap', 'type': 'Crypto', 'min_price': 3, 'max_price': 30},
+                        {'symbol': 'ARBUSDT', 'name': 'Arbitrum', 'type': 'Crypto', 'min_price': 0.5, 'max_price': 5},
+                        {'symbol': 'OPUSDT', 'name': 'Optimism', 'type': 'Crypto', 'min_price': 0.5, 'max_price': 8},
+                        {'symbol': 'INJUSDT', 'name': 'Injective', 'type': 'Crypto', 'min_price': 5, 'max_price': 60},
+                        {'symbol': 'SUIUSDT', 'name': 'Sui', 'type': 'Crypto', 'min_price': 0.3, 'max_price': 6},
+                        {'symbol': 'APTUSDT', 'name': 'Aptos', 'type': 'Crypto', 'min_price': 3, 'max_price': 25},
+                        {'symbol': 'NEARUSDT', 'name': 'NEAR Protocol', 'type': 'Crypto', 'min_price': 1, 'max_price': 15},
+                        {'symbol': 'FTMUSDT', 'name': 'Fantom', 'type': 'Crypto', 'min_price': 0.1, 'max_price': 2},
+                    ],
+                    'crypto_gaming': [
+                        {'symbol': 'SHIBUSDT', 'name': 'Shiba Inu', 'type': 'Crypto', 'min_price': 0.000005, 'max_price': 0.0001},
+                        {'symbol': 'SANDUSDT', 'name': 'The Sandbox', 'type': 'Crypto', 'min_price': 0.2, 'max_price': 3},
+                        {'symbol': 'MANAUSDT', 'name': 'Decentraland', 'type': 'Crypto', 'min_price': 0.2, 'max_price': 3},
+                        {'symbol': 'ALGOUSDT', 'name': 'Algorand', 'type': 'Crypto', 'min_price': 0.1, 'max_price': 2},
+                        {'symbol': 'RUNEUSDT', 'name': 'THORChain', 'type': 'Crypto', 'min_price': 1, 'max_price': 15},
+                    ],
+                }
+            else:
+                symbol_config = {
                 'forex': [
                     {'symbol': 'EURUSD', 'name': '💱 Euro vs US Dollar', 'min_price': 1.08, 'max_price': 1.12},
                     {'symbol': 'GBPUSD', 'name': '💱 British Pound vs US Dollar', 'min_price': 1.26, 'max_price': 1.30},
