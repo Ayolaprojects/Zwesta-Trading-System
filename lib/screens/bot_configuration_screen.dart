@@ -163,6 +163,26 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     {'symbol': 'EURIBOR3M', 'name': 'Euribor (3 month) Future', 'category': 'Treasury'},
     {'symbol': 'SONIA3M', 'name': 'SONIA (3 month) Future', 'category': 'Treasury'},
   ];
+
+  static const List<String> _fxcmPreferredSymbolOrder = [
+    'EUR/USD',
+    'GBP/USD',
+    'USD/JPY',
+    'USD/CHF',
+    'AUD/USD',
+    'NZD/USD',
+    'USD/CAD',
+    'EUR/JPY',
+    'GBP/JPY',
+    'US30',
+    'GER30',
+    'NAS100',
+    'SPX500',
+    'Gold',
+    'Silver',
+    'USOilSpot',
+    'UKOilSpot',
+  ];
   static const List<Map<String, String>> _binanceSymbols = [
     // --- Tier 1: Large Cap ---
     {
@@ -1854,7 +1874,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final commoditiesList = data['commodities'] as Map? ?? {};
-        final builtSymbols = _buildSymbolsFromApiData(commoditiesList);
+        final builtSymbols = _curateFxcmSymbols(
+          _buildSymbolsFromApiData(commoditiesList),
+        );
 
         if (builtSymbols.isNotEmpty) {
           setState(() {
@@ -1887,7 +1909,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   void _preloadFxcmSymbols() {
     setState(() {
       commodityMarketData = {};
-      tradingSymbols = List<Map<String, String>>.from(_fxcmFallbackSymbols);
+      tradingSymbols = _curateFxcmSymbols(
+        List<Map<String, String>>.from(_fxcmFallbackSymbols),
+      );
       _selectedSymbols = _remapSelectedSymbolsToAvailable(
         tradingSymbols
             .map((item) => item['symbol'])
@@ -1902,7 +1926,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     setState(() {
       commodityMarketData = {}; // clear stale data so fallback items render with correct neutral styling
       tradingSymbols = _activeBrokerName == 'fxcm'
-          ? List<Map<String, String>>.from(_fxcmFallbackSymbols)
+          ? _curateFxcmSymbols(List<Map<String, String>>.from(_fxcmFallbackSymbols))
           : [
         {
           'symbol': 'BTCUSD',
@@ -1964,6 +1988,33 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       );
       _isLoadingData = false;
     });
+  }
+
+  List<Map<String, String>> _curateFxcmSymbols(
+    List<Map<String, String>> symbols,
+  ) {
+    if (_activeBrokerName != 'fxcm') {
+      return symbols;
+    }
+
+    final symbolsByBase = <String, Map<String, String>>{};
+    for (final symbol in symbols) {
+      final symbolCode = symbol['symbol'];
+      if (symbolCode == null || symbolCode.isEmpty) {
+        continue;
+      }
+      symbolsByBase[_normalizeSymbolBase(symbolCode)] = symbol;
+    }
+
+    final curated = <Map<String, String>>[];
+    for (final preferredSymbol in _fxcmPreferredSymbolOrder) {
+      final match = symbolsByBase[_normalizeSymbolBase(preferredSymbol)];
+      if (match != null) {
+        curated.add(match);
+      }
+    }
+
+    return curated.isNotEmpty ? curated : symbols;
   }
 
   double _marketSignalStrength(Map<String, dynamic> marketData) {
