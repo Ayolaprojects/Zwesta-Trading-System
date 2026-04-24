@@ -3388,7 +3388,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildRecentTradesCard() {
     final tradingService = context.watch<TradingService>();
     final accountCurrency = tradingService.accountCurrency;
-    final recentTrades = [...tradingService.trades]
+    final recentTrades = [...tradingService.closedTrades]
       ..sort((a, b) {
         final timeA = a.closedAt ?? a.openedAt;
         final timeB = b.closedAt ?? b.openedAt;

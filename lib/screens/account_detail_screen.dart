@@ -127,6 +127,16 @@ class _AccountDetailScreenState extends State<AccountDetailScreen>
         : '$_currencySymbol$formatted $_currencyCode';
   }
 
+  double _num(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0.0;
+  }
+
+  String _fmtPercent(dynamic value) {
+    final percent = _num(value);
+    return '${percent.toStringAsFixed(2)}%';
+  }
+
   Color _profitColor(dynamic amount) {
     final val = (amount is num) ? amount.toDouble() : 0.0;
     if (val > 0) return Colors.green;
@@ -233,6 +243,9 @@ class _AccountDetailScreenState extends State<AccountDetailScreen>
     final marginFree = account['marginFree'] ?? 0.0;
     final activeBots = account['activeBots'] ?? 0;
     final totalBots = account['totalBots'] ?? 0;
+    final accountMetrics = Map<String, dynamic>.from(account['accountMetrics'] ?? {});
+    final marginLevel = _num(accountMetrics['marginLevel']);
+    final openPositions = accountMetrics['openPositions'] ?? 0;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -296,6 +309,76 @@ class _AccountDetailScreenState extends State<AccountDetailScreen>
                   'Bots', '$activeBots / $totalBots', Colors.orange),
             ],
           ),
+          if (accountMetrics.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _metricClusterCard(
+                    title: 'Margin',
+                    accent: Colors.cyan,
+                    lines: [
+                      _metricLine('Used', _fmt(accountMetrics['marginUsed'])),
+                      _metricLine('Usable', _fmt(accountMetrics['marginUsable'])),
+                      _metricLine('% Usable', _fmtPercent(accountMetrics['marginUsablePercent'])),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _metricClusterCard(
+                    title: 'Maintenance Margin',
+                    accent: Colors.orange,
+                    lines: [
+                      _metricLine('Used', _fmt(accountMetrics['maintenanceMarginUsed'])),
+                      _metricLine('Usable', _fmt(accountMetrics['maintenanceMarginUsable'])),
+                      _metricLine('% Usable', _fmtPercent(accountMetrics['maintenanceMarginUsablePercent'])),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _headerStatBox(
+                    'Today P/L',
+                    _fmt(accountMetrics['dayProfit']),
+                    _profitColor(accountMetrics['dayProfit']),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _headerStatBox(
+                    'Gross P/L',
+                    _fmt(accountMetrics['grossProfit']),
+                    _profitColor(accountMetrics['grossProfit']),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _headerStatBox(
+                    'Margin Level',
+                    marginLevel > 0 ? _fmtPercent(marginLevel) : '-',
+                    marginLevel >= 120
+                        ? Colors.green
+                        : marginLevel >= 80
+                            ? Colors.amber
+                            : Colors.red,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '$openPositions open position${openPositions == 1 ? '' : 's'}',
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -325,9 +408,53 @@ class _AccountDetailScreenState extends State<AccountDetailScreen>
       ),
     );
 
+  MapEntry<String, String> _metricLine(String label, String value) => MapEntry(label, value);
+
+  Widget _metricClusterCard({
+    required String title,
+    required Color accent,
+    required List<MapEntry<String, String>> lines,
+  }) => Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: accent,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...lines.map(
+            (line) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(line.key,
+                      style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                  Text(line.value,
+                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
   Widget _buildProfitSummaryBar(Map<String, dynamic> stats,
       Map<String, dynamic> withdrawals, Map<String, dynamic> commissions) {
     final netProfit = stats['netProfit'] ?? 0.0;
+    final todayProfit = stats['todayProfit'] ?? 0.0;
     final totalWithdrawn = withdrawals['totalWithdrawn'] ?? 0.0;
     final totalCommission = commissions['totalEarned'] ?? 0.0;
     final deductions =
@@ -338,6 +465,8 @@ class _AccountDetailScreenState extends State<AccountDetailScreen>
       color: Colors.white.withOpacity(0.03),
       child: Row(
         children: [
+          _miniStat('Today', _fmt(todayProfit), _profitColor(todayProfit)),
+          _divider(),
           _miniStat('Net P&L', _fmt(netProfit), _profitColor(netProfit)),
           _divider(),
           _miniStat('Withdrawn', _fmt(totalWithdrawn), Colors.amber),

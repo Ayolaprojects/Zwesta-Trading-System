@@ -9470,6 +9470,14 @@ def get_account_balances():
         except Exception:
             return None
 
+    def _first_metric(source: Optional[Dict[str, Any]], *keys: str, default: float = 0.0) -> float:
+        if not isinstance(source, dict):
+            return float(default)
+        for key in keys:
+            if key in source and source.get(key) is not None:
+                return _safe_float(source.get(key), default)
+        return float(default)
+
     try:
         user_id = request.user_id
         conn = get_db_connection()
@@ -9773,6 +9781,66 @@ def get_account_balances():
             }
             
             if account_info:
+                live_margin_used = _first_metric(
+                    account_info,
+                    'margin',
+                    'usedMargin',
+                    'used_margin',
+                    'usdMr',
+                    'usd_mr',
+                    default=0.0,
+                )
+                live_margin_usable = _first_metric(
+                    account_info,
+                    'marginFree',
+                    'margin_free',
+                    'usableMargin',
+                    'usable_margin',
+                    default=0.0,
+                )
+                live_equity = _safe_float(account_info.get('equity', account_info.get('balance', 0)), 0.0)
+                live_maintenance_used = _first_metric(
+                    account_info,
+                    'maintenanceMargin',
+                    'maintenance_margin',
+                    'maintenanceMarginUsed',
+                    'usdMr3',
+                    'usd_mr3',
+                    'mr3',
+                    default=0.0,
+                )
+                live_maintenance_usable = _first_metric(
+                    account_info,
+                    'maintenanceMarginUsable',
+                    'maintenance_margin_usable',
+                    'usableMargin3',
+                    'usable_margin3',
+                    default=max(live_equity - live_maintenance_used, 0.0),
+                )
+                live_day_profit = _first_metric(
+                    account_info,
+                    'dayPL',
+                    'day_pl',
+                    'dayProfit',
+                    'todayProfit',
+                    default=0.0,
+                )
+                live_profit = _first_metric(
+                    account_info,
+                    'total_pl',
+                    'profit',
+                    'grossPL',
+                    'gross_pl',
+                    'floatingPL',
+                    'floating_pl',
+                    default=0.0,
+                )
+                live_margin_level = _first_metric(
+                    account_info,
+                    'marginLevel',
+                    'margin_level',
+                    default=0.0,
+                )
                 # Fresh data from broker connection
                 account_entry.update({
                     'balance': account_info.get('balance', 0),
@@ -9785,6 +9853,17 @@ def get_account_balances():
                     'displayCurrency': display_currency,
                     'connected': True,
                     'dataSource': 'live',
+                    'accountMetrics': {
+                        'marginUsed': round(live_margin_used, 2),
+                        'marginUsable': round(live_margin_usable, 2),
+                        'marginUsablePercent': round((live_margin_usable / live_equity) * 100, 2) if live_equity > 0 else 0.0,
+                        'maintenanceMarginUsed': round(live_maintenance_used, 2),
+                        'maintenanceMarginUsable': round(live_maintenance_usable, 2),
+                        'maintenanceMarginUsablePercent': round((live_maintenance_usable / live_equity) * 100, 2) if live_equity > 0 else 0.0,
+                        'dayProfit': round(live_day_profit, 2),
+                        'grossProfit': round(live_profit, 2),
+                        'marginLevel': round(live_margin_level, 2),
+                    },
                 })
                 # Add to broker group
                 if broker_name not in accounts_summary['brokers']:
@@ -9875,6 +9954,9 @@ def get_account_balances():
                     )
                 )
                 has_cached_data = cached_balance > 0 and not cache_is_stale
+                cached_margin_usable_percent = round((cached_margin_free / cached_equity) * 100, 2) if cached_equity > 0 else 0.0
+                cached_maintenance_usable = max(cached_equity - cached_margin, 0.0)
+                cached_maintenance_usable_percent = round((cached_maintenance_usable / cached_equity) * 100, 2) if cached_equity > 0 else 0.0
                 account_entry.update({
                     'balance': float(cached_balance if has_cached_data else 0),
                     'equity': float(cached_equity if has_cached_data else 0),
@@ -9887,6 +9969,17 @@ def get_account_balances():
                     'connected': bool(cache_source in ('memory_cache', 'sqlite_cache') and has_cached_data),
                     'dataSource': cache_source if has_cached_data else ('stale_cache' if cache_is_stale else 'not_connected'),
                     'cacheAgeSeconds': cache_snapshot_age,
+                    'accountMetrics': {
+                        'marginUsed': round(float(cached_margin if has_cached_data else 0), 2),
+                        'marginUsable': round(float(cached_margin_free if has_cached_data else 0), 2),
+                        'marginUsablePercent': cached_margin_usable_percent if has_cached_data else 0.0,
+                        'maintenanceMarginUsed': round(float(cached_margin if has_cached_data else 0), 2),
+                        'maintenanceMarginUsable': round(float(cached_maintenance_usable if has_cached_data else 0), 2),
+                        'maintenanceMarginUsablePercent': cached_maintenance_usable_percent if has_cached_data else 0.0,
+                        'dayProfit': 0.0,
+                        'grossProfit': round(float(cached_profit if has_cached_data else 0), 2),
+                        'marginLevel': round(float(cached_margin_level if has_cached_data else 0), 2),
+                    },
                 })
                 if cache_is_stale:
                     account_entry['warning'] = 'Account balance snapshot is stale. Start a bot or reconnect to refresh.'
@@ -9970,6 +10063,14 @@ def get_account_details(credential_id):
         cred = dict(cred)
         broker_name = cred['broker_name']
         account_number = cred['account_number']
+
+        def _first_metric(source: Optional[Dict[str, Any]], *keys: str, default: float = 0.0) -> float:
+            if not isinstance(source, dict):
+                return float(default)
+            for key in keys:
+                if key in source and source.get(key) is not None:
+                    return _safe_float(source.get(key), default)
+            return float(default)
         
         # Get live balance/positions from the connected broker when available.
         balance = float(cred.get('cached_balance') or 0)
@@ -10082,6 +10183,17 @@ def get_account_details(credential_id):
                     total_profit += profit
                 else:
                     total_loss += profit
+
+        today_key = datetime.now().strftime('%Y-%m-%d')
+        today_closed_profit = round(
+            sum(
+                _safe_float(trade.get('profit'), 0.0)
+                for trade in trades
+                if str(trade.get('status', 'open')).lower() != 'open'
+                and _extract_trade_day_key(trade) == today_key
+            ),
+            2,
+        )
         
         # Get withdrawal history for this account
         cursor.execute('''
@@ -10134,6 +10246,63 @@ def get_account_details(credential_id):
         
         resolved_is_live = bool(normalize_mt5_is_live_flag(broker_name, cred.get('is_live'), cred.get('server')))
 
+        floating_profit = _first_metric(
+            live_account_info,
+            'floatingPL',
+            'floating_pl',
+            'profit',
+            'grossPL',
+            'gross_pl',
+            default=0.0,
+        )
+        margin_used = _first_metric(
+            live_account_info,
+            'margin',
+            'usedMargin',
+            'used_margin',
+            'usd_mr',
+            'usdMr',
+            'mr',
+            default=_safe_float(cred.get('cached_margin'), 0.0),
+        )
+        margin_usable = _first_metric(
+            live_account_info,
+            'marginFree',
+            'margin_free',
+            'usableMargin',
+            'usable_margin',
+            default=margin_free,
+        )
+        maintenance_margin_used = _first_metric(
+            live_account_info,
+            'maintenanceMargin',
+            'maintenance_margin',
+            'maintenanceMarginUsed',
+            'usdMr3',
+            'usd_mr3',
+            'mr3',
+            'mmr',
+            default=0.0,
+        )
+        maintenance_margin_usable = _first_metric(
+            live_account_info,
+            'maintenanceMarginUsable',
+            'maintenance_margin_usable',
+            'usableMargin3',
+            'usable_margin3',
+            default=max(equity - maintenance_margin_used, 0.0),
+        )
+        day_profit = _first_metric(
+            live_account_info,
+            'dayPL',
+            'day_pl',
+            'dayProfit',
+            'todayProfit',
+            default=today_closed_profit,
+        )
+        margin_usable_percent = round((margin_usable / equity) * 100, 2) if equity > 0 else 0.0
+        maintenance_usable_percent = round((maintenance_margin_usable / equity) * 100, 2) if equity > 0 else 0.0
+
         detailed_account = {
             'credentialId': credential_id,
             'broker': broker_name,
@@ -10144,8 +10313,22 @@ def get_account_details(credential_id):
             'balance': balance,
             'equity': equity,
             'marginFree': margin_free,
+            'margin': margin_used,
+            'profit': floating_profit,
             'activeBots': active_bots,
             'totalBots': total_bots,
+            'accountMetrics': {
+                'marginUsed': round(margin_used, 2),
+                'marginUsable': round(margin_usable, 2),
+                'marginUsablePercent': margin_usable_percent,
+                'maintenanceMarginUsed': round(maintenance_margin_used, 2),
+                'maintenanceMarginUsable': round(maintenance_margin_usable, 2),
+                'maintenanceMarginUsablePercent': maintenance_usable_percent,
+                'dayProfit': round(day_profit, 2),
+                'grossProfit': round(floating_profit, 2),
+                'marginLevel': round(_first_metric(live_account_info, 'marginLevel', 'margin_level', default=_safe_float(cred.get('cached_margin_level'), 0.0)), 2),
+                'openPositions': len(current_positions),
+            },
         }
 
         if live_account_info:
@@ -10158,6 +10341,14 @@ def get_account_details(credential_id):
                 'marginLevel': live_account_info.get('marginLevel'),
                 'currency': live_account_info.get('currency'),
                 'brokerServer': live_account_info.get('broker'),
+                'marginUsed': round(margin_used, 2),
+                'marginUsable': round(margin_usable, 2),
+                'marginUsablePercent': margin_usable_percent,
+                'maintenanceMarginUsed': round(maintenance_margin_used, 2),
+                'maintenanceMarginUsable': round(maintenance_margin_usable, 2),
+                'maintenanceMarginUsablePercent': maintenance_usable_percent,
+                'dayProfit': round(day_profit, 2),
+                'grossProfit': round(floating_profit, 2),
             }
             detailed_account['currentPositions'] = current_positions
             if broker_recent_trades:
@@ -10180,6 +10371,8 @@ def get_account_details(credential_id):
                 'totalCommission': round(total_commission, 2),
                 'totalSwap': round(total_swap, 2),
                 'netProfit': round(net_profit, 2),
+                'todayProfit': round(day_profit, 2),
+                'floatingProfit': round(floating_profit, 2),
             },
             'recentTrades': trades[:20],
             'withdrawals': {
@@ -11384,6 +11577,8 @@ def get_positions_detailed():
             try:
                 broker_positions = broker_conn.get_positions() or []
                 for position in broker_positions:
+                    if not _is_meaningful_broker_position(position):
+                        continue
                     pnl = position.get('pnl', position.get('profit_loss', position.get('unrealizedPL', 0)))
                     positions.append({
                         'credentialId': cred['credential_id'],
@@ -11558,6 +11753,8 @@ def get_unified_positions():
             try:
                 broker_positions = broker_conn.get_positions() or []
                 for position in broker_positions:
+                    if not _is_meaningful_broker_position(position):
+                        continue
                     pnl = position.get('pnl', position.get('profit_loss', position.get('unrealizedPL', 0)))
                     positions.append({
                         'broker': broker_name,
@@ -14338,8 +14535,9 @@ def build_scanner_symbol_universe(
                 normalized_configured = tradeable_configured
             elif broker_symbol_universe:
                 logger.info(
-                    "[FXCM Scanner] Configured symbols are not currently tradable; keeping configured symbols for direct broker validation"
+                    "[FXCM Scanner] Configured symbols are not currently tradable; falling back to the active account's tradable FXCM universe"
                 )
+                normalized_configured = list(broker_symbol_universe)
         if not allow_cross_market:
             return normalized_configured
         return normalized_configured + [symbol for symbol in broker_symbol_universe if symbol not in normalized_configured]
@@ -24435,9 +24633,21 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         symbols = filtered_symbols
                         _persist_normalized_bot_symbols(bot_id, bot_config, filtered_symbols)
                     elif tradable_symbol_keys is not None and not filtered_symbols:
+                        fallback_symbols = build_scanner_symbol_universe(bot_config, tradable_symbol_keys)
+                        if fallback_symbols and fallback_symbols != list(symbols):
+                            logger.info(
+                                f"🔄 Bot {bot_id}: Replaced blocked FXCM symbols with tradable fallback universe: "
+                                f"{list(symbols)} -> {fallback_symbols}"
+                            )
+                            symbols = list(fallback_symbols)
+                            _persist_normalized_bot_symbols(bot_id, bot_config, list(fallback_symbols))
+                        else:
+                            bot_config['lastNoTradeReason'] = (
+                                'fxcm account has no currently tradable configured symbols or fallback instruments'
+                            )
                         logger.info(
                             f"🧭 Bot {bot_id}: Configured FXCM symbols were not confirmed tradable by the helper; "
-                            f"keeping the configured symbols for direct broker validation this cycle"
+                            f"using fallback tradable symbols when available"
                         )
 
                 if bot_config.get('managementMode', 'assisted') != 'manual' and len(symbols) > MAX_ASSISTED_SYMBOLS_PER_CYCLE:
@@ -26842,6 +27052,35 @@ def _normalize_broker_trade_preview(trade: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _is_meaningful_broker_position(position: Dict[str, Any]) -> bool:
+    symbol = str(position.get('symbol') or position.get('instrument') or '').strip()
+    if not symbol:
+        return False
+
+    ticket = str(position.get('ticket') or position.get('deal_id') or position.get('trade_id') or position.get('positionId') or '').strip()
+    size = abs(_safe_float(position.get('size', position.get('volume', position.get('amount', 0.0))), 0.0))
+    entry_price = _safe_float(position.get('entryPrice', position.get('openPrice', position.get('level', position.get('price', 0.0)))), 0.0)
+    current_price = _safe_float(position.get('currentPrice', position.get('marketPrice', position.get('price_current', 0.0))), 0.0)
+    profit = abs(_safe_float(position.get('profit', position.get('pnl', position.get('profit_loss', position.get('unrealizedPL', 0.0)))), 0.0))
+
+    return bool(ticket or size > 0 or (entry_price > 0 and current_price > 0) or profit > 0)
+
+
+def _is_meaningful_broker_trade(trade: Dict[str, Any]) -> bool:
+    symbol = str(trade.get('symbol') or trade.get('instrument') or '').strip()
+    if not symbol:
+        return False
+
+    ticket = str(trade.get('ticket') or trade.get('deal_id') or trade.get('tradeId') or trade.get('trade_id') or '').strip()
+    volume = abs(_safe_float(trade.get('volume', trade.get('size', trade.get('amount', 0.0))), 0.0))
+    entry_price = _safe_float(trade.get('entryPrice', trade.get('openPrice', trade.get('price', 0.0))), 0.0)
+    exit_price = _safe_float(trade.get('exitPrice', trade.get('closePrice', 0.0)), 0.0)
+    profit = abs(_safe_float(trade.get('profit', trade.get('pnl', trade.get('profit_loss', 0.0))), 0.0))
+    time_value = trade.get('time') or trade.get('time_close') or trade.get('closeTime') or trade.get('time_open') or trade.get('openTime')
+
+    return bool(ticket or volume > 0 or entry_price > 0 or exit_price > 0 or profit > 0 or time_value)
+
+
 def _build_fxcm_bot_broker_snapshot(
     user_id: str,
     bot: Dict[str, Any],
@@ -26881,10 +27120,13 @@ def _build_fxcm_bot_broker_snapshot(
             if hasattr(broker_conn, 'disconnect'):
                 broker_conn.disconnect()
 
+        meaningful_positions = [position for position in positions if _is_meaningful_broker_position(position)]
+        meaningful_trades = [trade for trade in trades if _is_meaningful_broker_trade(trade)]
+
         cached_snapshot = {
             'fetched': True,
-            'positions': [_normalize_broker_position_preview(position) for position in positions],
-            'recentTrades': [_normalize_broker_trade_preview(trade) for trade in trades],
+            'positions': [_normalize_broker_position_preview(position) for position in meaningful_positions],
+            'recentTrades': [_normalize_broker_trade_preview(trade) for trade in meaningful_trades],
             'accountInfo': account_info if isinstance(account_info, dict) else {},
             'dataSource': data_source,
         }

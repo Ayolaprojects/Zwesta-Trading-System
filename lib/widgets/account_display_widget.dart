@@ -125,6 +125,19 @@ class _AccountDisplayWidgetState extends State<AccountDisplayWidget> {
     return '${_currencySymbol(currencyCode)}$formatted $currencyCode';
   }
 
+  double _asDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0.0;
+  }
+
+  String _formatPercent(dynamic value) => '${_asDouble(value).toStringAsFixed(1)}%';
+
+  Color _profitColor(double value) {
+    if (value > 0) return Colors.green.shade300;
+    if (value < 0) return Colors.red.shade300;
+    return Colors.white54;
+  }
+
   @override
   Widget build(BuildContext context) => Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -256,6 +269,10 @@ class _AccountDisplayWidgetState extends State<AccountDisplayWidget> {
     final connected = account['connected'] ?? false;
     final dataSource = account['dataSource'] ?? 'unknown';
     final warning = account['warning'];
+    final accountMetrics = Map<String, dynamic>.from(account['accountMetrics'] ?? {});
+    final dayProfit = _asDouble(accountMetrics['dayProfit']);
+    final grossProfit = _asDouble(accountMetrics['grossProfit']);
+    final marginLevel = _asDouble(accountMetrics['marginLevel']);
 
     return GestureDetector(
       onTap: () {
@@ -361,6 +378,46 @@ class _AccountDisplayWidgetState extends State<AccountDisplayWidget> {
                   _statBox('Free Margin', _formatAmount(marginFree, currencyCode), Colors.teal),
                 ],
               ),
+              if (accountMetrics.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _statBox('Today', _formatAmount(dayProfit, currencyCode), _profitColor(dayProfit)),
+                    const SizedBox(width: 8),
+                    _statBox('Gross P/L', _formatAmount(grossProfit, currencyCode), _profitColor(grossProfit)),
+                    const SizedBox(width: 8),
+                    _statBox('Margin Level', marginLevel > 0 ? _formatPercent(marginLevel) : '-', marginLevel >= 120 ? Colors.green : marginLevel >= 80 ? Colors.amber : Colors.red),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _metricStrip(
+                        'Margin',
+                        [
+                          _metricEntry('Used', _formatAmount(_asDouble(accountMetrics['marginUsed']), currencyCode)),
+                          _metricEntry('Usable', _formatAmount(_asDouble(accountMetrics['marginUsable']), currencyCode)),
+                          _metricEntry('%', _formatPercent(accountMetrics['marginUsablePercent'])),
+                        ],
+                        Colors.cyan,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _metricStrip(
+                        'Maintenance',
+                        [
+                          _metricEntry('Used', _formatAmount(_asDouble(accountMetrics['maintenanceMarginUsed']), currencyCode)),
+                          _metricEntry('Usable', _formatAmount(_asDouble(accountMetrics['maintenanceMarginUsable']), currencyCode)),
+                          _metricEntry('%', _formatPercent(accountMetrics['maintenanceMarginUsablePercent'])),
+                        ],
+                        Colors.orange,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 8),
 
               // Bots + data source row
@@ -422,6 +479,43 @@ class _AccountDisplayWidgetState extends State<AccountDisplayWidget> {
       ),
     );
   }
+
+  MapEntry<String, String> _metricEntry(String label, String value) => MapEntry(label, value);
+
+  Widget _metricStrip(String title, List<MapEntry<String, String>> entries, Color color) => Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 6),
+          ...entries.map((entry) => Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(entry.key, style: const TextStyle(color: Colors.white54, fontSize: 9)),
+                    Flexible(
+                      child: Text(
+                        entry.value,
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+        ],
+      ),
+    );
 
   Widget _statBox(String label, String value, Color color) => Expanded(
       child: Container(
