@@ -3568,7 +3568,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           });
                                         },
                                         title: Column(
-                                        },
+                                          crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
                                             Text(

@@ -5,14 +5,13 @@ from typing import Any, Dict, Optional
 
 
 DEFAULT_SQLITE_PATH = r'C:\backend\zwesta_trading.db'
-KNOWN_VPS_SQLITE_PATH = r'C:\zwesta-trader\Zwesta Flutter App\zwesta_trading.db'
 
 
 def _default_sqlite_candidates() -> list[str]:
     module_dir = os.path.dirname(os.path.abspath(__file__))
+    local_db_path = os.path.join(module_dir, 'zwesta_trading.db')
     return [
-        KNOWN_VPS_SQLITE_PATH,
-        os.path.join(module_dir, 'zwesta_trading.db'),
+        local_db_path,
         DEFAULT_SQLITE_PATH,
     ]
 

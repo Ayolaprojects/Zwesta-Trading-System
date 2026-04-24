@@ -89,7 +89,6 @@ logger.setLevel(_resolve_log_level())
 logger.info(f"Runtime infrastructure: {get_runtime_infrastructure_summary()}")
 
 _forexconnect_bootstrap_attempted = False
-_KNOWN_VPS_FXCM_HELPER_PATH = r'C:\zwesta-trader\Zwesta Flutter App\scripts\fxcm_forexconnect_helper.py'
 
 
 def _can_import_forexconnect_with(python_executable: str) -> bool:
@@ -129,9 +128,10 @@ def get_fxcm_forexconnect_helper_script() -> str:
     configured = str(os.getenv('FXCM_FOREXCONNECT_HELPER', '') or '').strip().strip('"')
     if configured:
         return configured
-    if os.path.exists(_KNOWN_VPS_FXCM_HELPER_PATH):
-        return _KNOWN_VPS_FXCM_HELPER_PATH
-    return os.path.join(os.path.dirname(__file__), 'scripts', 'fxcm_forexconnect_helper.py')
+    local_helper_script = os.path.join(os.path.dirname(__file__), 'scripts', 'fxcm_forexconnect_helper.py')
+    if os.path.exists(local_helper_script):
+        return local_helper_script
+    return local_helper_script
 
 
 def has_fxcm_connection_credentials(credentials: Optional[Dict[str, Any]]) -> bool:

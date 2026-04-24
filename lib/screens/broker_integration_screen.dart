@@ -13,7 +13,7 @@ import '../services/trading_service.dart';
 import '../utils/constants.dart';
 import '../utils/environment_config.dart';
 import '../widgets/logo_widget.dart';
-import 'bot_configuration_screen.dart';
+import 'bot_configuration_route.dart';
 import 'bot_dashboard_screen.dart';
 import 'broker_analytics_dashboard.dart';
 import 'consolidated_reports_screen.dart';
@@ -850,7 +850,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                       onPressed: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (context) => const BotConfigurationScreen(),
+                            builder: (context) => const BotConfigurationRoute(),
                           ),
                         );
                       },

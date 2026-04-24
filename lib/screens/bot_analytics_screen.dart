@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/ig_trading_service.dart';
 import '../utils/environment_config.dart';
-import 'bot_configuration_screen.dart';
+import 'bot_configuration_screen.dart' show BotConfigurationScreen;
 import 'bot_dashboard_screen.dart';
 import 'consolidated_reports_screen.dart';
 

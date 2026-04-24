@@ -21,7 +21,7 @@ import 'account_management_screen.dart';
 import 'admin_dashboard_screen.dart';
 import 'admin_withdrawal_verification_screen.dart';
 import 'binance_withdrawal_screen.dart';
-import 'bot_configuration_screen.dart';
+import 'bot_configuration_route.dart';
 import 'bot_dashboard_screen.dart';
 import 'broker_analytics_dashboard.dart';
 import 'broker_integration_screen.dart';
@@ -2210,7 +2210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               title: 'Automation & Trading',
               subtitle: 'Bot creation, monitoring, strategy tools, and analysis',
               actions: [
-                _FeatureAction('Create Bot', Icons.add_circle, const Color(0xFF00C853), () => _pushScreen(const BotConfigurationScreen())),
+                _FeatureAction('Create Bot', Icons.add_circle, const Color(0xFF00C853), () => _pushScreen(const BotConfigurationRoute())),
                 _FeatureAction('Bot Monitor', Icons.smart_toy_outlined, const Color(0xFFFFB74D), () => _pushScreen(const BotDashboardScreen())),
                 _FeatureAction('Trade Analysis', Icons.analytics_outlined, const Color(0xFF00E5FF), () => _pushScreen(const TradeAnalysisScreen())),
                 _FeatureAction('Crypto', Icons.currency_bitcoin, const Color(0xFFF3BA2F), () => _pushScreen(const CryptoStrategiesScreen())),
@@ -3495,7 +3495,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'label': 'Create\nBot',
         'icon': Icons.add_circle,
         'color': const Color(0xFF00C853),
-        'onTap': () => _pushScreen(const BotConfigurationScreen()),
+        'onTap': () => _pushScreen(const BotConfigurationRoute()),
       },
       {
         'label': 'Bot\nMonitor',
@@ -3830,7 +3830,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => const BotConfigurationScreen(),
+                  builder: (context) => const BotConfigurationRoute(),
                 ),
               );
             },

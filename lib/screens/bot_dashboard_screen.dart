@@ -18,7 +18,7 @@ import '../widgets/logo_widget.dart';
 
 import '../widgets/trading_mode_switcher.dart';
 import 'bot_analytics_screen.dart';
-import 'bot_configuration_screen.dart';
+import 'bot_configuration_route.dart';
 import 'consolidated_reports_screen.dart';
 import 'dashboard_screen.dart';
 
@@ -573,7 +573,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
 
                       // Create bot button
                       GestureDetector(
-                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BotConfigurationScreen())),
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BotConfigurationRoute())),
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           decoration: BoxDecoration(
@@ -1462,7 +1462,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     final updated = await Navigator.push<bool>(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => BotConfigurationScreen(botId: botId),
+                        builder: (_) => BotConfigurationRoute(botId: botId),
                       ),
                     );
                     if (updated == true && mounted) {
@@ -1475,7 +1475,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     final cloned = await Navigator.push<bool>(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => BotConfigurationScreen(
+                        builder: (_) => BotConfigurationRoute(
                           cloneFromBotId: botId,
                         ),
                       ),
@@ -1503,7 +1503,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     final promoted = await Navigator.push<bool>(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => BotConfigurationScreen(
+                        builder: (_) => BotConfigurationRoute(
                           cloneFromBotId: botId,
                           promoteToLive: true,
                         ),
@@ -1733,7 +1733,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => const BotConfigurationScreen(),
+          builder: (_) => const BotConfigurationRoute(),
         ),
       );
     }
@@ -1793,7 +1793,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 // Show standard configuration screen
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const BotConfigurationScreen()),
+                  MaterialPageRoute(builder: (_) => const BotConfigurationRoute()),
                 );
               },
               child: Text(
