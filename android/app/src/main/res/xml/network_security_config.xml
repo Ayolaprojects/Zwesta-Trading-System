@@ -3,6 +3,7 @@
     <!-- Allow HTTP for VPS IP during testing/development -->
     <!-- For production, switch to HTTPS -->
     <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">148.113.5.39</domain>
         <domain includeSubdomains="true">38.247.146.198</domain>
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">127.0.0.1</domain>

@@ -3,7 +3,19 @@ name: Build APK Release
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Backend API base URL to bake into the APK'
+        required: false
+        default: 'http://148.113.5.39:9000'
+        type: string
 
 permissions:
   contents: write
@@ -11,6 +23,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DEFAULT_API_URL: http://148.113.5.39:9000
     
     steps:
       - name: Checkout code
@@ -77,7 +91,14 @@ jobs:
       
       - name: Build APK
         run: |
-          flutter build apk --release --verbose 2>&1 | tee build_output.log
+          API_URL="${{ github.event.inputs.api_url }}"
+          if [ -z "$API_URL" ]; then
+            API_URL="$DEFAULT_API_URL"
+          fi
+          echo "Building APK with API_URL=$API_URL"
+          flutter build apk --release \
+            --dart-define=API_URL="$API_URL" \
+            --verbose 2>&1 | tee build_output.log
           exit_code=${PIPESTATUS[0]}
           if [ $exit_code -ne 0 ]; then
             echo "=== BUILD FAILED — last 100 lines ==="
@@ -106,6 +127,7 @@ jobs:
             Commit: ${{ steps.commit.outputs.short_sha }}
             Author: ${{ steps.commit.outputs.author }}
             Message: ${{ steps.commit.outputs.message }}
+            API URL: ${{ github.event.inputs.api_url || 'http://148.113.5.39:9000' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
