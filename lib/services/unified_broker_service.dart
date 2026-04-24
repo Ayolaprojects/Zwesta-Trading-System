@@ -7,6 +7,15 @@ import '../utils/environment_config.dart';
 class UnifiedBrokerService {
   static String get _baseUrl => EnvironmentConfig.apiUrl;
 
+  static Future<String?> _currentUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id')?.trim();
+    if (userId == null || userId.isEmpty) {
+      return null;
+    }
+    return userId;
+  }
+
   static Future<Map<String, String>> _authHeaders() async {
     final prefs = await SharedPreferences.getInstance();
     final sessionToken = prefs.getString('auth_token') ?? '';
@@ -55,10 +64,13 @@ class UnifiedBrokerService {
   static Future<Map<String, dynamic>> closeAllPositions() async {
     try {
       final headers = await _authHeaders();
+      final userId = await _currentUserId();
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/unified/close-all'),
         headers: headers,
-        body: jsonEncode({}),
+        body: jsonEncode({
+          if (userId != null) 'user_id': userId,
+        }),
       ).timeout(const Duration(seconds: 45));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);

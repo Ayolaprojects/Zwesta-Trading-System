@@ -8,6 +8,15 @@ import '../utils/environment_config.dart';
 class FxcmTradingService {
   static String get _baseUrl => EnvironmentConfig.apiUrl;
 
+  static Future<String?> _currentUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id')?.trim();
+    if (userId == null || userId.isEmpty) {
+      return null;
+    }
+    return userId;
+  }
+
   static Future<Map<String, String>> _authHeaders({bool jsonContent = false}) async {
     final prefs = await SharedPreferences.getInstance();
     final sessionToken = prefs.getString('auth_token') ?? '';
@@ -117,22 +126,35 @@ class FxcmTradingService {
 
   static Future<Map<String, dynamic>> closePosition({
     required String dealId,
+    String? botId,
+    double? profitAmount,
   }) async {
+    final userId = await _currentUserId();
+    final body = <String, dynamic>{'dealId': dealId};
+    if (userId != null) body['user_id'] = userId;
+    if (botId != null && botId.isNotEmpty) body['bot_id'] = botId;
+    if (profitAmount != null) body['profit_amount'] = profitAmount;
+
     return _request(
       'POST',
       '/api/fxcm/close-position',
-      body: {'dealId': dealId},
+      body: body,
       requireJsonContent: true,
     ).timeout(const Duration(seconds: 15));
   }
 
   // ==================== CLOSE ALL POSITIONS ====================
 
-  static Future<Map<String, dynamic>> closeAllPositions() async {
+  static Future<Map<String, dynamic>> closeAllPositions({String? botId}) async {
+    final userId = await _currentUserId();
+    final body = <String, dynamic>{};
+    if (userId != null) body['user_id'] = userId;
+    if (botId != null && botId.isNotEmpty) body['bot_id'] = botId;
+
     return _request(
       'POST',
       '/api/fxcm/close-all-positions',
-      body: {},
+      body: body,
       requireJsonContent: true,
     ).timeout(const Duration(seconds: 30));
   }

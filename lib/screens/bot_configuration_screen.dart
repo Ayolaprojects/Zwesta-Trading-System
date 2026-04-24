@@ -183,7 +183,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     'USOilSpot',
     'UKOilSpot',
   ];
-  static const List<Map<String, String>> _binanceSymbols = [
+  static const List<Map<String, String>> _binanceCoreSymbols = [
     // --- Tier 1: Large Cap ---
     {
       'symbol': 'BTCUSDT',
@@ -208,6 +208,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'name': '🐕 Dogecoin / Tether',
       'category': 'Large Cap',
     },
+    {'symbol': 'TONUSDT', 'name': '◉ Toncoin / Tether', 'category': 'Large Cap'},
+    {'symbol': 'XLMUSDT', 'name': '✦ Stellar / Tether', 'category': 'Large Cap'},
     // --- Tier 2: High-Volume Altcoins ---
     {
       'symbol': 'AVAXUSDT',
@@ -225,9 +227,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'category': 'Altcoin',
     },
     {'symbol': 'LTCUSDT', 'name': 'Ł Litecoin / Tether', 'category': 'Altcoin'},
+    {'symbol': 'BCHUSDT', 'name': 'Ƀ Bitcoin Cash / Tether', 'category': 'Altcoin'},
+    {'symbol': 'ETCUSDT', 'name': 'Ξ Ethereum Classic / Tether', 'category': 'Altcoin'},
     {'symbol': 'TRXUSDT', 'name': '△ TRON / Tether', 'category': 'Altcoin'},
     {'symbol': 'DOTUSDT', 'name': '● Polkadot / Tether', 'category': 'Altcoin'},
     {'symbol': 'ATOMUSDT', 'name': '⚛ Cosmos / Tether', 'category': 'Altcoin'},
+    {'symbol': 'FILUSDT', 'name': '◫ Filecoin / Tether', 'category': 'Altcoin'},
+    {'symbol': 'ICPUSDT', 'name': '◎ Internet Computer / Tether', 'category': 'Altcoin'},
+    {'symbol': 'HBARUSDT', 'name': 'ℏ Hedera / Tether', 'category': 'Altcoin'},
+    {'symbol': 'VETUSDT', 'name': '✓ VeChain / Tether', 'category': 'Altcoin'},
     // --- Tier 3: DeFi & Layer-2 (high volatility) ---
     {
       'symbol': 'SHIBUSDT',
@@ -267,6 +275,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'category': 'DeFi & L2',
     },
     {'symbol': 'AAVEUSDT', 'name': '👻 Aave / Tether', 'category': 'DeFi & L2'},
+    {'symbol': 'SEIUSDT', 'name': '⚡ Sei / Tether', 'category': 'DeFi & L2'},
+    {'symbol': 'TIAUSDT', 'name': '✧ Celestia / Tether', 'category': 'DeFi & L2'},
+    {'symbol': 'JUPUSDT', 'name': '♃ Jupiter / Tether', 'category': 'DeFi & L2'},
+    {'symbol': 'ENAUSDT', 'name': '⟠ Ethena / Tether', 'category': 'DeFi & L2'},
+    {'symbol': 'FETUSDT', 'name': '🤖 Fetch.ai / Tether', 'category': 'DeFi & L2'},
+    {'symbol': 'IMXUSDT', 'name': '🛡 Immutable / Tether', 'category': 'DeFi & L2'},
     // --- Tier 4: Gaming / Metaverse / Cross-chain ---
     {
       'symbol': 'SANDUSDT',
@@ -284,6 +298,53 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'category': 'Gaming',
     },
     {'symbol': 'ALGOUSDT', 'name': '◈ Algorand / Tether', 'category': 'Gaming'},
+    {'symbol': 'GALAUSDT', 'name': '🎮 Gala / Tether', 'category': 'Gaming'},
+    {'symbol': 'PEPEUSDT', 'name': '🐸 Pepe / Tether', 'category': 'Meme'},
+    {'symbol': 'WIFUSDT', 'name': '🧢 dogwifhat / Tether', 'category': 'Meme'},
+    {'symbol': 'BONKUSDT', 'name': '🐕 Bonk / Tether', 'category': 'Meme'},
+  ];
+
+  static const List<Map<String, String>> _binanceQuotedAssets = [
+    {'base': 'ETH', 'label': '◆ Ethereum', 'category': 'Large Cap'},
+    {'base': 'BNB', 'label': '◈ BNB', 'category': 'Large Cap'},
+    {'base': 'SOL', 'label': '◎ Solana', 'category': 'Large Cap'},
+    {'base': 'XRP', 'label': '✕ XRP', 'category': 'Large Cap'},
+    {'base': 'ADA', 'label': '◌ Cardano', 'category': 'Large Cap'},
+    {'base': 'DOGE', 'label': '🐕 Dogecoin', 'category': 'Large Cap'},
+    {'base': 'LINK', 'label': '⛓ Chainlink', 'category': 'Altcoin'},
+    {'base': 'AVAX', 'label': '▲ Avalanche', 'category': 'Altcoin'},
+    {'base': 'LTC', 'label': 'Ł Litecoin', 'category': 'Altcoin'},
+    {'base': 'DOT', 'label': '● Polkadot', 'category': 'Altcoin'},
+    {'base': 'ATOM', 'label': '⚛ Cosmos', 'category': 'Altcoin'},
+    {'base': 'SHIB', 'label': '🦴 Shiba Inu', 'category': 'DeFi & L2'},
+  ];
+
+  static List<Map<String, String>> _buildQuotedBinanceMarkets() {
+    const quoteLabels = {
+      'BTC': 'Bitcoin',
+      'ETH': 'Ethereum',
+      'BNB': 'BNB',
+    };
+    const quoteOrder = ['BTC', 'ETH', 'BNB'];
+
+    return _binanceQuotedAssets.expand((asset) {
+      final base = asset['base']!;
+      final label = asset['label']!;
+      final category = asset['category']!;
+      return quoteOrder.where((quote) => quote != base).map((quote) {
+        return {
+          'symbol': '$base$quote',
+          'name': '$label / ${quoteLabels[quote]}',
+          'category': '$category • $quote Quote',
+          'analysisSymbol': '${base}USDT',
+        };
+      });
+    }).toList();
+  }
+
+  static final List<Map<String, String>> _binanceSymbols = [
+    ..._binanceCoreSymbols,
+    ..._buildQuotedBinanceMarkets(),
   ];
 
   static const Map<String, Map<String, dynamic>> _binancePairAnalytics = {
@@ -564,6 +625,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   String _selectedStrategy = 'Trend Following';
   List<String> _selectedSymbols = [];
   String _selectedTraditionalVolatilityFilter = 'All';
+  String _selectedBinanceQuoteFilter = 'All';
+  String _selectedBinanceCategoryFilter = 'All';
+  String _binanceSymbolSearchQuery = '';
   bool _isCreating = false;
   bool _isLoadingData = true;
   bool _isLoadingExistingBot = false;
@@ -770,9 +834,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       : 'Please select at least one trading symbol';
 
   List<Map<String, dynamic>> get _rankedBinancePairs {
-    final ranked = _binanceSymbols.map((item) {
+    final sourceSymbols = (_isBinanceBroker && tradingSymbols.isNotEmpty)
+        ? tradingSymbols
+        : _binanceSymbols;
+    final ranked = sourceSymbols.map((item) {
       final symbol = item['symbol']!;
-      final insight = _binancePairAnalytics[symbol] ?? const {};
+      final insight = _binanceAnalyticsForSymbol(symbol);
       final edge = (insight['edgePct'] as num?)?.toDouble() ?? 0.0;
       final winRate = (insight['winRate'] as num?)?.toDouble() ?? 0.0;
       final liquidity = (insight['liquidityScore'] as num?)?.toDouble() ?? 50.0;
@@ -803,6 +870,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     }
 
     final ranked = _rankedBinancePairs;
+    final sourceSymbols = (_isBinanceBroker && tradingSymbols.isNotEmpty)
+      ? tradingSymbols
+      : _binanceSymbols;
     List<String> symbols;
 
     switch (preset) {
@@ -827,8 +897,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             .toList();
         break;
       case 'defi':
-        symbols = _binanceSymbols
-            .where((item) => item['category'] == 'DeFi & L2')
+        symbols = sourceSymbols
+            .where(
+              (item) => (item['category'] ?? '').toString().toLowerCase().contains('defi'),
+            )
             .take(6)
             .map((item) => item['symbol']!)
             .toList();
@@ -868,11 +940,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return normalized;
   }
 
-  static const Set<String> _primaryCryptoSymbols = {
+  static final Set<String> _primaryCryptoSymbols = {
     'BTCUSD',
     'ETHUSD',
-    'BTCUSDT',
-    'ETHUSDT',
+    for (final item in _binanceSymbols) item['symbol']!,
   };
 
   static const Set<String> _safeCryptoStrategies = {
@@ -886,6 +957,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       .toSet();
 
   bool get _isCryptoOnlySelection {
+    if (_isBinanceBroker) {
+      return _selectedSymbols.isNotEmpty;
+    }
+
     final symbols = _selectedBaseSymbols;
     return symbols.isNotEmpty &&
         symbols.every((symbol) => _primaryCryptoSymbols.contains(symbol));
@@ -900,8 +975,96 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return strategies;
   }
 
-  int get _cryptoOnlyAutoThreshold =>
-      _selectedBaseSymbols.contains('BTCUSD') ? 50 : 45;
+    int get _cryptoOnlyAutoThreshold =>
+        (_selectedSymbols.any(
+              (symbol) => _binanceBaseAsset(symbol) == 'BTC',
+            ) ||
+            _selectedBaseSymbols.contains('BTCUSD') ||
+            _selectedBaseSymbols.contains('BTCUSDT'))
+      ? 50
+      : 45;
+
+    String _binanceQuoteAsset(String symbol) {
+      final normalized = _normalizeSymbolBase(symbol);
+      for (final quote in const ['USDT', 'BTC', 'ETH', 'BNB']) {
+        if (normalized.length > quote.length && normalized.endsWith(quote)) {
+          return quote;
+        }
+      }
+      return '';
+    }
+
+    String _binanceBaseAsset(String symbol) {
+      final normalized = _normalizeSymbolBase(symbol);
+      final quote = _binanceQuoteAsset(normalized);
+      if (quote.isEmpty) {
+        return normalized;
+      }
+      return normalized.substring(0, normalized.length - quote.length);
+    }
+
+    String _binanceAnalyticsKey(String symbol) {
+      final normalized = _normalizeSymbolBase(symbol);
+      if (_binancePairAnalytics.containsKey(normalized)) {
+        return normalized;
+      }
+
+      final baseAsset = _binanceBaseAsset(normalized);
+      final fallback = '${baseAsset}USDT';
+      return _binancePairAnalytics.containsKey(fallback) ? fallback : normalized;
+    }
+
+    Map<String, dynamic> _binanceAnalyticsForSymbol(String symbol) {
+      return _binancePairAnalytics[_binanceAnalyticsKey(symbol)] ?? const {};
+    }
+
+    List<String> get _binanceCategoryFilters {
+        final sourceSymbols = (_isBinanceBroker && tradingSymbols.isNotEmpty)
+            ? tradingSymbols
+            : _binanceSymbols;
+        final categories = sourceSymbols
+          .map((item) => item['category'] ?? 'General')
+          .toSet()
+          .toList()
+        ..sort();
+      return ['All', ...categories];
+    }
+
+    List<String> get _binanceQuoteFilters {
+      final sourceSymbols = (_isBinanceBroker && tradingSymbols.isNotEmpty)
+          ? tradingSymbols
+          : _binanceSymbols;
+      final quotes = sourceSymbols
+          .map((item) => _binanceQuoteAsset(item['symbol'] ?? ''))
+          .where((quote) => quote.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
+      return ['All', ...quotes];
+    }
+
+    bool _matchesBinanceFilters(Map<String, String> symbol) {
+      final symbolCode = symbol['symbol'] ?? '';
+      final symbolName = symbol['name'] ?? symbolCode;
+      final category = symbol['category'] ?? 'General';
+      final quote = _binanceQuoteAsset(symbolCode);
+      final query = _binanceSymbolSearchQuery.trim().toLowerCase();
+
+      if (_selectedBinanceQuoteFilter != 'All' && quote != _selectedBinanceQuoteFilter) {
+        return false;
+      }
+      if (_selectedBinanceCategoryFilter != 'All' && category != _selectedBinanceCategoryFilter) {
+        return false;
+      }
+      if (query.isNotEmpty) {
+        final haystack = '$symbolCode $symbolName $category ${_binanceBaseAsset(symbolCode)} ${quote.isEmpty ? '' : quote}'
+            .toLowerCase();
+        if (!haystack.contains(query)) {
+          return false;
+        }
+      }
+      return true;
+    }
 
   List<int> get _availableSignalThresholds {
     if (_isCryptoOnlySelection) {
@@ -957,6 +1120,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   String _traditionalVolatilityBucket(String symbol) {
     final normalized = _normalizeSymbolBase(symbol);
+
+    final binanceRisk = _binanceAnalyticsForSymbol(normalized)['risk']?.toString();
+    if (binanceRisk != null && binanceRisk.isNotEmpty) {
+      switch (binanceRisk.toLowerCase()) {
+        case 'low':
+          return 'Stable';
+        case 'high':
+          return 'High Volatility';
+        default:
+          return 'Moderate';
+      }
+    }
 
     const highVolatility = {
       'BTCUSD',
@@ -1030,6 +1205,46 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   List<Map<String, String>> get _filteredTradingSymbols {
     final visibleSymbols = List<Map<String, String>>.from(tradingSymbols);
+
+    if (_isBinanceBroker) {
+      visibleSymbols.sort((left, right) {
+        final leftAnalytics = _binanceAnalyticsForSymbol(left['symbol'] ?? '');
+        final rightAnalytics = _binanceAnalyticsForSymbol(right['symbol'] ?? '');
+        final leftScore = ((_safeToDouble(leftAnalytics['edgePct']) * 0.45) +
+                (_safeToDouble(leftAnalytics['winRate']) * 0.35) +
+                ((_safeToDouble(leftAnalytics['liquidityScore']) / 100) * 20))
+            .toDouble();
+        final rightScore = ((_safeToDouble(rightAnalytics['edgePct']) * 0.45) +
+                (_safeToDouble(rightAnalytics['winRate']) * 0.35) +
+                ((_safeToDouble(rightAnalytics['liquidityScore']) / 100) * 20))
+            .toDouble();
+        final scoreComparison = rightScore.compareTo(leftScore);
+        if (scoreComparison != 0) {
+          return scoreComparison;
+        }
+
+        final leftCategory = left['category'] ?? '';
+        final rightCategory = right['category'] ?? '';
+        final categoryComparison = leftCategory.compareTo(rightCategory);
+        if (categoryComparison != 0) {
+          return categoryComparison;
+        }
+
+        final leftQuote = _binanceQuoteAsset(left['symbol'] ?? '');
+        final rightQuote = _binanceQuoteAsset(right['symbol'] ?? '');
+        final quoteComparison = leftQuote.compareTo(rightQuote);
+        if (quoteComparison != 0) {
+          return quoteComparison;
+        }
+
+        final leftName = left['name'] ?? left['symbol'] ?? '';
+        final rightName = right['name'] ?? right['symbol'] ?? '';
+        return leftName.compareTo(rightName);
+      });
+
+      return visibleSymbols.where(_matchesBinanceFilters).toList();
+    }
+
     visibleSymbols.sort((left, right) {
       final leftBucket = _traditionalVolatilityBucket(left['symbol']!);
       final rightBucket = _traditionalVolatilityBucket(right['symbol']!);
@@ -1060,6 +1275,19 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   int get _hiddenSelectedSymbolCount {
+    if (_isBinanceBroker) {
+      final visibleBySymbol = {
+        for (final symbol in tradingSymbols) (symbol['symbol'] ?? ''): symbol,
+      };
+      return _selectedSymbols.where((symbolCode) {
+        final entry = visibleBySymbol[symbolCode];
+        if (entry == null) {
+          return true;
+        }
+        return !_matchesBinanceFilters(entry);
+      }).length;
+    }
+
     if (_selectedTraditionalVolatilityFilter == 'All') {
       return 0;
     }
@@ -1808,30 +2036,6 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   Future<void> _fetchTradingData() async {
-    if (_isBinanceBroker) {
-      setState(() {
-        commodityMarketData = {};
-        tradingSymbols = List<Map<String, String>>.from(_binanceSymbols);
-        _selectedSymbols = _remapSelectedSymbolsToAvailable(
-          _binanceSymbols
-              .map((item) => item['symbol'])
-              .whereType<String>()
-              .toList(),
-        );
-        // Auto-select recommended Binance pairs if none selected
-        if (_selectedSymbols.isEmpty) {
-          _selectedSymbols = _rankedBinancePairs
-              .where((p) => p['risk'] == 'Low' || p['risk'] == 'Medium')
-              .take(5)
-              .map((p) => p['symbol'] as String)
-              .toList();
-        }
-        _applyCryptoSelectionSafetyDefaults();
-        _isLoadingData = false;
-      });
-      return;
-    }
-
     if (_activeBrokerName == 'fxcm') {
       _preloadFxcmSymbols();
       await _fetchCommodityData(showLoading: false);
@@ -1873,9 +2077,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final commoditiesList = data['commodities'] as Map? ?? {};
-        final builtSymbols = _curateFxcmSymbols(
-          _buildSymbolsFromApiData(commoditiesList),
-        );
+        final builtSymbols = normalizedBroker == 'binance'
+            ? _buildSymbolsFromApiData(commoditiesList)
+            : _curateFxcmSymbols(_buildSymbolsFromApiData(commoditiesList));
 
         if (builtSymbols.isNotEmpty) {
           setState(() {
@@ -1894,6 +2098,13 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                   .whereType<String>()
                   .toList(),
             );
+            if (normalizedBroker == 'binance' && _selectedSymbols.isEmpty) {
+              _selectedSymbols = _rankedBinancePairs
+                  .where((p) => p['risk'] == 'Low' || p['risk'] == 'Medium')
+                  .take(5)
+                  .map((p) => p['symbol'] as String)
+                  .toList();
+            }
             _applyCryptoSelectionSafetyDefaults();
             _isLoadingData = false;
           });
@@ -1927,7 +2138,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   void _loadFallbackSymbols() {
     setState(() {
       commodityMarketData = {}; // clear stale data so fallback items render with correct neutral styling
-      tradingSymbols = _activeBrokerName == 'fxcm'
+      tradingSymbols = _activeBrokerName == 'binance'
+          ? List<Map<String, String>>.from(_binanceSymbols)
+          : _activeBrokerName == 'fxcm'
           ? _curateFxcmSymbols(List<Map<String, String>>.from(_fxcmFallbackSymbols))
           : [
         {
@@ -3388,48 +3601,120 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     if (_isBinanceBroker) ...[
                       const SizedBox(height: 10),
                       _buildBinanceSetupInsights(),
-                    ],
-                    const SizedBox(height: 8),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children:
-                            [
-                              'All',
-                              'Stable',
-                              'Moderate',
-                              'High Volatility',
-                            ].map((bucket) {
-                              return Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: ChoiceChip(
-                                  label: Text(bucket),
-                                  selected:
-                                      _selectedTraditionalVolatilityFilter ==
-                                      bucket,
-                                  onSelected: (_) {
+                      const SizedBox(height: 10),
+                      TextField(
+                        onChanged: (value) {
+                          setState(() {
+                            _binanceSymbolSearchQuery = value;
+                          });
+                        },
+                        decoration: InputDecoration(
+                          labelText: 'Search Binance pairs',
+                          hintText: 'BTC, ETH, SOL, LINK, BTC quote...',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _binanceSymbolSearchQuery.isEmpty
+                              ? null
+                              : IconButton(
+                                  onPressed: () {
                                     setState(() {
-                                      _selectedTraditionalVolatilityFilter =
-                                          bucket;
+                                      _binanceSymbolSearchQuery = '';
                                     });
                                   },
+                                  icon: const Icon(Icons.clear),
                                 ),
-                              );
-                            }).toList(),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
                       ),
-                    ),
+                      const SizedBox(height: 8),
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: _binanceQuoteFilters
+                              .map((quote) {
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: ChoiceChip(
+                                label: Text(quote),
+                                selected: _selectedBinanceQuoteFilter == quote,
+                                onSelected: (_) {
+                                  setState(() {
+                                    _selectedBinanceQuoteFilter = quote;
+                                  });
+                                },
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: _binanceCategoryFilters.map((category) {
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: ChoiceChip(
+                                label: Text(category),
+                                selected: _selectedBinanceCategoryFilter == category,
+                                onSelected: (_) {
+                                  setState(() {
+                                    _selectedBinanceCategoryFilter = category;
+                                  });
+                                },
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    if (!_isBinanceBroker)
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children:
+                              [
+                                'All',
+                                'Stable',
+                                'Moderate',
+                                'High Volatility',
+                              ].map((bucket) {
+                                return Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: ChoiceChip(
+                                    label: Text(bucket),
+                                    selected:
+                                        _selectedTraditionalVolatilityFilter ==
+                                        bucket,
+                                    onSelected: (_) {
+                                      setState(() {
+                                        _selectedTraditionalVolatilityFilter =
+                                            bucket;
+                                      });
+                                    },
+                                  ),
+                                );
+                              }).toList(),
+                        ),
+                      ),
                     const SizedBox(height: 8),
                     Text(
-                      _selectedTraditionalVolatilityFilter == 'All'
-                        ? '${tradingSymbols.length} symbols available, ordered from stable to high volatility.'
-                        : 'Showing ${_filteredTradingSymbols.length} of ${tradingSymbols.length} symbols in the \'${_selectedTraditionalVolatilityFilter}\' category.',
+                      _isBinanceBroker
+                          ? 'Showing ${_filteredTradingSymbols.length} of ${tradingSymbols.length} Binance pairs. Quote: ${_selectedBinanceQuoteFilter == 'All' ? 'any' : _selectedBinanceQuoteFilter}, category: ${_selectedBinanceCategoryFilter == 'All' ? 'any' : _selectedBinanceCategoryFilter}${_binanceSymbolSearchQuery.trim().isEmpty ? '' : ', search: "${_binanceSymbolSearchQuery.trim()}"'}.'
+                          : _selectedTraditionalVolatilityFilter == 'All'
+                              ? '${tradingSymbols.length} symbols available, ordered from stable to high volatility.'
+                              : 'Showing ${_filteredTradingSymbols.length} of ${tradingSymbols.length} symbols in the \'${_selectedTraditionalVolatilityFilter}\' category.',
                       style: TextStyle(fontSize: 11, color: Colors.grey[400]),
                     ),
                     if (_hiddenSelectedSymbolCount > 0)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(
-                          '$_hiddenSelectedSymbolCount selected symbol(s) are outside this filter and remain selected.',
+                          _isBinanceBroker
+                              ? '$_hiddenSelectedSymbolCount selected pair(s) are outside the current Binance filters and remain selected.'
+                              : '$_hiddenSelectedSymbolCount selected symbol(s) are outside this filter and remain selected.',
                           style: TextStyle(
                             fontSize: 11,
                             color: Colors.orange[300],
@@ -3470,8 +3755,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                     final marketData =
                                       _resolveCommodityMarketEntry(symbol);
                                     final binanceData =
-                                      _binancePairAnalytics[symbolCode] ??
-                                      const {};
+                                      _binanceAnalyticsForSymbol(symbolCode);
                                     final trend =
                                       marketData['trend'] ?? 'NEUTRAL';
                                     final signalColor = _marketSignalColor(
@@ -3649,6 +3933,35 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                                     fontSize: 11,
                                                   ),
                                                 ),
+                                                if (isBinanceSymbol)
+                                                  Container(
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 6,
+                                                          vertical: 2,
+                                                        ),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.blueAccent
+                                                          .withOpacity(0.14),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            3,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: Colors.blueAccent
+                                                            .withOpacity(0.35),
+                                                      ),
+                                                    ),
+                                                    child: Text(
+                                                      '${_binanceQuoteAsset(symbolCode)} quote',
+                                                      style: const TextStyle(
+                                                        fontSize: 9,
+                                                        color: Colors.blueAccent,
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                      ),
+                                                    ),
+                                                  ),
                                                 Container(
                                                   padding:
                                                       const EdgeInsets.symmetric(

@@ -1,11 +1,33 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/environment_config.dart';
 
 /// Service for Binance API operations from Flutter.
 /// Calls backend endpoints in binance_service.py.
 class BinanceTradingService {
   static String get _baseUrl => EnvironmentConfig.apiUrl;
+
+  static Future<Map<String, String>> _authHeaders({bool jsonContent = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionToken = prefs.getString('auth_token') ?? '';
+    final headers = <String, String>{
+      if (sessionToken.isNotEmpty) 'X-Session-Token': sessionToken,
+    };
+    if (jsonContent) {
+      headers['Content-Type'] = 'application/json';
+    }
+    return headers;
+  }
+
+  static Future<String?> _currentUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id')?.trim();
+    if (userId == null || userId.isEmpty) {
+      return null;
+    }
+    return userId;
+  }
 
   // ==================== LOGIN ====================
 
@@ -110,15 +132,22 @@ class BinanceTradingService {
     String? orderId,
     double? size,
     String direction = 'SELL',
+    String? botId,
+    double? profitAmount,
   }) async {
     try {
+      final userId = await _currentUserId();
       final body = <String, dynamic>{'symbol': symbol, 'direction': direction};
       if (orderId != null) body['dealId'] = orderId;
       if (size != null) body['size'] = size;
+      if (userId != null) body['user_id'] = userId;
+      if (botId != null && botId.isNotEmpty) body['bot_id'] = botId;
+      if (profitAmount != null) body['profit_amount'] = profitAmount;
+      final headers = await _authHeaders(jsonContent: true);
 
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/binance/close-position'),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: jsonEncode(body),
       ).timeout(const Duration(seconds: 15));
 
@@ -131,12 +160,18 @@ class BinanceTradingService {
 
   // ==================== CLOSE ALL POSITIONS ====================
 
-  static Future<Map<String, dynamic>> closeAllPositions() async {
+  static Future<Map<String, dynamic>> closeAllPositions({String? botId}) async {
     try {
+      final userId = await _currentUserId();
+      final headers = await _authHeaders(jsonContent: true);
+      final body = <String, dynamic>{};
+      if (userId != null) body['user_id'] = userId;
+      if (botId != null && botId.isNotEmpty) body['bot_id'] = botId;
+
       final resp = await http.post(
         Uri.parse('$_baseUrl/api/binance/close-all-positions'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({}),
+        headers: headers,
+        body: jsonEncode(body),
       ).timeout(const Duration(seconds: 30));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
