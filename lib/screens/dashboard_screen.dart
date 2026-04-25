@@ -582,7 +582,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _fetchRealBots();
     _fetchBrokerBalances();
     _fetchRecentWithdrawals();
-    _startAutoRefresh();
+    // Delay auto refresh to avoid calling ModalRoute too early
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startAutoRefresh();
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Any initialization that depends on inherited widgets goes here
   }
 
   Future<void> _loadPreferredBrokerDisplay() async {
@@ -733,8 +742,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   bool _isDashboardRouteActive() {
-    final route = ModalRoute.of(context);
-    return route == null || route.isCurrent;
+    try {
+      final route = ModalRoute.of(context);
+      return route == null || route.isCurrent;
+    } catch (e) {
+      // If context is not available yet, assume it's active
+      return true;
+    }
   }
 
   /// Fetch broker account balances from /api/accounts/balances
@@ -887,10 +901,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _startAutoRefresh() {
     _refreshTimer?.cancel();
     _refreshFailureCount = 0;
-    
-    // Initial refresh
-    _performRefresh();
-    
+
+    // Initial refresh - delay slightly to ensure widget is fully built
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) {
+        _performRefresh();
+      }
+    });
+
     // Subsequent refreshes with exponential backoff on error
     _refreshTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
       if (mounted && _isDashboardRouteActive()) {
