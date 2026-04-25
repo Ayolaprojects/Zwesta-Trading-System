@@ -1213,37 +1213,44 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 ),
               ),
             ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF0B90B).withOpacity(0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFF0B90B).withOpacity(0.35)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Per-client Binance security',
-                    style: GoogleFonts.poppins(
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Each client must connect their own Binance API key. Keep withdrawals disabled and restrict API access to your VPS IP before enabling live trading.',
-                    style: GoogleFonts.poppins(
-                      fontSize: 12,
-                      color: Colors.white70,
-                      height: 1.4,
-                    ),
-                  ),
-                ],
-              ),
-            ),
           ],
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF0B90B).withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFF0B90B).withOpacity(0.5)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.security, color: const Color(0xFFF0B90B), size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Security Instructions',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Each client must connect their own API credentials. Keep withdrawals disabled and restrict API access to trusted IPs before enabling live trading.',
+                  style: GoogleFonts.poppins(
+                    fontSize: 13,
+                    color: Colors.white.withOpacity(0.9),
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 24),
           Text(
             'Account Mode',
