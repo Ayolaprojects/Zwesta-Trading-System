@@ -1,0 +1,121 @@
+# Changelog
+
+## 4.0.0 - 2026-04-20
+
+### Changed (1)
+
+- Modified response for `get_pay_trade_history()` (`GET /sapi/v1/pay/transactions`):
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: type `array` → `object`
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `1` added
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `2` added
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: type `array` → `object`
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `1` added
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `2` added
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: type `array` → `object`
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `1` added
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `2` added
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: type `array` → `object`
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `1` added
+  - `data`.items.`fundsDetail`.items.`walletAssetCost`: property `2` added
+
+## 3.6.0 - 2026-03-26
+
+### Added (1)
+
+- Added `py.typed` file to indicate that the package supports type hints.
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.8.0`
+- Updated `tox` file
+
+## 3.5.0 - 2026-03-16
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.7.0`
+
+## 3.4.0 - 2026-02-11
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.6.0`
+- Updated `pyproject.toml` dependencies
+
+## 3.3.0 - 2026-01-29
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.5.0`
+
+## 3.2.0 - 2026-01-23
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.4.1`
+
+## 3.1.0 - 2025-01-13
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.4.0`
+
+## 3.0.0 - 2025-12-22
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.3.0`
+- Add `Body` to Rest API request
+
+## 2.1.0 - 2025-10-10
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.2.0`
+
+#### WebSocket Streams
+
+- Fixed typo for endpoint response `GET /sapi/v1/pay/transactions`
+
+## 2.0.0 - 2025-09-16
+
+### Changed (2)
+
+- Modified response for `get_pay_trade_history()` (`GET /sapi/v1/pay/transactions`):
+  - `data`.`payerInfo`: property `accountId` deleted
+- Updated `binance-common` library to version `3.1.1`
+
+## 1.5.0 - 2025-09-12
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.1.0`
+
+## 1.4.0 - 2025-09-05
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.0.0`
+
+## 1.3.0 - 2025-08-22
+
+### Changed (1)
+
+- Standardized type hints for required parameters by replacing `default = None` annotations with `Union[..., None]`
+
+## 1.2.0 - 2025-08-07
+
+### Changed (1)
+
+- Updated `binance-common` library to version `1.2.0`
+
+## 1.1.0 - 2025-08-06
+
+### Changed (2)
+
+- Updated `binance-common` library to version `1.1.0`
+- Added python version `3.13`
+
+## 1.0.0 - 2025-07-17
+
+- Initial release

@@ -1,0 +1,202 @@
+# Changelog
+
+## 6.0.0 - 2026-04-20
+
+### Added (7)
+
+#### REST API
+
+- `futures_tradfi_perps_contract()` (`POST /papi/v1/um/stock/contract`)
+- `cancel_all_um_algo_open_orders()` (`DELETE /papi/v1/um/algo/allOpenOrders`)
+- `cancel_um_algo_order()` (`DELETE /papi/v1/um/algo/order`)
+- `new_um_algo_order()` (`POST /papi/v1/um/algo/order`)
+- `query_all_current_um_open_algo_orders()` (`GET /papi/v1/um/algo/openAlgoOrders`)
+- `query_current_um_open_algo_order()` (`GET /papi/v1/um/algo/algoOrder`)
+- `query_um_algo_order_history()` (`GET /papi/v1/um/algo/allAlgoOrders`)
+
+### Changed (8)
+
+#### REST API
+
+- Marked `cancel_all_um_open_conditional_orders()` (`DELETE /papi/v1/um/conditional/allOpenOrders`) as deprecated.
+- Marked `cancel_um_conditional_order()` (`DELETE /papi/v1/um/conditional/order`) as deprecated.
+- Marked `new_um_conditional_order()` (`POST /papi/v1/um/conditional/order`) as deprecated.
+- Marked `query_all_current_um_open_conditional_orders()` (`GET /papi/v1/um/conditional/openOrders`) as deprecated.
+- Marked `query_all_um_conditional_orders()` (`GET /papi/v1/um/conditional/allOrders`) as deprecated.
+- Marked `query_current_um_open_conditional_order()` (`GET /papi/v1/um/conditional/openOrder`) as deprecated.
+- Marked `query_um_conditional_order_history()` (`GET /papi/v1/um/conditional/orderHistory`) as deprecated.
+- Modified response for `get_um_income_history()` (`GET /papi/v1/um/income`):
+  - items.`tranId`: type `string` → `integer`
+  - items.`tranId`: type `string` → `integer`
+
+## 5.3.0 - 2026-03-26
+
+### Added (1)
+
+- Added `py.typed` file to indicate that the package supports type hints.
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.8.0`
+- Updated `tox` file
+
+## 5.2.0 - 2026-03-16
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.7.0`
+
+## 5.1.0 - 2026-02-11
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.6.0`
+- Updated `pyproject.toml` dependencies
+
+## 5.0.0 - 2026-01-29
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.5.0`
+
+#### REST API
+
+- Modified parameter `strategyType`:
+  - enum added: `LIMIT_MAKER`
+  - affected methods:
+    - `new_cm_conditional_order()` (`POST /papi/v1/cm/conditional/order`)
+    - `new_um_conditional_order()` (`POST /papi/v1/um/conditional/order`)
+
+## 4.0.0 - 2026-01-23
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.4.1`
+
+#### REST API
+
+- Modified response for `query_current_cm_open_order()` (`GET /papi/v1/cm/openOrder`):
+  - type `object` → `array`
+  - property `pair` deleted
+  - property `symbol` deleted
+  - property `positionSide` deleted
+  - property `executedQty` deleted
+  - property `timeInForce` deleted
+  - property `origQty` deleted
+  - property `reduceOnly` deleted
+  - property `time` deleted
+  - property `side` deleted
+  - property `status` deleted
+  - property `type` deleted
+  - property `avgPrice` deleted
+  - property `clientOrderId` deleted
+  - property `cumBase` deleted
+  - property `orderId` deleted
+  - property `origType` deleted
+  - property `price` deleted
+  - property `updateTime` deleted
+
+## 3.2.0 - 2026-01-19
+
+### Changed (1)
+
+- Updated `Subscribe` method in `websocket.py` to accept optional `stream_url` parameter.
+
+## 3.1.0 - 2026-01-13
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.4.0`
+
+## 3.0.0 - 2025-12-22
+
+### Changed (3)
+
+- Updated `binance-common` library to version `3.3.0`
+- Add `Body` to Rest API request
+
+#### REST API
+
+- Modified response for `um_position_adl_quantile_estimation()` (`GET /papi/v1/um/adlQuantile`):
+  - items.`adlQuantile`: property `HEDGE` deleted
+  - items.`adlQuantile`: property `HEDGE` deleted
+
+## 2.0.0 - 2025-11-24
+
+### Changed (1)
+
+- Modified response for `user_data()` method:
+  - removed `M` from Executionreport
+
+## 1.8.0 - 2025-10-10
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.2.0`
+
+#### WebSocket Streams
+
+- Fixed typo for user data stream events response `account_update`, `Openorderloss` and `Outboundaccountposition`
+
+## 1.7.0 - 2025-09-24
+
+### Changed (2)
+
+#### REST API
+
+- Modified response for `margin_max_borrow()` (`GET /papi/v1/margin/maxBorrowable`):
+  - `amount`: type `number` → `string`
+  - `borrowLimit`: type `integer` → `string`
+
+- Modified response for `new_margin_order()` (`POST /papi/v1/margin/order`):
+  - `marginBuyBorrowAmount`: type `integer` → `string`
+
+## 1.6.0 - 2025-09-16
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.1.1`
+
+## 1.5.0 - 2025-09-12
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.1.0`
+
+## 1.4.0 - 2025-09-05
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.0.0`
+
+## 1.3.0 - 2025-08-22
+
+### Changed (2)
+
+- Standardized type hints for required parameters by replacing `default = None` annotations with `Union[..., None]`
+
+#### WebSocket Streams
+
+- Changed `list_subscribe` to return `dict` response
+
+## 1.2.0 - 2025-08-07
+
+### Changed (1)
+
+- Updated `binance-common` library to version `1.2.0`
+
+## 1.1.0 - 2025-08-06
+
+### Changed (4)
+
+- Updated `binance-common` library to version `1.1.0`
+- Changed models responses to handle upper and lower case parameters
+- Added python version `3.13`
+
+#### WebSocket Streams
+
+- Fixed`user_data`
+
+## 1.0.0 - 2025-07-17
+
+- Initial release

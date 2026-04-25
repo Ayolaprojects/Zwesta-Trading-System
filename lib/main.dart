@@ -25,12 +25,12 @@ void main() async {
       // Production: Use VPS IP
       EnvironmentConfig.setEnvironment(Environment.production);
     } else {
-      // Debug: Check environment variable or default to development
-      const String envMode = String.fromEnvironment('ZWESTA_ENV', defaultValue: 'development');
+      // Debug: Use staging (VPS) by default for testing
+      const String envMode = String.fromEnvironment('ZWESTA_ENV', defaultValue: 'staging');
       EnvironmentConfig.setEnvironment(
-        envMode == 'staging'
-            ? Environment.staging
-            : Environment.development,
+        envMode == 'development'
+            ? Environment.development
+            : Environment.staging,
       );
     }
     runApp(const MyApp());

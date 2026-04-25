@@ -57,6 +57,33 @@ class BrokerConnectionService {
     return raw;
   }
 
+  static String _buildBinanceAuthMessage(
+    Map<String, dynamic>? data, {
+    required bool isLive,
+  }) {
+    final baseMessage = _normalizeConnectionMessage(
+      (data?['error'] ?? 'Binance authentication failed').toString(),
+    );
+    final errorCode = data?['error_code'];
+    final whitelistHost = (data?['whitelist_host'] ?? '').toString().trim();
+    if (errorCode != -2015) {
+      return baseMessage;
+    }
+
+    final modeLabel = isLive ? 'LIVE' : 'DEMO';
+    final buffer = StringBuffer(
+      'Binance $modeLabel key rejected: check API secret, permissions, and environment. ',
+    );
+    if (!isLive) {
+      buffer.write('For demo keys, stay in DEMO mode. ');
+    }
+    if (whitelistHost.isNotEmpty) {
+      buffer.write('Whitelist $whitelistHost in Binance API restrictions. ');
+    }
+    buffer.write(baseMessage);
+    return buffer.toString().trim();
+  }
+
   /// Test connection with REAL backend broker API
   static Future<Map<String, dynamic>> testConnection({
     required String broker,
@@ -226,12 +253,16 @@ class BrokerConnectionService {
             normalizedError.contains('unauthorized');
 
         if (!isSessionError && errorMessage.isNotEmpty) {
-          debugPrint('❌ Broker authentication failed: $errorMessage');
+          final authMessage = normalizedBroker == 'binance'
+              ? _buildBinanceAuthMessage(data, isLive: isLive)
+              : errorMessage;
+          debugPrint('❌ Broker authentication failed: $authMessage');
           return {
             'success': false,
             'connected': false,
-            'message': errorMessage,
+            'message': authMessage,
             'errorCode': 'AUTH_FAILED',
+            'details': data,
           };
         }
 

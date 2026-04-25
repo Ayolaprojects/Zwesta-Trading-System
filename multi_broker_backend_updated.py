@@ -5746,21 +5746,82 @@ class BinanceConnection(BrokerConnection):
         super().__init__(BrokerType.BINANCE, credentials)
         self.market = (credentials.get('market') or credentials.get('server') or 'spot').lower()
         is_live = bool(credentials.get('is_live', False))
-        # Support both Binance Demo Mode and the legacy spot/futures testnet hosts.
-        self.base_url = 'https://api.binance.com/api' if is_live else 'https://demo-api.binance.com/api'
+        # Demo mode supports two distinct sandboxes: Binance Demo (demo-api.binance.com) and the public spot/futures testnet.
+        self.base_url = 'https://api.binance.com/api' if is_live else 'https://testnet.binance.vision/api'
         self.fapi_url = 'https://fapi.binance.com/fapi' if is_live else 'https://demo-fapi.binance.com/fapi'
         self._demo_base_url_fallbacks = [] if is_live else [
-            'https://demo-api.binance.com/api',
             'https://testnet.binance.vision/api',
+            'https://demo-api.binance.com/api',
         ]
         self._demo_fapi_url_fallbacks = [] if is_live else [
             'https://demo-fapi.binance.com/fapi',
             'https://testnet.binancefuture.com/fapi',
         ]
         self.effective_is_live = is_live
+        self.last_error = None
+        self.last_error_code = None
+        self._auth_attempt_summaries = []
         self._time_offset_ms = 0
         self._time_offset_updated_at = 0.0
         self._spot_balances = {}
+
+    def _set_last_error(self, message: str, code=None) -> None:
+        self.last_error = message
+        self.last_error_code = code
+
+    def _clear_last_error(self) -> None:
+        self.last_error = None
+        self.last_error_code = None
+        self._auth_attempt_summaries = []
+
+    def _record_auth_attempt(self, label: str, url: str, response=None, exc: Optional[Exception] = None) -> None:
+        target = str(url or '').replace('https://', '').replace('http://', '')
+        if exc is not None:
+            summary = f'{label} {target} -> EXCEPTION {exc}'
+        else:
+            status_code = getattr(response, 'status_code', None)
+            code = None
+            try:
+                payload = response.json()
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                code = payload.get('code')
+            code_suffix = f' code {code}' if code is not None else ''
+            summary = f'{label} {target} -> HTTP {status_code}{code_suffix}'
+        self._auth_attempt_summaries.append(summary)
+
+    def _describe_auth_attempts(self) -> str:
+        if not self._auth_attempt_summaries:
+            return ''
+        return '; '.join(self._auth_attempt_summaries)
+
+    def _format_auth_error(self, response) -> Tuple[str, Optional[Any]]:
+        status_code = getattr(response, 'status_code', None)
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            code = payload.get('code')
+            message = str(payload.get('msg') or '').strip() or f'Binance authentication failed with HTTP {status_code}'
+            if code in {-2014, -2015}:
+                message = f"{message}. Verify the API key/secret, Binance environment, IP whitelist, and API permissions."
+            attempts = self._describe_auth_attempts()
+            if attempts:
+                message = f'{message} Attempted endpoints: {attempts}'
+            return message, code
+
+        raw_text = str(getattr(response, 'text', '') or '').strip()
+        if raw_text:
+            message = f'Binance authentication failed with HTTP {status_code}: {raw_text}'
+        else:
+            message = f'Binance authentication failed with HTTP {status_code}'
+        attempts = self._describe_auth_attempts()
+        if attempts:
+            message = f'{message} Attempted endpoints: {attempts}'
+        return message, None
 
     def _get_spot_asset_free_balance(self, asset: str) -> float:
         asset_key = str(asset or '').strip().upper()
@@ -5915,6 +5976,7 @@ class BinanceConnection(BrokerConnection):
                     params={},
                     timeout=15,
                 )
+                self._record_auth_attempt('demo-fallback', f"{self.base_url}/v3/account", response=resp)
                 if resp.status_code == 200:
                     logger.info(f"Binance demo endpoint fallback succeeded on {candidate}")
                     return True
@@ -5923,8 +5985,51 @@ class BinanceConnection(BrokerConnection):
                     self._time_offset_ms = previous_offset
                     self._time_offset_updated_at = previous_updated_at
                     return False
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_auth_attempt('demo-fallback', f"{self.base_url}/v3/account", exc=exc)
+
+            self.base_url = previous_url
+            self._time_offset_ms = previous_offset
+            self._time_offset_updated_at = previous_updated_at
+
+        return False
+
+    def _try_live_spot_endpoint_fallback(self, candidates: Optional[List[str]] = None) -> bool:
+        fallback_candidates = candidates if candidates is not None else ['https://api.binance.com/api']
+        if not fallback_candidates:
+            return False
+
+        current_url = self.base_url
+        for candidate in fallback_candidates:
+            if candidate == current_url:
+                continue
+
+            previous_url = self.base_url
+            previous_offset = self._time_offset_ms
+            previous_updated_at = self._time_offset_updated_at
+            self.base_url = candidate
+            self._time_offset_ms = 0
+            self._time_offset_updated_at = 0.0
+
+            try:
+                resp = self._request_with_time_retry(
+                    'GET',
+                    f"{self.base_url}/v3/account",
+                    headers=self._headers(),
+                    params={},
+                    timeout=15,
+                )
+                self._record_auth_attempt('live-fallback', f"{self.base_url}/v3/account", response=resp)
+                if resp.status_code == 200:
+                    logger.info(f"Binance live endpoint fallback succeeded on {candidate}")
+                    return True
+                if not self._is_invalid_demo_auth_response(resp):
+                    self.base_url = previous_url
+                    self._time_offset_ms = previous_offset
+                    self._time_offset_updated_at = previous_updated_at
+                    return False
+            except Exception as exc:
+                self._record_auth_attempt('live-fallback', f"{self.base_url}/v3/account", exc=exc)
 
             self.base_url = previous_url
             self._time_offset_ms = previous_offset
@@ -5954,9 +6059,21 @@ class BinanceConnection(BrokerConnection):
 
     def connect(self) -> bool:
         try:
+            self._clear_last_error()
             if not self.credentials.get('api_key') or not self.credentials.get('api_secret'):
+                self._set_last_error('Binance: Missing API key or API secret', 'MISSING_CREDENTIALS')
                 logger.error('Binance: Missing API key or API secret')
                 return False
+
+            configured_is_live = bool(self.credentials.get('is_live', False))
+            logger.info(
+                "[BINANCE AUTH] account=%s market=%s configured_mode=%s effective_mode=%s endpoint=%s/v3/account",
+                str(self.credentials.get('account_number') or '').strip() or 'BINANCE',
+                self.market,
+                'live' if configured_is_live else 'demo',
+                'live' if self.effective_is_live else 'demo',
+                self.base_url,
+            )
 
             resp = self._request_with_time_retry(
                 'GET',
@@ -5965,6 +6082,7 @@ class BinanceConnection(BrokerConnection):
                 params={},
                 timeout=15,
             )
+            self._record_auth_attempt('primary', f"{self.base_url}/v3/account", response=resp)
             if resp.status_code == 200:
                 self.connected = True
                 self.get_account_info()
@@ -5973,8 +6091,21 @@ class BinanceConnection(BrokerConnection):
             if self._try_demo_spot_endpoint_fallback():
                 self.effective_is_live = False
                 self.connected = True
+                self._clear_last_error()
+                logger.info("[BINANCE AUTH] fallback promoted effective_mode=demo endpoint=%s/v3/account", self.base_url)
                 self.get_account_info()
                 return True
+
+            if not bool(self.credentials.get('is_live', False)) and self.market != 'futures' and self._is_invalid_demo_auth_response(resp):
+                if self._try_live_spot_endpoint_fallback():
+                    logger.warning('Binance demo auth failed, but live spot auth succeeded; treating this credential as live.')
+                    self.credentials['is_live'] = True
+                    self.effective_is_live = True
+                    self.connected = True
+                    self._clear_last_error()
+                    logger.info("[BINANCE AUTH] compatibility fallback promoted effective_mode=live endpoint=%s/v3/account", self.base_url)
+                    self.get_account_info()
+                    return True
 
             if bool(self.credentials.get('is_live', False)) and self.market != 'futures' and self._is_invalid_demo_auth_response(resp):
                 compatibility_candidates = [
@@ -5986,12 +6117,17 @@ class BinanceConnection(BrokerConnection):
                     self.credentials['is_live'] = False
                     self.effective_is_live = False
                     self.connected = True
+                    self._clear_last_error()
+                    logger.info("[BINANCE AUTH] compatibility fallback promoted effective_mode=demo endpoint=%s/v3/account", self.base_url)
                     self.get_account_info()
                     return True
 
-            logger.error(f"Binance authentication failed: {resp.status_code} - {resp.text}")
+            error_message, error_code = self._format_auth_error(resp)
+            self._set_last_error(error_message, error_code)
+            logger.error(f"Binance authentication failed: {resp.status_code} - {resp.text} | attempts={self._describe_auth_attempts()}")
             return False
         except Exception as e:
+            self._set_last_error(f'Error connecting to Binance: {e}', 'EXCEPTION')
             logger.error(f"Error connecting to Binance: {e}")
             return False
 
@@ -16785,17 +16921,44 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         broker_name,
     )
     fxcm_threshold_migrated = False
-    fxcm_default_signal_threshold = _default_signal_threshold_for_broker_profile(
-        bot_state['managementProfile'],
-        broker_name,
-    )
     if (
         broker_name == 'FXCM'
-        and bot_state['signalThresholdMode'] != 'manual'
-        and int(bot_state.get('signalThreshold') or 0) != fxcm_default_signal_threshold
+        and bot_state['managementMode'] != 'manual'
+        and bot_state['signalThresholdMode'] == 'auto'
     ):
-        bot_state['signalThreshold'] = fxcm_default_signal_threshold
-        fxcm_threshold_migrated = True
+        current_threshold = int(_safe_float(bot_state.get('signalThreshold'), 0.0))
+        if current_threshold <= 0 or current_threshold > 10:
+            bot_state['signalThreshold'] = 10
+            fxcm_threshold_migrated = True
+    cadence_floor = _minimum_saved_bot_trade_cadence(
+        bot_state.get('strategy', row['strategy']),
+        bot_state['managementProfile'],
+        bool(bot_state.get('intelligentScanner', False)),
+    )
+    cadence_migrated = False
+    if str(bot_state.get('tradingMode') or '').strip().lower() != cadence_floor['tradingMode']:
+        bot_state['tradingMode'] = cadence_floor['tradingMode']
+        cadence_migrated = True
+    current_trading_interval = int(bot_state.get('tradingInterval') or 0)
+    if current_trading_interval <= 0 or current_trading_interval > cadence_floor['tradingInterval']:
+        bot_state['tradingInterval'] = cadence_floor['tradingInterval']
+        cadence_migrated = True
+    current_poll_interval = int(bot_state.get('pollInterval') or 0)
+    if current_poll_interval <= 0 or current_poll_interval > cadence_floor['pollInterval']:
+        bot_state['pollInterval'] = cadence_floor['pollInterval']
+        cadence_migrated = True
+    if cadence_migrated:
+        bot_state['_cadenceMigrationApplied'] = True
+    restored_symbols = bot_state.get('symbols') or (row['symbols'].split(',') if row['symbols'] else ['EURUSDm'])
+    original_restored_symbols = [str(symbol).strip() for symbol in restored_symbols if str(symbol).strip()]
+    bot_state['symbols'] = validate_and_correct_symbols(restored_symbols, broker_name)
+    bot_state['tradeHistory'] = bot_state.get('tradeHistory') or []
+    _merge_bot_trade_history_from_db(bot_state, row['bot_id'])
+    try:
+        tsync_conn = build_sqlite_connection(timeout=10.0)
+        tsync_cur = tsync_conn.cursor()
+        tsync_cur.execute('SELECT COUNT(*) FROM trades WHERE bot_id = ?', (row['bot_id'],))
+        db_trade_count = tsync_cur.fetchone()[0] or 0
         tsync_conn.close()
         if db_trade_count > bot_state.get('totalTrades', 0):
             bot_state['totalTrades'] = db_trade_count
@@ -19733,7 +19896,27 @@ def test_broker_connection():
                 'is_live': is_live,
             })
             if not binance_conn.connect():
-                return jsonify({'success': False, 'error': 'Failed to authenticate with Binance'}), 401
+                backend_host = (request.host or '').strip()
+                whitelist_host = backend_host.split(':', 1)[0] if backend_host else ''
+                error_message = binance_conn.last_error or 'Failed to authenticate with Binance'
+                auth_attempts = binance_conn._describe_auth_attempts() if hasattr(binance_conn, '_describe_auth_attempts') else ''
+                if getattr(binance_conn, 'last_error_code', None) == -2015:
+                    mode_label = 'LIVE' if is_live else 'DEMO'
+                    error_message = (
+                        f'Binance {mode_label} {market} key rejected (-2015). '
+                        'Check API secret, Enable Reading, and Binance environment.'
+                    )
+                if getattr(binance_conn, 'last_error_code', None) == -2015 and whitelist_host:
+                    error_message = (
+                        f'{error_message} Whitelist {whitelist_host} in Binance API restrictions.'
+                    )
+                return jsonify({
+                    'success': False,
+                    'error': error_message,
+                    'error_code': getattr(binance_conn, 'last_error_code', None),
+                    'whitelist_host': whitelist_host or None,
+                    'attempts': auth_attempts or None,
+                }), 401
 
             effective_is_live = bool(getattr(binance_conn, 'effective_is_live', is_live))
             account_info = binance_conn.get_account_info()
@@ -19777,26 +19960,30 @@ def test_broker_connection():
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 ''', (credential_id, user_id, 'Binance', account_id, api_secret, market, int(effective_is_live), api_key, now_iso, now_iso))
 
-                        cursor.execute(
-                                '''
-                                UPDATE broker_credentials
-                                SET is_active = 0, updated_at = ?
-                                WHERE user_id = ?
-                                    AND broker_name = 'Binance'
-                                    AND is_active = 1
-                                    AND is_live = ?
-                                    AND LOWER(COALESCE(server, 'spot')) = LOWER(?)
-                                    AND api_key = ?
-                                    AND COALESCE(credential_id, '') != ?
-                                ''',
-                                (now_iso, user_id, int(effective_is_live), market, api_key, credential_id),
-                        )
+            cursor.execute(
+                '''
+                UPDATE broker_credentials
+                SET is_active = 0, updated_at = ?
+                WHERE user_id = ?
+                  AND broker_name = 'Binance'
+                  AND is_active = 1
+                  AND is_live = ?
+                  AND LOWER(COALESCE(server, 'spot')) = LOWER(?)
+                  AND api_key = ?
+                  AND COALESCE(credential_id, '') != ?
+                ''',
+                (now_iso, user_id, int(effective_is_live), market, api_key, credential_id),
+            )
             conn.commit()
             conn.close()
 
             response_warning = None
             if effective_is_live != bool(is_live):
-                response_warning = 'Binance key authenticated against demo/testnet, so it was saved as a demo credential.'
+                response_warning = (
+                    'Binance key authenticated against the live environment, so it was saved as a live credential.'
+                    if effective_is_live
+                    else 'Binance key authenticated against demo/testnet, so it was saved as a demo credential.'
+                )
 
             return jsonify({
                 'success': True,

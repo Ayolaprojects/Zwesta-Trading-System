@@ -1,0 +1,159 @@
+# Changelog
+
+## 6.0.0 - 2026-04-20
+
+### Added (3)
+
+#### REST API
+
+- `delete_margin_call_level()` (`DELETE /sapi/v1/portfolio/margin-call-level`)
+- `get_margin_call_level()` (`GET /sapi/v1/portfolio/margin-call-level`)
+- `set_margin_call_level()` (`POST /sapi/v1/portfolio/margin-call-level`)
+
+## 5.7.0 - 2026-03-26
+
+### Added (1)
+
+- Added `py.typed` file to indicate that the package supports type hints.
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.8.0`
+- Updated `tox` file
+
+## 5.6.0 - 2026-03-16
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.7.0`
+
+## 5.5.0 - 2026-02-11
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.6.0`
+- Updated `pyproject.toml` dependencies
+
+## 5.4.0 - 2026-01-29
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.5.0`
+
+## 5.3.0 - 2026-01-23
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.4.1`
+
+## 5.2.0 - 2026-01-19
+
+### Added (2)
+
+#### REST API
+
+- `get_delta_mode_status()` (`GET /sapi/v1/portfolio/delta-mode`)
+- `switch_delta_mode()` (`POST /sapi/v1/portfolio/delta-mode`)
+
+#### WebSocket Streams
+
+### Changed (1)
+
+- Updated `Subscribe` method in `websocket.py` to accept optional `stream_url` parameter.
+
+## 5.1.0 - 2026-01-13
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.4.0`
+
+## 5.0.0 - 2025-12-22
+
+### Changed (2)
+
+- Updated `binance-common` library to version `3.3.0`
+- Add `Body` to Rest API request
+
+## 4.0.0 - 2025-11-24
+
+### Changed (1)
+
+#### REST API
+
+- Renamed `transfer_ldusdt_for_portfolio_margin()` to `transfer_ldusdt_rwusd_for_portfolio_margin()`.
+
+## 3.0.0 - 2025-11-14
+
+### Removed (2)
+
+#### REST API
+
+- `mint_bfusd_for_portfolio_margin()` (`POST /sapi/v1/portfolio/mint`)
+- `redeem_bfusd_for_portfolio_margin()` (`POST /sapi/v1/portfolio/redeem`)
+
+## 2.0.0 - 2025-10-10
+
+### Changed (3)
+
+- Updated `binance-common` library to version `3.2.0`
+
+#### REST API
+
+- Modified response for `mint_bfusd_for_portfolio_margin()` (`POST /sapi/v1/portfolio/mint`):
+  - property `mintRate` added
+  - property `rate` deleted
+
+- Modified response for `redeem_bfusd_for_portfolio_margin()` (`POST /sapi/v1/portfolio/redeem`):
+  - property `redeemRate` added
+  - property `rate` deleted
+
+## 1.6.0 - 2025-09-16
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.1.1`
+
+## 1.5.0 - 2025-09-12
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.1.0`
+
+## 1.4.0 - 2025-09-05
+
+### Changed (1)
+
+- Updated `binance-common` library to version `3.0.0`
+
+## 1.3.0 - 2025-08-22
+
+### Changed (3)
+
+- Standardized type hints for required parameters by replacing `default = None` annotations with `Union[..., None]`
+
+#### WebSocket Streams
+
+- Changed `list_subscribe` to return `dict` response
+- Updated Websocket Streams response type to `RequestStreamHandle`
+
+## 1.2.0 - 2025-08-07
+
+### Changed (1)
+
+- Updated `binance-common` library to version `1.2.0`
+
+## 1.1.0 - 2025-08-06
+
+### Changed (4)
+
+- Updated `binance-common` library to version `1.1.0`
+- Changed models responses to handle upper and lower case parameters
+- Added python version `3.13`
+
+#### WebSocket Streams
+
+- Fixed`user_data`
+
+## 1.0.0 - 2025-07-17
+
+- Initial release

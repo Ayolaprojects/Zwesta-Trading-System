@@ -5,7 +5,7 @@ enum Environment { development, staging, production }
 class EnvironmentConfig {
   // Default API URLs — use HTTPS when SSL certs are deployed on VPS
   // Change to https:// once cert.pem/key.pem are placed on the VPS
-  static const String _devApiUrl = 'http://148.113.5.39:9000';  // VPS
+  static const String _devApiUrl = 'http://148.113.5.39:9000';  // VPS development
   static const String _stagingApiUrl = 'http://148.113.5.39:9000';  // VPS staging
   static const String _prodApiUrl = 'http://148.113.5.39:9000';  // VPS production
 

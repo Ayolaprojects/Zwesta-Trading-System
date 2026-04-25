@@ -677,11 +677,17 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         );
       } else {
         setState(() => _isTestingConnection = false);
+        final isBinanceAuthFailure = _isBinanceBroker && result['errorCode'] == 'AUTH_FAILED';
+        final message = (result['message'] ?? 'Connection failed').toString();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✗ ${result['message'] ?? 'Connection failed'}'),
+            content: Text(
+              isBinanceAuthFailure
+                  ? '✗ $message'
+                  : '✗ $message',
+            ),
             backgroundColor: AppColors.dangerColor,
-            duration: const Duration(seconds: 3),
+            duration: Duration(seconds: isBinanceAuthFailure ? 8 : 3),
           ),
         );
       }
