@@ -1,0 +1,8 @@
+{
+  "credentialId": "b7cc78a2-7096-4fc9-aa80-6d6eb2c06f88",
+  "mode": "demo",
+  "symbols": ["EURUSD"],
+  "strategy": "Trend Following",
+  "riskPerTrade": 20,
+  "maxDailyLoss": 60
+}
