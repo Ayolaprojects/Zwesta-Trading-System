@@ -149,21 +149,21 @@ class BrokerConnectionService {
         final hasUsername = username != null && username.trim().isNotEmpty;
         payload = {
           'broker': 'FXCM',
-          'api_key': apiKey,
-          'token': apiKey,
-          'username': username,
-          'password': password,
+          'api_key': apiKey?.trim(),
+          'token': apiKey?.trim(),
+          'username': username?.trim(),
+          'password': password?.trim(),
           'fxcm_login_mode': hasApiToken ? 'token' : (hasUsername ? 'username' : 'token'),
-          'account_number': accountNumber,
-          'server': server,
+          'account_number': accountNumber?.trim(),
+          'server': server?.trim(),
           'is_live': isLive,
         };
       } else {
         payload = {
           'broker': broker,
-          'account_number': accountNumber,
-          'password': password,
-          'server': server,
+          'account_number': accountNumber?.trim(),
+          'password': password?.trim(),
+          'server': server?.trim(),
           'is_live': isLive,
         };
       }

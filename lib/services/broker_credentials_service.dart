@@ -332,15 +332,15 @@ class BrokerCredentialsService extends ChangeNotifier {
         Uri.parse('$_apiUrl/api/broker/test-connection'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'broker': broker,
-          'account_number': accountNumber,
-          'password': password,
-          'api_key': apiKey,
-          'username': username,
+          'broker': broker.trim(),
+          'account_number': accountNumber?.trim(),
+          'password': password?.trim(),
+          'api_key': apiKey?.trim(),
+          'username': username?.trim(),
           'fxcm_login_mode': ((broker.toLowerCase() == 'fxcm' || broker.toLowerCase() == 'fxm') && apiKey != null && apiKey.trim().isNotEmpty)
               ? 'token'
-              : (((broker.toLowerCase() == 'fxcm' || broker.toLowerCase() == 'fxm') && username != null && username.isNotEmpty) ? 'username' : null),
-          'server': server,
+              : (((broker.toLowerCase() == 'fxcm' || broker.toLowerCase() == 'fxm') && username != null && username.trim().isNotEmpty) ? 'username' : null),
+          'server': server?.trim(),
           'is_live': isLive,
         }),
       ).timeout(const Duration(seconds: 15));

@@ -744,7 +744,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
           children: [
             LogoWidget(size: 40, showText: false),
             SizedBox(width: 12),
-            Text('Broker Integration'),
+            Expanded(
+              child: Text('Broker Integration'),
+            ),
           ],
         ),
         elevation: 0,

@@ -10,6 +10,7 @@ import 'services/statement_service.dart';
 import 'services/financial_service.dart';
 import 'services/ig_auto_connect_service.dart';
 import 'services/commission_service.dart';
+import 'services/broker_credentials_service.dart';
 import 'providers/currency_provider.dart';
 import 'providers/fallback_status_provider.dart';
 import 'theme/app_theme.dart';
@@ -104,6 +105,9 @@ void main() async {
           ),
           ChangeNotifierProvider(
             create: (_) => CommissionService(),
+          ),
+          ChangeNotifierProvider(
+            create: (_) => BrokerCredentialsService(),
           ),
         ],
         child: MaterialApp(

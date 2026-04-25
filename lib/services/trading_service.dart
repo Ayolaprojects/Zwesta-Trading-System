@@ -429,7 +429,7 @@ class TradingService extends ChangeNotifier {
 
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
-          final accData = data['account'];
+          final accData = data;
           
           _accounts = [
             Account(
