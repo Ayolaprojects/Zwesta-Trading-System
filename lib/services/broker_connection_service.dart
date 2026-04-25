@@ -120,7 +120,7 @@ class BrokerConnectionService {
         return {
           'success': false,
           'connected': false,
-          'message': 'IG Markets is not integrated in the current backend setup. Supported direct brokers are Exness, Binance, FXCM, and OANDA.',
+          'message': 'IG Markets is not integrated in the current backend setup. Supported direct brokers are Exness, Binance, and FXCM.',
           'errorCode': 'UNSUPPORTED_BROKER',
         };
       }
@@ -134,14 +134,6 @@ class BrokerConnectionService {
           'api_secret': apiSecret ?? password,
           'market': market ?? server,
           'account_number': accountNumber,
-          'is_live': isLive,
-        };
-      } else if (normalizedBroker == 'oanda') {
-        payload = {
-          'broker': 'OANDA',
-          'api_key': apiKey,
-          'account_number': accountNumber,
-          'server': server,
           'is_live': isLive,
         };
       } else if (normalizedBroker == 'fxcm' || normalizedBroker == 'fxm') {

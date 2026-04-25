@@ -40,7 +40,7 @@ def _safe_post(url, json_data=None, timeout=15, headers=None):
 def api_unified_portfolio():
     """
     Get aggregated portfolio across ALL connected brokers.
-    Returns combined balances, positions, P&L for IG, OANDA, FXCM, Binance.
+    Returns combined balances, positions, P&L for FXCM, Binance.
     """
     try:
         brokers = {}
@@ -70,27 +70,6 @@ def api_unified_portfolio():
             total_pnl += pnl
         else:
             brokers['IG'] = {'connected': False, 'error': 'Not connected'}
-
-        # --- OANDA ---
-        oanda_bal = _safe_get(f"{BACKEND_URL}/api/oanda/balance")
-        if oanda_bal and oanda_bal.get('success'):
-            bal = float(oanda_bal.get('balance', 0))
-            avail = float(oanda_bal.get('available', 0))
-            pnl = float(oanda_bal.get('unrealizedPL', 0))
-            brokers['OANDA'] = {
-                'connected': True,
-                'balance': bal,
-                'available': avail,
-                'pnl': pnl,
-                'currency': oanda_bal.get('currency', 'USD'),
-                'positions': oanda_bal.get('openTradeCount', 0),
-            }
-            total_balance += bal
-            total_available += avail
-            total_pnl += pnl
-            total_positions += oanda_bal.get('openTradeCount', 0)
-        else:
-            brokers['OANDA'] = {'connected': False, 'error': 'Not connected'}
 
         # --- FXCM ---
         fxcm_bal = _safe_get(f"{BACKEND_URL}/api/fxcm/balance")
@@ -190,13 +169,6 @@ def api_unified_positions():
                 p['broker'] = 'IG'
                 all_positions.append(p)
 
-        # OANDA positions
-        oanda_data = _safe_get(f"{BACKEND_URL}/api/oanda/positions")
-        if oanda_data and oanda_data.get('success'):
-            for p in oanda_data.get('positions', []):
-                p['broker'] = 'OANDA'
-                all_positions.append(p)
-
         # FXCM positions
         fxcm_data = _safe_get(f"{BACKEND_URL}/api/fxcm/positions")
         if fxcm_data and fxcm_data.get('success'):
@@ -241,9 +213,6 @@ def api_unified_close_all():
 
         ig_result = _safe_post(f"{BACKEND_URL}/api/ig/close-all-positions", json_data=payload, headers=forwarded_headers)
         results['IG'] = ig_result if ig_result else {'success': False, 'error': 'Not connected'}
-
-        oanda_result = _safe_post(f"{BACKEND_URL}/api/oanda/close-all-positions", json_data=payload, headers=forwarded_headers)
-        results['OANDA'] = oanda_result if oanda_result else {'success': False, 'error': 'Not connected'}
 
         fxcm_result = _safe_post(f"{BACKEND_URL}/api/fxcm/close-all-positions", json_data=payload, headers=forwarded_headers)
         results['FXCM'] = fxcm_result if fxcm_result else {'success': False, 'error': 'Not connected'}

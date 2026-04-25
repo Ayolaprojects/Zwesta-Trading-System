@@ -128,56 +128,27 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
       final normalizedBroker = _activeBrokerName.toLowerCase();
       late http.Response earningsResponse;
 
-      if (normalizedBroker == 'oanda') {
-        final accountId = prefs.getString('account_number') ?? '';
-        earningsResponse = await http
-            .get(
-              Uri.parse(
-                '${EnvironmentConfig.apiUrl}/api/oanda/funds${accountId.isNotEmpty ? '?account_id=$accountId' : ''}',
-              ),
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Session-Token': sessionToken,
-              },
-            )
-            .timeout(const Duration(seconds: 10));
+      earningsResponse = await http
+          .get(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/broker/exness/balance/$userId'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+          )
+          .timeout(const Duration(seconds: 10));
 
-        if (earningsResponse.statusCode == 200) {
-          final data = jsonDecode(earningsResponse.body);
-          final funds = (data['funds'] as Map<String, dynamic>?) ?? const {};
-          setState(() {
-            _totalEarned = (funds['balance'] as num?)?.toDouble() ?? 0;
-            _totalWithdrawn = 0;
-            _isLoading = false;
-          });
-        } else {
-          setState(() {
-            _errorMessage = 'Could not load OANDA earnings breakdown';
-            _isLoading = false;
-          });
-        }
+      if (earningsResponse.statusCode == 200) {
+        final data = jsonDecode(earningsResponse.body);
+        setState(() {
+          _totalEarned = (data['total_available'] as num?)?.toDouble() ?? 0;
+          _totalWithdrawn = (data['pending_withdrawals'] as num?)?.toDouble() ?? 0;
+          _isLoading = false;
+        });
       } else {
-        earningsResponse = await http
-            .get(
-              Uri.parse('${EnvironmentConfig.apiUrl}/api/broker/exness/balance/$userId'),
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Session-Token': sessionToken,
-              },
-            )
-            .timeout(const Duration(seconds: 10));
-
-        if (earningsResponse.statusCode == 200) {
-          final data = jsonDecode(earningsResponse.body);
-          setState(() {
-            _totalEarned = (data['total_available'] as num?)?.toDouble() ?? 0;
-            _totalWithdrawn = (data['pending_withdrawals'] as num?)?.toDouble() ?? 0;
-            _isLoading = false;
-          });
-        } else {
-          setState(() {
-            _errorMessage = 'Could not load broker earnings breakdown';
-            _isLoading = false;
+        setState(() {
+          _errorMessage = 'Could not load broker earnings breakdown';
+          _isLoading = false;
           });
         }
       }

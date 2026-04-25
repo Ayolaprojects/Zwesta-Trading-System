@@ -61,7 +61,7 @@ def verify_backend():
             if 'XM' in line and 'class XMConnection' not in line:  # Should already be removed
                 # Check if it's in actual code
                 if 'XM' in line.split('#')[0]:  # Before any comment
-                    if 'XM' in ['METATRADER5', 'FXOPEN', 'OANDA']:  # Skip these harmless substrings
+                    if 'XM' in ['METATRADER5', 'FXOPEN']:  # Skip these harmless substrings
                         continue
                     xm_count += 1
     

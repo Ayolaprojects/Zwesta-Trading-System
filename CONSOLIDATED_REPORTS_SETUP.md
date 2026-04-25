@@ -39,7 +39,7 @@ Your trading system now includes complete multi-account management and consolida
 - **Capabilities**:
   - Unified API for multiple brokers
   - MetaTrader 5 implementation complete
-  - Extensible architecture for future brokers (OANDA, Interactive Brokers, etc.)
+  - Extensible architecture for future brokers (Interactive Brokers, etc.)
   - 11+ API endpoints for account/trade management
 
 ## Quick Start Guide
@@ -200,7 +200,7 @@ Project Root/
 - **Account Status**: Connected/Disconnected indicators
 - **Account Details**: Balance, equity, leverage, currency
 - **Actions**: Connect/Disconnect buttons
-- **Broker Support**: MT5, OANDA, Interactive Brokers, XM, Pepperstone, FxOpen, Exness, Darwinex
+- **Broker Support**: MT5, Interactive Brokers, XM, Pepperstone, FxOpen, Exness, Darwinex
 
 ### Consolidated Reports
 - **Overall Summary**: 
@@ -228,7 +228,6 @@ Project Root/
   - Trade history
 
 ### Coming Soon (Architecture Ready)
-- 🔲 **OANDA**: Forex broker
 - 🔲 **Interactive Brokers (IB)**: Multi-asset
 - 🔲 **XM**: Forex & CFDs
 - 🔲 **Pepperstone**: Forex & CFDs
@@ -329,7 +328,7 @@ API_PORT = 8080
 4. Add account deletion functionality
 
 ### Medium Term
-1. Add second broker support (OANDA, IB, etc.)
+1. Add second broker support (IB, etc.)
 2. Create consolidated PDF reports
 3. Add email notifications
 4. Implement scheduled reports

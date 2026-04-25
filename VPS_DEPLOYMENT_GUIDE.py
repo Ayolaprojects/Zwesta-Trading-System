@@ -42,7 +42,7 @@ Backend (multi_broker_backend_updated.py):
    ❌ Removed: BrokerType.XM enum
    ❌ Removed: XM from connection factory
    ❌ Removed: FXM from BrokerType enum
-   ✅ Kept: Exness, Binance, BinanceSpot, BinanceFutures, OANDA, MetaTrader5
+   ✅ Kept: Exness, Binance, BinanceSpot, BinanceFutures, MetaTrader5
 
 Frontend Dashboard (dashboard_screen.dart):
    ❌ Removed: Duplicate balance display in Broker Accounts header

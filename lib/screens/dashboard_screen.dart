@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../l10n/app_localizations.dart';
 import '../models/trade.dart';
@@ -37,7 +38,6 @@ import 'fxcm_workspace_screen.dart';
 import 'fxcm_withdrawal_screen.dart';
 import 'multi_account_management_screen.dart';
 import 'multi_broker_management_screen.dart';
-import 'oanda_withdrawal_screen.dart';
 import 'referral_dashboard_screen.dart';
 import 'rentals_and_features_screen.dart';
 import 'trade_analysis_screen.dart';
@@ -45,6 +45,12 @@ import 'trades_screen.dart';
 import 'unified_broker_dashboard_screen.dart';
 import 'user_wallet_screen.dart';
 import 'activity_log_screen.dart';
+
+class _SampleCandle {
+  final double time;
+  final double close;
+  _SampleCandle({required this.time, required this.close});
+}
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({Key? key}) : super(key: key);
@@ -275,7 +281,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (lower == 'prime xbt' || lower == 'pxbt') return 'PXBT';
     if (lower == 'binance') return 'Binance';
     if (lower == 'exness') return 'Exness';
-    if (lower == 'oanda') return 'OANDA';
     if (lower == 'ig markets' || lower == 'ig') return 'IG';
     return raw;
   }
@@ -288,8 +293,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return Icons.currency_exchange;
       case 'binance':
         return Icons.diamond;
-      case 'oanda':
-        return Icons.water_drop;
       case 'ig':
         return Icons.bar_chart;
       case 'pxbt':
@@ -307,8 +310,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return const Color(0xFF7C4DFF);
       case 'binance':
         return const Color(0xFFF0B90B);
-      case 'oanda':
-        return const Color(0xFF4CAF50);
       case 'ig':
         return const Color(0xFFFF5252);
       case 'pxbt':
@@ -991,7 +992,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final brokerOptions = <String>{'All'};
-    // Add brokers from ALL accounts (not just connected), so FXCM/OANDA always appear
+    // Add brokers from ALL accounts (not just connected), so FXCM always appears
     for (final account in _brokerAccounts) {
       final broker = _normalizeBrokerDisplayName((account['broker'] ?? '').toString());
       if (broker.isNotEmpty) {
@@ -2130,6 +2131,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             _buildPremiumWelcomeCard(),
             const SizedBox(height: 16),
+            _buildLiveCandleChart(),
+            const SizedBox(height: 16),
             _buildConnectedBrokerCard(),
             const SizedBox(height: 16),
             _buildBrokerAccountsCard(),
@@ -2241,12 +2244,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               subtitle: 'Features, payouts, and admin-facing operations screens',
               actions: [
                 _FeatureAction('Rentals', Icons.card_giftcard, Colors.orangeAccent, () => _pushScreen(const RentalsAndFeaturesScreen())),
-                _FeatureAction('OANDA Out', Icons.account_balance_wallet, const Color(0xFF4CAF50), () => _pushScreen(const OandaWithdrawalScreen())),
                 _FeatureAction('FXCM Out', Icons.account_balance_wallet, const Color(0xFF7C4DFF), () => _pushScreen(const FxcmWithdrawalScreen())),
                 _FeatureAction('Binance Out', Icons.currency_bitcoin, const Color(0xFFF0B90B), () => _pushScreen(const BinanceWithdrawalScreen())),
                 _FeatureAction('Verify', Icons.admin_panel_settings, const Color(0xFFE74C3C), () => _pushScreen(const AdminWithdrawalVerificationScreen())),
               ],
             ),
+            const SizedBox(height: 16),
+            _buildSupportSection(),
+            const SizedBox(height: 16),
+            _buildSystemFeaturesSection(),
           ],
         ),
       ),
@@ -2325,6 +2331,330 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
     );
+
+  // ── SUPPORT SECTION ──
+  Widget _buildSupportSection() => _glassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Support & Contact',
+            style: GoogleFonts.poppins(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Get help and connect with our support team',
+            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 11),
+          ),
+          const SizedBox(height: 14),
+          InkWell(
+            onTap: () async {
+              const whatsappUrl = 'https://wa.me/27696469651';
+              if (await canLaunchUrl(Uri.parse(whatsappUrl))) {
+                await launchUrl(Uri.parse(whatsappUrl), mode: LaunchMode.externalApplication);
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [const Color(0xFF25D366).withOpacity(0.22), const Color(0xFF25D366).withOpacity(0.08)],
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF25D366).withOpacity(0.28)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF25D366).withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.chat, color: Color(0xFF25D366), size: 24),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'WhatsApp Support',
+                          style: GoogleFonts.poppins(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          '+27 69 646 9651',
+                          style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13),
+                        ),
+                        Text(
+                          'Tap to start chat',
+                          style: GoogleFonts.poppins(color: Colors.white54, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.arrow_forward_ios, color: Color(0xFF25D366), size: 16),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+  // ── SYSTEM FEATURES SECTION ──
+  Widget _buildSystemFeaturesSection() => _glassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'System Functionalities',
+            style: GoogleFonts.poppins(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Explore what Zwesta Trading System can do for you',
+            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 11),
+          ),
+          const SizedBox(height: 14),
+          _buildFeatureItem(
+            icon: Icons.business_center,
+            title: 'Multi-Broker Integration',
+            description: 'Connect and trade across Binance, FXCM, and Exness simultaneously',
+            color: const Color(0xFF7C4DFF),
+          ),
+          const SizedBox(height: 12),
+          _buildFeatureItem(
+            icon: Icons.smart_toy,
+            title: 'Automated Trading Bots',
+            description: 'Create and deploy AI-powered trading strategies that work 24/7',
+            color: const Color(0xFFFFB74D),
+          ),
+          const SizedBox(height: 12),
+          _buildFeatureItem(
+            icon: Icons.show_chart,
+            title: 'Real-Time Market Data',
+            description: 'Live price feeds, technical analysis, and market insights',
+            color: const Color(0xFF00E5FF),
+          ),
+          const SizedBox(height: 12),
+          _buildFeatureItem(
+            icon: Icons.security,
+            title: 'Advanced Risk Management',
+            description: 'Stop-loss, take-profit, position sizing, and portfolio protection',
+            color: const Color(0xFF4CAF50),
+          ),
+          const SizedBox(height: 12),
+          _buildFeatureItem(
+            icon: Icons.analytics,
+            title: 'Performance Analytics',
+            description: 'Detailed trading reports, profit/loss analysis, and strategy optimization',
+            color: const Color(0xFFF0B90B),
+          ),
+          const SizedBox(height: 12),
+          _buildFeatureItem(
+            icon: Icons.account_balance_wallet,
+            title: 'Multi-Currency Support',
+            description: 'Trade forex, crypto, commodities, and indices with unified wallet',
+            color: const Color(0xFF69F0AE),
+          ),
+        ],
+      ),
+    );
+
+  Widget _buildFeatureItem({
+    required IconData icon,
+    required String title,
+    required String description,
+    required Color color,
+  }) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: color, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: GoogleFonts.poppins(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  description,
+                  style: GoogleFonts.poppins(color: Colors.white70, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+
+  // ── LIVE CANDLE CHART ──
+  Widget _buildLiveCandleChart() => _glassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                'Live Market',
+                style: GoogleFonts.poppins(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00E5FF).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Color(0xFF00E5FF),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'LIVE',
+                      style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontSize: 10, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Real-time EUR/USD price action',
+            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 11),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 200,
+            child: Consumer<TradingService>(
+              builder: (context, tradingService, _) {
+                // Generate sample candle data (in a real app, this would come from the backend)
+                final candles = _generateSampleCandles();
+                return LineChart(
+                  LineChartData(
+                    gridData: FlGridData(
+                      show: true,
+                      drawVerticalLine: false,
+                      horizontalInterval: 0.002,
+                      getDrawingHorizontalLine: (value) => FlLine(
+                        color: Colors.white.withOpacity(0.1),
+                        strokeWidth: 1,
+                      ),
+                    ),
+                    titlesData: FlTitlesData(
+                      show: true,
+                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 30,
+                          interval: 5,
+                          getTitlesWidget: (value, meta) => Text(
+                            '${value.toInt()}:00',
+                            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10),
+                          ),
+                        ),
+                      ),
+                      leftTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          interval: 0.002,
+                          reservedSize: 40,
+                          getTitlesWidget: (value, meta) => Text(
+                            value.toStringAsFixed(4),
+                            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10),
+                          ),
+                        ),
+                      ),
+                    ),
+                    borderData: FlBorderData(show: false),
+                    minX: 0,
+                    maxX: 23,
+                    minY: 1.0800,
+                    maxY: 1.0900,
+                    lineBarsData: [
+                      LineChartBarData(
+                        spots: candles.map((candle) => FlSpot(candle.time, candle.close)).toList(),
+                        isCurved: true,
+                        color: const Color(0xFF00E5FF),
+                        barWidth: 2,
+                        isStrokeCapRound: true,
+                        dotData: FlDotData(show: false),
+                        belowBarData: BarAreaData(
+                          show: true,
+                          color: const Color(0xFF00E5FF).withOpacity(0.1),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _buildPriceIndicator('Bid', '1.0852', const Color(0xFF4CAF50)),
+              const SizedBox(width: 16),
+              _buildPriceIndicator('Ask', '1.0854', const Color(0xFFFF8A80)),
+              const SizedBox(width: 16),
+              _buildPriceIndicator('Spread', '2.0 pips', const Color(0xFFFFB74D)),
+            ],
+          ),
+        ],
+      ),
+    );
+
+  Widget _buildPriceIndicator(String label, String value, Color color) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10),
+          ),
+          Text(
+            value,
+            style: GoogleFonts.poppins(color: color, fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+        ],
+      );
+
+  List<_SampleCandle> _generateSampleCandles() {
+    final basePrice = 1.0850;
+    final candles = <_SampleCandle>[];
+
+    for (int i = 0; i < 24; i++) {
+      final time = i.toDouble();
+      final variation = (sin(i * 0.5) * 0.002) + (cos(i * 0.3) * 0.001) + (Random().nextDouble() * 0.0005 - 0.00025);
+      final close = basePrice + variation;
+      candles.add(_SampleCandle(time: time, close: close));
+    }
+
+    return candles;
+  }
 
   // ── PREMIUM WELCOME CARD ──
   Widget _buildPremiumWelcomeCard() => Consumer<AuthService>(
@@ -3958,15 +4288,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             },
           ),
           // IG Markets integration removed
-          ListTile(
-            leading: const Icon(Icons.account_balance_wallet, color: Color(0xFF4CAF50)),
-            title: const Text('OANDA Withdrawals', style: TextStyle(color: Colors.white)),
-            subtitle: const Text('Auto-close & withdraw profits', style: TextStyle(color: Colors.white38, fontSize: 11)),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.push(context, MaterialPageRoute(builder: (_) => const OandaWithdrawalScreen()));
-            },
-          ),
           ListTile(
             leading: const Icon(Icons.account_balance_wallet, color: Color(0xFF7C4DFF)),
             title: const Text('FXCM Withdrawals', style: TextStyle(color: Colors.white)),

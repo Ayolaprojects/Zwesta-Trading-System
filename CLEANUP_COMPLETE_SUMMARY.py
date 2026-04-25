@@ -76,7 +76,7 @@ RESULT:
   ✅ 220 fewer lines of unused code
   ✅ Faster Python module imports
   ✅ Clearer broker support documentation
-  ✅ Production code only includes: Exness (via MT5), Binance, OANDA, FXCM
+  ✅ Production code only includes: Exness (via MT5), Binance, FXCM
   ✅ Reduced maintenance burden
   ✅ No impact on trading functionality (all Exness features intact)
 

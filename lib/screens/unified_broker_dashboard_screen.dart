@@ -36,7 +36,6 @@ class _UnifiedBrokerDashboardScreenState extends State<UnifiedBrokerDashboardScr
     if (lower == 'prime xbt' || lower == 'pxbt') return 'PXBT';
     if (lower == 'binance') return 'Binance';
     if (lower == 'exness') return 'Exness';
-    if (lower == 'oanda') return 'OANDA';
     if (lower == 'ig markets' || lower == 'ig') return 'IG';
     return raw;
   }
@@ -91,7 +90,7 @@ class _UnifiedBrokerDashboardScreenState extends State<UnifiedBrokerDashboardScr
         backgroundColor: const Color(0xFF1A1F3A),
         title: Text('Close ALL Positions?', style: GoogleFonts.poppins(color: Colors.redAccent, fontWeight: FontWeight.w600)),
         content: Text(
-          'This will close ALL open positions across ALL brokers (Exness, OANDA, FXCM, Binance). This action cannot be undone.',
+          'This will close ALL open positions across ALL brokers (Exness, FXCM, Binance). This action cannot be undone.',
           style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13),
         ),
         actions: [
@@ -245,14 +244,12 @@ class _UnifiedBrokerDashboardScreenState extends State<UnifiedBrokerDashboardScr
     final brokerColors = {
       'Exness': const Color(0xFF42A5F5),
       'IG': const Color(0xFFE53935),
-      'OANDA': const Color(0xFF4CAF50),
       'FXCM': const Color(0xFF7C4DFF),
       'Binance': const Color(0xFFF0B90B),
     };
     final brokerIcons = {
       'Exness': Icons.account_balance,
       'IG': Icons.show_chart,
-      'OANDA': Icons.trending_up,
       'FXCM': Icons.bar_chart,
       'Binance': Icons.currency_bitcoin,
     };
@@ -398,7 +395,6 @@ class _UnifiedBrokerDashboardScreenState extends State<UnifiedBrokerDashboardScr
 
     final brokerColors = {
       'IG': const Color(0xFFE53935),
-      'OANDA': const Color(0xFF4CAF50),
       'FXCM': const Color(0xFF7C4DFF),
       'Binance': const Color(0xFFF0B90B),
     };

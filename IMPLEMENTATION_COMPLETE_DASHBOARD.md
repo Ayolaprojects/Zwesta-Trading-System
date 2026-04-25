@@ -246,7 +246,7 @@ c:\zwesta-trader\Zwesta Flutter App\
 ## Key Features by Component
 
 ### Backend (`multi_broker_backend_updated.py`)
-- ✅ Real-time balance from brokers (MT5, IG, OANDA, FXCM, Binance)
+- ✅ Real-time balance from brokers (MT5, IG, FXCM, Binance)
 - ✅ Signal strength evaluation (0-100 scoring)
 - ✅ Dual trading modes (interval + signal-driven)
 - ✅ Trade tracking and statistics

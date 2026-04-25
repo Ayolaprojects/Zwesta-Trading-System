@@ -16,7 +16,7 @@ class _UserAccountManagementScreenState extends State<UserAccountManagementScree
   String _selectedUser = '';
   dynamic _selectedUserDetails;
 
-  final List<String> _brokers = ['Exness', 'IG', 'OANDA', 'FXCM', 'Binance'];
+  final List<String> _brokers = ['Exness', 'IG', 'FXCM', 'Binance'];
 
   @override
   void initState() {

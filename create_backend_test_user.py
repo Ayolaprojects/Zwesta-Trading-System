@@ -114,7 +114,7 @@ def main():
     parser.add_argument('--mt5-password', help='MetaTrader account password to link')
     parser.add_argument('--server', help='MT5 server name, for example Exness-MT5Real27 or Exness-MT5Trial9')
     parser.add_argument('--mt5-terminal-path', help='Dedicated MT5 terminal64.exe path for this user/account')
-    parser.add_argument('--api-key', help='API key for Binance, OANDA, FXCM or similar brokers')
+    parser.add_argument('--api-key', help='API key for Binance, FXCM or similar brokers')
     parser.add_argument('--api-secret', help='API secret for Binance or similar brokers')
     parser.add_argument('--market', default='spot', help='Broker market/server for Binance, for example spot or futures')
     parser.add_argument('--account-number', help='Optional account identifier override for Binance or other brokers')

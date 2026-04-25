@@ -4,7 +4,7 @@
 
 The trading bots dashboard provides comprehensive monitoring and performance tracking for all your automated trading bots. It displays:
 
-- ✅ **Real-time Balance** per broker (XM, IG, OANDA, FXCM, Binance)
+- ✅ **Real-time Balance** per broker (XM, IG, FXCM, Binance)
 - ✅ **Trading Performance** (wins, losses, win rate, ROI)
 - ✅ **Profit & Loss** tracking
 - ✅ **Commission Distribution** by bot
@@ -198,7 +198,7 @@ Maximum: 100 points
 Each bot shows:
 - 🟢 **Status Indicator:** Green = Running, Red = Stopped
 - **Bot Name:** Your custom bot identifier
-- **Broker Badge:** Which broker (XM, IG, OANDA, etc.)
+- **Broker Badge:** Which broker (XM, IG, etc.)
 - **Trading Mode Badge:** "signal-driven" or "interval"
 
 **Quick Stats Row:**

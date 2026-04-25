@@ -82,7 +82,7 @@
 - **PXBT** ✅ - Full DEMO/LIVE support with auto-reconnect  
 - **Binance** ✅ - Spot & Futures (needs DEMO/LIVE toggle)
 - **Binary Options** - NOT IMPLEMENTED
-- **Forex (OANDA, XM, etc.)** ✅ - Basic support (can be expanded)
+- **Forex (XM, etc.)** ✅ - Basic support (can be expanded)
 
 ### 3.2 Integration Screens
 - ✅ **Broker Integration Screen** - Add/test accounts

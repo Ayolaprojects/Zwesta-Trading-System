@@ -503,7 +503,6 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
     - XM Global (MT5)
     - Binance (REST API)
     - FXCM (REST API)
-    - OANDA (REST API)
     
     Returns: (broker_type, connection_object) or (None, error_message)
     """
@@ -610,29 +609,6 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
             error_msg = 'Failed to connect to FXCM'
             logger.error(error_msg)
             return None, error_msg
-
-        elif broker_name == 'OANDA':
-            logger.info(f"[Broker Switch] Bot {bot_id}: Using OANDA REST API")
-            api_key = cred['api_key']
-            account_number = cred['account_number']
-            is_live = cred['is_live']
-
-            if not api_key or not account_number:
-                error_msg = 'OANDA: Missing API key or account number'
-                logger.error(error_msg)
-                return None, error_msg
-
-            oanda_conn = OANDAConnection(credentials={
-                'api_key': api_key,
-                'account_number': account_number,
-                'is_live': is_live,
-            })
-            if oanda_conn.connect():
-                logger.info(f"✅ Bot {bot_id}: Connected to OANDA ({account_number})")
-                return 'OANDA', oanda_conn
-            error_msg = 'Failed to connect to OANDA'
-            logger.error(error_msg)
-            return None, error_msg
         
         # ✅ METATRADER 5 - MetaQuotes, XM Global, or Exness
         elif broker_name in ['MetaQuotes', 'XM Global', 'XM', 'MetaTrader 5', 'Exness']:
@@ -684,7 +660,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 return None, error_msg
         
         else:
-            error_msg = f"Unknown broker type: {broker_name}. Supported: IG Markets, MetaQuotes, XM Global/XM, Exness, Binance, FXCM, OANDA"
+            error_msg = f"Unknown broker type: {broker_name}. Supported: IG Markets, MetaQuotes, XM Global/XM, Exness, Binance, FXCM"
             logger.error(error_msg)
             return None, error_msg
     
@@ -3004,14 +2980,6 @@ try:
     logger.info("✅ IG API service loaded")
 except ImportError:
     logger.warning("⚠️ ig_service module not found - IG integration disabled")
-
-# --- OANDA API Integration ---
-try:
-    from oanda_service import oanda_api
-    app.register_blueprint(oanda_api)
-    logger.info("✅ OANDA API service loaded")
-except ImportError:
-    logger.warning("⚠️ oanda_service module not found - OANDA integration disabled")
 
 # --- FXCM API Integration ---
 try:

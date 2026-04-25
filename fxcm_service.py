@@ -289,7 +289,7 @@ def api_fxcm_balance():
 
 @fxcm_api.route('/api/fxcm/funds', methods=['GET'])
 def api_fxcm_funds():
-    """Alias for balance — matches IG/OANDA pattern."""
+    """Alias for balance — matches IG pattern."""
     try:
         account_id = _get_account_id()
         resp = _fxcm_request('GET', '/trading/get_model', params={"models": "Account"}, timeout=10, content_type=False)

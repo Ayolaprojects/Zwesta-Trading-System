@@ -84,15 +84,6 @@ class BrokerRegistryService extends ChangeNotifier {
         description: 'Primary crypto exchange for spot and futures trading',
       ),
       BrokerConfig(
-        id: 'oanda',
-        name: 'OANDA',
-        displayName: 'OANDA',
-        logo: '📉',
-        accountTypes: ['DEMO', 'LIVE'],
-        isActive: true,
-        description: 'REST API forex broker with practice and live environments',
-      ),
-      BrokerConfig(
         id: 'pepperstone',
         name: 'Pepperstone',
         displayName: 'Pepperstone Global',

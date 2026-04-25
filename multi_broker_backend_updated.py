@@ -769,8 +769,6 @@ def _broker_credential_completeness_score(row: Dict[str, Any]) -> int:
         }) else 0
     elif broker_name == 'Binance':
         score += 10 if api_key and password else 0
-    elif broker_name == 'OANDA':
-        score += 10 if api_key and account_number else 0
     else:
         score += 10 if account_number and password and server else 0
 
@@ -2592,7 +2590,6 @@ class BrokerType(Enum):
     BINANCE = "binance"
     FXCM = "fxcm"
     FXM = "fxcm"
-    OANDA = "oanda"
     PEPPERSTONE = "pepperstone"
     FXOPEN = "fxopen"
     EXNESS = "exness"
@@ -3231,7 +3228,7 @@ def init_database():
             payout_date TEXT,
             bot_id TEXT,
             trading_profit REAL,  -- For profit share commissions
-            broker_source TEXT DEFAULT 'MT5',  -- 'MT5', 'IG', 'FXCM', 'BINANCE', 'OANDA', etc.
+            broker_source TEXT DEFAULT 'MT5',  -- 'MT5', 'IG', 'FXCM', 'BINANCE', etc.
             created_at TEXT,
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
@@ -3572,7 +3569,7 @@ def init_database():
         )
     ''')
 
-    # Shared broker withdrawal notifications table (used by OANDA/FXCM/Binance services)
+    # Shared broker withdrawal notifications table (used by FXCM/Binance services)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS broker_withdrawal_notifications (
             notification_id TEXT PRIMARY KEY,
@@ -7526,217 +7523,6 @@ class FXCMConnection(BrokerConnection):
             return []
 
 
-class OANDAConnection(BrokerConnection):
-    """OANDA broker connection via REST API."""
-
-    def __init__(self, credentials: Dict = None):
-        if credentials is None:
-            credentials = {
-                'api_key': os.getenv('OANDA_API_KEY', ''),
-                'account_number': os.getenv('OANDA_ACCOUNT_ID', ''),
-                'is_live': False,
-            }
-
-        super().__init__(BrokerType.OANDA, credentials)
-        is_live = bool(credentials.get('is_live', False))
-        self.base_url = 'https://api-fxtrade.oanda.com/v3' if is_live else 'https://api-fxpractice.oanda.com/v3'
-
-    def _headers(self, content_type: bool = True) -> Dict:
-        headers = {
-            'Authorization': f"Bearer {self.credentials.get('api_key', '')}",
-            'Accept': 'application/json',
-        }
-        if content_type:
-            headers['Content-Type'] = 'application/json'
-        return headers
-
-    def _normalize_symbol(self, symbol: str) -> Optional[str]:
-        if not symbol:
-            return None
-
-        symbol = symbol.upper().replace('/', '').replace('_', '')
-        if len(symbol) == 6 and symbol.isalpha():
-            return f"{symbol[:3]}_{symbol[3:]}"
-        symbol_map = {
-            'XAUUSD': 'XAU_USD',
-            'XAGUSD': 'XAG_USD',
-        }
-        return symbol_map.get(symbol)
-
-    def _display_symbol(self, instrument: str) -> str:
-        return (instrument or '').replace('_', '').upper()
-
-    def connect(self) -> bool:
-        try:
-            import requests
-
-            if not self.credentials.get('api_key'):
-                logger.error('OANDA: Missing API key')
-                return False
-
-            account_id = self.credentials.get('account_number', '')
-            if account_id:
-                resp = requests.get(
-                    f"{self.base_url}/accounts/{account_id}/summary",
-                    headers=self._headers(content_type=False),
-                    timeout=10,
-                )
-            else:
-                resp = requests.get(
-                    f"{self.base_url}/accounts",
-                    headers=self._headers(content_type=False),
-                    timeout=10,
-                )
-
-            if resp.status_code == 200:
-                if not account_id:
-                    accounts = resp.json().get('accounts', [])
-                    if accounts:
-                        self.credentials['account_number'] = accounts[0].get('id', '')
-                self.connected = True
-                self.get_account_info()
-                return True
-            logger.error(f"OANDA authentication failed: {resp.status_code} - {resp.text}")
-            return False
-        except Exception as e:
-            logger.error(f"Error connecting to OANDA: {e}")
-            return False
-
-    def disconnect(self) -> bool:
-        self.connected = False
-        return True
-
-    def get_account_info(self) -> Dict:
-        try:
-            import requests
-
-            if not self.connected:
-                return {}
-
-            account_id = self.credentials.get('account_number', '')
-            if not account_id:
-                return {}
-
-            resp = requests.get(
-                f"{self.base_url}/accounts/{account_id}/summary",
-                headers=self._headers(content_type=False),
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                account = resp.json().get('account', {})
-                self.account_info = {
-                    'account_id': account.get('id', account_id),
-                    'balance': float(account.get('balance', 0)),
-                    'equity': float(account.get('NAV', 0)),
-                    'margin_free': float(account.get('marginAvailable', 0)),
-                    'currency': account.get('currency', 'USD'),
-                    'broker': 'OANDA',
-                }
-                return self.account_info
-        except Exception as e:
-            logger.error(f"Error getting OANDA account info: {e}")
-
-        return {}
-
-    def get_positions(self) -> List[Dict]:
-        try:
-            import requests
-
-            if not self.connected:
-                return []
-
-            account_id = self.credentials.get('account_number', '')
-            resp = requests.get(
-                f"{self.base_url}/accounts/{account_id}/openTrades",
-                headers=self._headers(content_type=False),
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                return [{
-                    'deal_id': trade.get('id', ''),
-                    'symbol': self._display_symbol(trade.get('instrument', '')),
-                    'type': 'BUY' if float(trade.get('currentUnits', 0)) > 0 else 'SELL',
-                    'size': abs(float(trade.get('currentUnits', 0))),
-                    'level': float(trade.get('price', 0)),
-                    'profit_loss': float(trade.get('unrealizedPL', 0)),
-                    'broker': 'OANDA',
-                } for trade in resp.json().get('trades', [])]
-        except Exception as e:
-            logger.error(f"Error getting OANDA positions: {e}")
-
-        return []
-
-    def place_order(self, symbol: str, order_type: str, volume: float, **kwargs) -> Dict:
-        try:
-            import requests
-
-            if not self.connected:
-                return {'success': False, 'error': 'Not connected to OANDA'}
-
-            instrument = self._normalize_symbol(symbol)
-            if not instrument:
-                return {'success': False, 'error': f'Unsupported OANDA instrument: {symbol}'}
-
-            units = max(1, int(round(float(volume))))
-            if order_type.upper() == 'SELL':
-                units = -units
-
-            payload = {
-                'order': {
-                    'instrument': instrument,
-                    'units': str(units),
-                    'type': 'MARKET',
-                    'timeInForce': 'FOK',
-                    'positionFill': 'DEFAULT',
-                }
-            }
-            account_id = self.credentials.get('account_number', '')
-            resp = requests.post(
-                f"{self.base_url}/accounts/{account_id}/orders",
-                headers=self._headers(),
-                json=payload,
-                timeout=15,
-            )
-            if resp.status_code == 201:
-                result = resp.json().get('orderFillTransaction', {})
-                return {
-                    'success': True,
-                    'orderId': result.get('id', ''),
-                    'deal_id': result.get('tradeOpened', {}).get('tradeID', ''),
-                    'symbol': self._display_symbol(instrument),
-                    'type': order_type.upper(),
-                    'broker': 'OANDA',
-                }
-            return {'success': False, 'error': resp.text}
-        except Exception as e:
-            logger.error(f"Error placing OANDA order: {e}")
-            return {'success': False, 'error': str(e)}
-
-    def close_position(self, position_id: str) -> Dict:
-        try:
-            import requests
-
-            account_id = self.credentials.get('account_number', '')
-            resp = requests.put(
-                f"{self.base_url}/accounts/{account_id}/trades/{position_id}/close",
-                headers=self._headers(),
-                json={'units': 'ALL'},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                return {'success': True, 'trade_id': position_id, 'broker': 'OANDA'}
-            return {'success': False, 'error': resp.text}
-        except Exception as e:
-            logger.error(f"Error closing OANDA position: {e}")
-            return {'success': False, 'error': str(e)}
-
-    def get_trades(self) -> List[Dict]:
-        return []
-
-
-
-
-
 class BrokerManager:
     """Manages multiple broker connections"""
     
@@ -7751,8 +7537,6 @@ class BrokerManager:
                 connection = MT5Connection(credentials)
             elif broker_type == BrokerType.BINANCE:
                 connection = BinanceConnection(credentials)
-            elif broker_type == BrokerType.OANDA:
-                connection = OANDAConnection(credentials)
 
             elif broker_type == BrokerType.FXM:
                 connection = FXCMConnection(credentials)
@@ -7862,7 +7646,6 @@ def canonicalize_broker_name(broker_name: str) -> str:
 
     broker_map = {
         'binance': 'Binance',
-        'oanda': 'OANDA',
         'exness': 'Exness',
         'fxcm': 'FXCM',
         'fxm': 'FXCM',
@@ -8732,13 +8515,6 @@ def list_brokers():
             'description': 'MetaTrader 5 - Most popular forex platform',
             'assets': ['Forex', 'Metals', 'Indices', 'Stocks', 'Cryptos'],
             'status': 'active'
-        },
-        {
-            'type': 'oanda',
-            'name': 'OANDA',
-            'description': 'OANDA - Regulated US broker',
-            'assets': ['Forex', 'Metals'],
-            'status': 'coming_soon'
         },
         {
             'type': 'ib',
@@ -10227,27 +10003,6 @@ def get_account_balances():
                         error_msg = str(e)
                         allow_cached_balance_fallback = False
 
-                elif broker_name == 'OANDA':
-                    try:
-                        oanda_conn = OANDAConnection({
-                            'api_key': cred.get('api_key'),
-                            'account_number': account_num,
-                            'is_live': bool(cred['is_live']),
-                        })
-                        if oanda_conn.connect():
-                            account_info = oanda_conn.get_account_info()
-                            if account_info:
-                                account_info['accountNumber'] = account_info.get('accountNumber') or account_num
-                                account_info['marginFree'] = account_info.get('marginFree', account_info.get('margin_free', 0))
-                                account_info['total_pl'] = account_info.get('profit', account_info.get('total_pl', 0))
-                                account_info['displayCurrency'] = account_info.get('currency', display_currency)
-                            oanda_conn.disconnect()
-                        if not account_info:
-                            error_msg = 'Failed to connect to OANDA API'
-                    except Exception as e:
-                        logger.warning(f"OANDA balance error: {e}")
-                        error_msg = str(e)
-                
                 else:
                     # Generic MT5 fallback — also disconnected, use cache only
                     logger.info(f"ℹ️ Balance: {broker_name} {account_num} — using cache only (MT5 disconnected in balance endpoint)")
@@ -10987,7 +10742,7 @@ def place_trade():
                 user_id = data.get('user_id', 'unknown')
                 # Determine broker source from connection type
                 broker_source = str(getattr(getattr(connection, 'broker_type', None), 'value', 'MT5') or 'MT5').upper()
-                if broker_source not in ('MT5', 'IG', 'FXCM', 'BINANCE', 'OANDA'):
+                if broker_source not in ('MT5', 'IG', 'FXCM', 'BINANCE'):
                     broker_source = 'MT5'
                 distribute_trade_commissions(bot_id, user_id, profit, source=broker_source)
             return jsonify(result)
@@ -11179,7 +10934,6 @@ def connect_broker():
             'mt5': BrokerType.METATRADER5,
             'binance': BrokerType.BINANCE,
             'ib': BrokerType.INTERACTIVE_BROKERS,
-            'oanda': BrokerType.OANDA,
             'pepperstone': BrokerType.PEPPERSTONE,
             'fxopen': BrokerType.FXOPEN,
             'exness': BrokerType.EXNESS,
@@ -11845,7 +11599,7 @@ def get_account_info_alias():
 @app.route('/api/account/detailed', methods=['GET'])
 @require_session
 def get_account_detailed():
-    """Get COMPREHENSIVE account data from ANY broker (Exness, Binance, FXCM, OANDA) with all metrics"""
+    """Get COMPREHENSIVE account data from ANY broker (Exness, Binance, FXCM) with all metrics"""
     user_id = request.user_id
     
     try:
@@ -11976,22 +11730,7 @@ def get_account_detailed():
                             logger.warning(
                                 f"⚠️ FXCM account fetch failed for {account_num}: {fxcm_conn.last_error or 'Unknown FXCM error'}"
                             )
-                
-                # ==================== OANDA ====================
-                elif broker_name == 'OANDA':
-                    oanda_conn = OANDAConnection({
-                        'api_key': cred.get('api_key'),
-                        'account_number': account_num,
-                        'is_live': bool(cred['is_live']),
-                    })
-                    if oanda_conn.connect():
-                        account_info = oanda_conn.get_account_info()
-                        if account_info:
-                            account_info['broker'] = 'OANDA'
-                            account_info['credential_id'] = cred['credential_id']
-                            logger.info(f"✅ Fetched account details from OANDA {account_num}")
-                        oanda_conn.disconnect()
-                
+
                 # Backup to cached data if live fetch failed
                 if not account_info and not skip_cached_snapshot:
                     cached_balance = float(cred.get('cached_balance') or 0)
@@ -12519,23 +12258,6 @@ def get_trades_history():
                         logger.warning(
                             f"⚠️ FXCM trade fetch failed for {account_num}: {fxcm_conn.last_error or 'Unknown FXCM error'}"
                         )
-                
-                # ==================== OANDA ====================
-                elif broker_name == 'OANDA':
-                    oanda_conn = OANDAConnection({
-                        'api_key': cred.get('api_key'),
-                        'account_number': account_num,
-                        'is_live': bool(cred['is_live']),
-                    })
-                    if oanda_conn.connect():
-                        broker_trades = oanda_conn.get_trades() or []
-                        # Add broker info to each trade
-                        for trade in broker_trades:
-                            trade['broker'] = 'OANDA'
-                            trade['account_number'] = account_num
-                        all_trades.extend(broker_trades)
-                        logger.info(f"✅ Fetched {len(broker_trades)} trades from OANDA {account_num}")
-                        oanda_conn.disconnect()
                         
             except Exception as e:
                 logger.warning(f"⚠️ Could not fetch trades from {broker_name} {account_num}: {e}")
@@ -19577,7 +19299,6 @@ def save_broker_credentials():
     - XM Global/XM: account_number, password, server, is_live
     - Binance: api_key, api_secret, optional market/server
     - FXCM: username/password or token/api_key, optional account_number
-    - OANDA: api_key, account_number
     - Exness: account_number, password, server, is_live
     - PXBT: account_number, password, server, is_live
     """
@@ -19603,7 +19324,7 @@ def save_broker_credentials():
         if str(broker_name).strip().lower() in {'ig', 'ig markets', 'ig.com'}:
             return jsonify({
                 'success': False,
-                'error': 'IG Markets is not integrated in the current backend setup. Supported direct brokers: Exness, Binance, FXCM, OANDA.'
+                'error': 'IG Markets is not integrated in the current backend setup. Supported direct brokers: Exness, Binance, FXCM.'
             }), 400
         
         # Validate based on broker type
@@ -19656,14 +19377,6 @@ def save_broker_credentials():
                     'error': 'FXCM trading account ID could not be resolved. Test the connection first or enter the Trading Account ID before saving.'
                 }), 400
             api_key = token or api_key
-        elif broker_name in ['OANDA']:
-            if not api_key or not account_number:
-                return jsonify({
-                    'success': False,
-                    'error': 'OANDA requires: api_key, account_number'
-                }), 400
-            server = server or 'REST-API'
-            password = ''
         elif broker_name in ['MetaQuotes', 'XM Global', 'XM', 'MetaTrader 5', 'PXBT']:
             if not account_number or not password:
                 return jsonify({
@@ -19690,7 +19403,7 @@ def save_broker_credentials():
         else:
             return jsonify({
                 'success': False,
-                'error': f'Unknown broker: {broker_name}. Supported: MetaQuotes, Exness, Binance, FXCM, OANDA'
+                'error': f'Unknown broker: {broker_name}. Supported: MetaQuotes, Exness, Binance, FXCM'
             }), 400
 
         created_at = datetime.now().isoformat()
@@ -19869,13 +19582,13 @@ def test_broker_connection():
         if broker == 'IG Markets':
             return jsonify({
                 'success': False,
-                'error': 'IG Markets integration has been removed. Supported brokers: Exness, Binance, FXCM, OANDA'
+                'error': 'IG Markets integration has been removed. Supported brokers: Exness, Binance, FXCM'
             }), 400
 
         if broker in ['PXBT', 'XM', 'XM Global']:
             return jsonify({
                 'success': False,
-                'error': 'XM and PXBT are temporarily unsupported. Use Exness, Binance, FXCM, or OANDA instead.'
+                'error': 'XM and PXBT are temporarily unsupported. Use Exness, Binance, or FXCM instead.'
             }), 400
 
         # ==================== BINANCE ====================
@@ -20102,47 +19815,6 @@ def test_broker_connection():
                 'margin': float(account_info.get('margin', 0) or 0),
                 'margin_level': float(account_info.get('margin_level', account_info.get('marginLevel', 0)) or 0),
                 'profit': float(account_info.get('profit', account_info.get('total_pl', 0)) or 0),
-                'currency': account_info.get('currency', 'USD'),
-                'is_live': is_live,
-                'status': 'CONNECTED',
-                'timestamp': datetime.now().isoformat()
-            }), 200
-
-        # ==================== OANDA ====================
-        elif broker == 'OANDA':
-            api_key = data.get('api_key')
-            account_id = data.get('account_number') or data.get('account_id')
-            if not api_key or not account_id:
-                return jsonify({'success': False, 'error': 'Missing OANDA fields: api_key, account_number'}), 400
-
-            oanda_conn = OANDAConnection(credentials={
-                'api_key': api_key,
-                'account_number': account_id,
-                'is_live': is_live,
-            })
-            if not oanda_conn.connect():
-                return jsonify({'success': False, 'error': 'Failed to authenticate with OANDA'}), 401
-
-            account_info = oanda_conn.get_account_info()
-            oanda_conn.disconnect()
-
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            credential_id = str(uuid.uuid4())
-            cursor.execute('''
-                INSERT INTO broker_credentials 
-                (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, api_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-            ''', (credential_id, user_id, 'OANDA', account_id, '', 'REST-API', int(is_live), api_key, datetime.now().isoformat(), datetime.now().isoformat()))
-            conn.commit()
-            conn.close()
-
-            return jsonify({
-                'success': True,
-                'message': f'Successfully connected to OANDA account {account_id}',
-                'credential_id': credential_id,
-                'broker': 'OANDA',
-                'account_number': account_id,
                 'currency': account_info.get('currency', 'USD'),
                 'is_live': is_live,
                 'status': 'CONNECTED',
@@ -26672,7 +26344,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     try:
                                         # Determine broker source from bot connection type
                                         _broker_src = str(bot_config.get('brokerType') or bot_config.get('broker_type') or 'MT5').upper()
-                                        if _broker_src not in ('MT5', 'IG', 'FXCM', 'BINANCE', 'OANDA', 'EXNESS', 'XM'):
+                                        if _broker_src not in ('MT5', 'IG', 'FXCM', 'BINANCE', 'EXNESS', 'XM'):
                                             _broker_src = 'MT5'
                                         distribute_trade_commissions(bot_id, user_id, real_profit, source=_broker_src)
                                     except Exception as comm_e:
@@ -27029,7 +26701,6 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
     - Exness (MT5)
     - Binance (REST API)
     - FXCM (REST API)
-    - OANDA (REST API)
     
     Returns: (broker_type, connection_object) or (None, error_message)
     """
@@ -27100,29 +26771,6 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 logger.info(f"✅ {context_label}: Connected to Binance ({account_number or server})")
                 return 'Binance', binance_conn
             error_msg = 'Failed to connect to Binance'
-            logger.error(error_msg)
-            return None, error_msg
-
-        elif broker_name == 'OANDA':
-            logger.info(f"[Broker Switch] {context_label}: Using OANDA REST API")
-            api_key = cred['api_key']
-            account_number = cred['account_number']
-            is_live = bool(cred['is_live'])
-
-            if not api_key or not account_number:
-                error_msg = 'OANDA: Missing API key or account number'
-                logger.error(error_msg)
-                return None, error_msg
-
-            oanda_conn = OANDAConnection(credentials={
-                'api_key': api_key,
-                'account_number': account_number,
-                'is_live': is_live,
-            })
-            if oanda_conn.connect():
-                logger.info(f"✅ {context_label}: Connected to OANDA ({account_number})")
-                return 'OANDA', oanda_conn
-            error_msg = 'Failed to connect to OANDA'
             logger.error(error_msg)
             return None, error_msg
 
@@ -27216,7 +26864,7 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 return None, error_msg
         
         else:
-            error_msg = f"Unknown broker type: {broker_name}. Supported: Exness, Binance, FXCM, OANDA"
+            error_msg = f"Unknown broker type: {broker_name}. Supported: Exness, Binance, FXCM"
             logger.error(error_msg)
             return None, error_msg
     
@@ -31257,7 +30905,7 @@ def get_recent_withdrawals():
         
         general_withdrawals = [dict(row) for row in cursor.fetchall()]
 
-        # Include broker-native notifications (FXCM/Binance/OANDA etc.)
+        # Include broker-native notifications (FXCM/Binance etc.)
         cursor.execute('''
             SELECT
                 notification_id as withdrawal_id,
@@ -31693,14 +31341,6 @@ try:
     logger.info("✅ IG API service loaded")
 except ImportError:
     logger.warning("⚠️ ig_service module not found - IG integration disabled")
-
-# --- OANDA API Integration ---
-try:
-    from oanda_service import oanda_api
-    app.register_blueprint(oanda_api)
-    logger.info("✅ OANDA API service loaded")
-except ImportError:
-    logger.warning("⚠️ oanda_service module not found - OANDA integration disabled")
 
 # --- FXCM API Integration ---
 try:

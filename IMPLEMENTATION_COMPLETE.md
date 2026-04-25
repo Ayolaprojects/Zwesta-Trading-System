@@ -60,7 +60,7 @@
 
 #### 1. **Broker Connection Management**
 - `POST /api/brokers/connect` - Connect a new broker account
-  - Supports: MT5, Interactive Brokers, OANDA
+  - Supports: MT5, Interactive Brokers
   - Automatic credential management
   
 ```json
@@ -87,7 +87,6 @@
 **Supported Brokers:**
 - MetaTrader 5 (MT5) - Fully implemented
 - Interactive Brokers - Structure ready for implementation
-- OANDA - Structure ready for implementation
 - XM, Pepperstone, FXOpen, Exness, Darwinex - Ready for expansion
 
 ---

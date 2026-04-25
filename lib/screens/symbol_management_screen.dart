@@ -26,7 +26,7 @@ class _SymbolManagementScreenState extends State<SymbolManagementScreen> {
     'Index'
   ];
 
-  final List<String> _brokers = ['Exness', 'IG', 'OANDA', 'FXCM', 'Binance'];
+  final List<String> _brokers = ['Exness', 'IG', 'FXCM', 'Binance'];
 
   @override
   void initState() {

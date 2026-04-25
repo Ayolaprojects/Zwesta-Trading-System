@@ -150,7 +150,6 @@ If PXBT is not showing on your frontend:
    │ Broker Selection                    │
    ├─────────────────────────────────────┤
    │ Binance                             │
-   │ OANDA                               │
    │ ...                                 │
    │ PXBT (Prime XBT)  ← Should be here  │
    │ ...                                 │

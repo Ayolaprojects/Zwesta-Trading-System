@@ -180,8 +180,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         return 'FXCM';
       case 'binance':
         return 'Binance';
-      case 'oanda':
-        return 'OANDA';
       case 'exness':
         return 'Exness';
       case 'mt5':
@@ -201,8 +199,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         return const Color(0xFFF7931A);
       case 'fxcm':
         return const Color(0xFF26C6DA);
-      case 'oanda':
-        return const Color(0xFFEF5350);
       case 'exness':
         return const Color(0xFF42A5F5);
       default:
@@ -660,15 +656,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                               description: 'Crypto pairs',
                             ),
                             const SizedBox(width: 10),
-                            // Forex Quick Creator
-                            _quickBrokerButton(
-                              icon: Icons.currency_exchange,
-                              label: 'Forex',
-                              color: const Color(0xFF4CAF50),
-                              onTap: () => _createBotForBroker(context, 'OANDA'),
-                              description: 'USD, EUR...',
-                            ),
-                            const SizedBox(width: 10),
                             // Commodities Quick Creator
                             _quickBrokerButton(
                               icon: Icons.trending_up,
@@ -676,14 +663,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                               color: const Color(0xFFFF9800),
                               onTap: () => _createBotForBroker(context, 'Exness'),
                               description: 'Gold, Oil...',
-                            ),
-                            const SizedBox(width: 10),
-                            _quickBrokerButton(
-                              icon: Icons.trending_up,
-                              label: 'OANDA',
-                              color: const Color(0xFF00C853),
-                              onTap: () => _createBotForBroker(context, 'OANDA'),
-                              description: 'REST forex',
                             ),
                           ],
                         ),

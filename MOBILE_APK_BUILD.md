@@ -220,7 +220,7 @@ Create: `RELEASE_NOTES_ANDROID.md`
 ## Version 1.0.0
 
 ### Features
-- Multi-broker support (MT5, IB, OANDA)
+- Multi-broker support (MT5, IB)
 - Live trading dashboard
 - Account management
 - Trade history and reports
@@ -272,7 +272,7 @@ Create: `RELEASE_NOTES_ANDROID.md`
    ```
    Zwesta Trading - professional multi-broker trading platform on your mobile device.
    
-   Connect to MetaTrader 5, Interactive Brokers, OANDA and more.
+   Connect to MetaTrader 5, Interactive Brokers and more.
    Monitor your positions, place trades, and analyze performance in real-time.
    ```
 

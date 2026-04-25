@@ -61,7 +61,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     'Binance',     // ✅ Primary crypto spot trading path
     'FXCM',        // ✅ REST API forex/CFD trading
     'PXBT',        // ✅ Prime XBT crypto trading
-    'OANDA',       // ✅ REST API forex trading
   ];
 
   String _sanitizeSelectedBroker(String broker) {
@@ -74,7 +73,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   final Map<String, String> brokerServers = {
     'Binance': 'spot',
-    'OANDA': 'REST-API',
     'FXCM': 'REST-API',
     'Pepperstone': 'Pepperstone MT5 Live',
     'FxOpen': 'FxOpen-MT5',
@@ -105,7 +103,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   }
 
   bool get _isBinanceBroker => _selectedBroker.toLowerCase() == 'binance';
-  bool get _isOandaBroker => _selectedBroker.toLowerCase() == 'oanda';
   bool get _isFxcmBroker =>
       _selectedBroker.toLowerCase() == 'fxcm' ||
       _selectedBroker.toLowerCase() == 'fxm';
@@ -113,7 +110,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   bool get _isPxbtBroker =>
       _selectedBroker.toLowerCase() == 'pxbt' ||
       _selectedBroker.toLowerCase() == 'prime xbt';
-  bool get _isMt5Broker => !_isBinanceBroker && !_isOandaBroker && !_isFxcmBroker;
+  bool get _isMt5Broker => !_isBinanceBroker && !_isFxcmBroker;
 
   String _normalizeBrokerDisplayName(String broker) {
     final raw = broker.trim();
@@ -123,7 +120,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     if (lower == 'prime xbt' || lower == 'pxbt') return 'PXBT';
     if (lower == 'binance') return 'Binance';
     if (lower == 'exness') return 'Exness';
-    if (lower == 'oanda') return 'OANDA';
     return raw;
   }
 
@@ -324,12 +320,11 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     final effectiveAccountNumber = _effectiveAccountNumber();
     final missingMt5 = _isMt5Broker && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
     final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
-    final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
     final missingFxcm = _isFxcmBroker && (!hasFxcmUsernamePassword && !hasFxcmToken);
 
-    if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
+    if (missingMt5 || missingBinance || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please fill all required broker fields')),
       );
@@ -505,12 +500,11 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     final effectiveAccountNumber = _effectiveAccountNumber();
     final missingMt5 = (_isMt5Broker || _isExnessBroker) && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
     final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
-    final missingOanda = _isOandaBroker && (_apiKeyController.text.isEmpty || _accountController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
     final missingFxcm = _isFxcmBroker && (!hasFxcmUsernamePassword && !hasFxcmToken);
 
-    if (missingMt5 || missingBinance || missingOanda || missingFxcm) {
+    if (missingMt5 || missingBinance || missingFxcm) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please fill all required connection fields')),
       );
@@ -543,9 +537,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       final result = await BrokerConnectionService.testConnection(
         broker: _selectedBroker,
         accountNumber: effectiveAccountNumber,
-        password: _isOandaBroker ? '' : _passwordController.text,
+        password: _passwordController.text,
         server: _serverController.text,
-        apiKey: (_isBinanceBroker || _isOandaBroker || _isFxcmBroker)
+        apiKey: (_isBinanceBroker || _isFxcmBroker)
             ? (_apiKeyController.text.isEmpty ? null : _apiKeyController.text)
             : null,
         apiSecret: _isBinanceBroker ? _passwordController.text : null,
@@ -924,22 +918,18 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
           Text(
             _isBinanceBroker
                 ? 'Binance API Connection'
-                : _isOandaBroker
-                    ? 'OANDA API Connection'
-                    : _isFxcmBroker
-                        ? 'FXCM Connection'
-                        : 'MT5 Broker Connection',
+                : _isFxcmBroker
+                    ? 'FXCM Connection'
+                    : 'MT5 Broker Connection',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
           Text(
             _isBinanceBroker
                 ? 'Connect your funded Binance account for crypto bot trading'
-                : _isOandaBroker
-                    ? 'Connect your OANDA account — trade Forex, Gold, Oil and Indices'
-                    : _isFxcmBroker
-                        ? 'Connect your FXCM Trading Station account for dashboards and account analytics'
-                        : 'Connect your MetaTrader 5 account for automated trading',
+                : _isFxcmBroker
+                    ? 'Connect your FXCM Trading Station account for dashboards and account analytics'
+                    : 'Connect your MetaTrader 5 account for automated trading',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 24),
@@ -1019,32 +1009,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.lock),
                 hintText: 'demo123',
-              ),
-            ),
-          ],
-          if (_isOandaBroker) ...[
-            Text('OANDA API Token', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _apiKeyController,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'API Token (Bearer token from OANDA portal)',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.vpn_key),
-                hintText: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-yyyyyyyy',
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text('OANDA Account ID', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _accountController,
-              decoration: const InputDecoration(
-                labelText: 'Account ID (e.g. 001-001-1234567-001)',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.account_circle),
-                hintText: '001-001-1234567-001',
               ),
             ),
           ],
@@ -1564,8 +1528,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 Text(
                   _isBinanceBroker
                       ? '📱 How to get your Binance API credentials:'
-                      : _isOandaBroker
-                          ? '📱 How to get your OANDA API credentials:'
                       : _isFxcmBroker
                           ? '📱 How to connect your FXCM account:'
                           : '📱 How to get your MT5 credentials:',
@@ -1578,8 +1540,6 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                 Text(
                   _isBinanceBroker
                       ? '1. Create a separate Binance API key for this client account\n2. Enable reading and spot or futures trading only\n3. Keep withdrawals disabled\n4. Restrict the key to the VPS public IP\n5. Copy the API key and secret and choose Spot or Futures\n6. Fund that same client Binance account before starting the bot'
-                      : _isOandaBroker
-                          ? '1. Go to oanda.com → My Account → Manage API Access\n2. Click "Generate" to create a Personal Access Token\n3. Copy the full token (shown once — save it!)\n4. Find your Account ID on the OANDA dashboard\n   (format: 001-001-XXXXXXX-001)\n5. Choose DEMO (fxpractice) or LIVE (fxtrade) mode'
                       : _isFxcmBroker
                           ? '1. Enter your FXCM Login ID and Trading Station password\n2. Leave Trading Account ID blank if you do not know it\n3. The backend will resolve the actual FXCM account row after login\n4. If needed, generate an API token from Trading Station Settings\n5. Select DEMO or LIVE to match your account'
                           : '1. Open your MetaTrader 5 terminal\n2. Login with your broker account\n3. Your account number appears at the top\n4. Use your MT5 login password\n5. Server will auto-populate',
