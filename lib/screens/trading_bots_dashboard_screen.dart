@@ -98,9 +98,9 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
 
   @override
   Widget build(BuildContext context) => Scaffold(
-      backgroundColor: const Color(0xFF0A0E21),
+      backgroundColor: Theme.of(context).colorScheme.background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF111633),
+        backgroundColor: Theme.of(context).colorScheme.surface,
         elevation: 0,
         title: Row(
           children: [
@@ -237,7 +237,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
   Widget _buildStatsCard(String title, String value, IconData icon, Color color) => Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF111633),
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color.withOpacity(0.3), width: 1),
       ),
@@ -282,10 +282,10 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         decoration: BoxDecoration(
-          color: const Color(0xFF111633),
+          color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: isExpanded ? Colors.blueAccent : Colors.white12,
+            color: isExpanded ? Theme.of(context).colorScheme.primary : Colors.white12,
             width: isExpanded ? 2 : 1,
           ),
         ),
@@ -505,7 +505,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF111633),
+        backgroundColor: Theme.of(context).colorScheme.surface,
         title: Text(bot['botName'] ?? 'Bot Details',
           style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600),
         ),
@@ -540,7 +540,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF111633),
+        backgroundColor: Theme.of(context).colorScheme.surface,
         title: Text('${bot['botName']} - Trades',
           style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600),
         ),
@@ -571,7 +571,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF111633),
+        backgroundColor: Theme.of(context).colorScheme.surface,
         title: Text('${bot['botName']} - Commission',
           style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600),
         ),

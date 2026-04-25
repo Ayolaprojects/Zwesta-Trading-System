@@ -332,9 +332,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     EdgeInsetsGeometry padding = const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
     double borderRadius = 14,
   }) {
-    final backgroundColor = selected ? const Color(0xFF00E5FF) : const Color(0x1FFFFFFF);
+    final backgroundColor = selected ? Theme.of(context).colorScheme.primary : const Color(0x1FFFFFFF);
     final borderColor = selected ? Colors.transparent : Colors.white.withOpacity(0.22);
-    final textColor = selected ? const Color(0xFF0A0E21) : Colors.white.withOpacity(0.92);
+    final textColor = selected ? Theme.of(context).colorScheme.onPrimary : Colors.white.withOpacity(0.92);
 
     return Material(
       color: Colors.transparent,
@@ -350,7 +350,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             boxShadow: selected
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF00E5FF).withOpacity(0.22),
+                      color: Theme.of(context).colorScheme.primary.withOpacity(0.22),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
                     ),
@@ -397,8 +397,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Color _modeAccent(String mode) {
     return mode == 'live'
-        ? const Color(0xFFFFB74D)
-        : const Color(0xFF64B5F6);
+        ? Theme.of(context).colorScheme.secondary
+        : Theme.of(context).colorScheme.primary;
   }
 
   List<Map<String, dynamic>> _filteredBrokerAccounts([String? mode]) {
@@ -1078,7 +1078,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       'Portfolio Balance',
                       _formatCurrencyBreakdown(selectedBalanceBreakdown),
                       Colors.white,
-                      const Color(0xFF00E5FF),
+                      Theme.of(context).colorScheme.primary,
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -1087,7 +1087,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       'Withdrawals',
                       _formatReportedAmount(selectedWithdrawnTotal, selectedCurrency),
                       Colors.white,
-                      const Color(0xFFFFB74D),
+                      Theme.of(context).colorScheme.secondary,
                     ),
                   ),
                 ],
@@ -1146,7 +1146,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
-                  if (isIncreasing) const Color(0xFF1B5E20).withOpacity(0.3) else const Color(0xFF4A235A).withOpacity(0.3),
+                  if (isIncreasing) Colors.green.withOpacity(0.3) else Colors.red.withOpacity(0.3),
                   Colors.transparent,
                 ],
               ),
@@ -1175,7 +1175,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   child: Text(
                                     isStale ? '$broker (Stale)' : isNotConnected ? '$broker (Offline)' : 'Connected to $broker',
                                     style: GoogleFonts.poppins(
-                                      color: isStale ? const Color(0xFFFFB74D) : isNotConnected ? Colors.white38 : Colors.white,
+                                      color: isStale ? Theme.of(context).colorScheme.secondary : isNotConnected ? Colors.white38 : Colors.white,
                                       fontSize: 16,
                                       fontWeight: FontWeight.w600,
                                     ),

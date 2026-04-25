@@ -13777,8 +13777,8 @@ SYMBOL_PARAMETERS = {
     # FOREX PAIRS - High liquidity, tight spreads
     'EURUSD': {
         'atr_multiplier': 1.2,
-        'stop_loss_pips': 8,
-        'take_profit_pips': 15,
+        'stop_loss_pips': 6,  # Reduced from 8
+        'take_profit_pips': 24,  # Increased from 15
         'max_slippage': 0.0005,
         'min_signal_strength': 50,
         'volatility_high': 0.15,
@@ -13786,8 +13786,8 @@ SYMBOL_PARAMETERS = {
     },
     'GBPUSD': {
         'atr_multiplier': 1.3,
-        'stop_loss_pips': 10,
-        'take_profit_pips': 20,
+        'stop_loss_pips': 8,  # Reduced from 10
+        'take_profit_pips': 32,  # Increased from 20
         'max_slippage': 0.0006,
         'min_signal_strength': 50,
         'volatility_high': 0.20,
@@ -13795,8 +13795,8 @@ SYMBOL_PARAMETERS = {
     },
     'USDJPY': {
         'atr_multiplier': 1.2,
-        'stop_loss_pips': 8,
-        'take_profit_pips': 16,
+        'stop_loss_pips': 6,  # Reduced from 8
+        'take_profit_pips': 26,  # Increased from 16
         'max_slippage': 0.0006,
         'min_signal_strength': 50,
         'volatility_high': 0.12,
@@ -13804,8 +13804,8 @@ SYMBOL_PARAMETERS = {
     },
     'AUDUSD': {
         'atr_multiplier': 1.2,
-        'stop_loss_pips': 9,
-        'take_profit_pips': 17,
+        'stop_loss_pips': 7,  # Reduced from 9
+        'take_profit_pips': 27,  # Increased from 17
         'max_slippage': 0.0005,
         'min_signal_strength': 50,
         'volatility_high': 0.18,
@@ -13813,8 +13813,8 @@ SYMBOL_PARAMETERS = {
     },
     'USDCAD': {
         'atr_multiplier': 1.2,
-        'stop_loss_pips': 9,
-        'take_profit_pips': 17,
+        'stop_loss_pips': 7,  # Reduced from 9
+        'take_profit_pips': 27,  # Increased from 17
         'max_slippage': 0.0005,
         'min_signal_strength': 50,
         'volatility_high': 0.15,
@@ -13822,8 +13822,8 @@ SYMBOL_PARAMETERS = {
     },
     'USDCHF': {
         'atr_multiplier': 1.2,
-        'stop_loss_pips': 8,
-        'take_profit_pips': 15,
+        'stop_loss_pips': 6,  # Reduced from 8
+        'take_profit_pips': 24,  # Increased from 15
         'max_slippage': 0.0005,
         'min_signal_strength': 50,
         'volatility_high': 0.14,
@@ -13831,8 +13831,8 @@ SYMBOL_PARAMETERS = {
     },
     'NZDUSD': {
         'atr_multiplier': 1.2,
-        'stop_loss_pips': 9,
-        'take_profit_pips': 17,
+        'stop_loss_pips': 7,  # Reduced from 9
+        'take_profit_pips': 27,  # Increased from 17
         'max_slippage': 0.0006,
         'min_signal_strength': 50,
         'volatility_high': 0.18,
@@ -13840,8 +13840,8 @@ SYMBOL_PARAMETERS = {
     },
     'EURGBP': {
         'atr_multiplier': 1.2,
-        'stop_loss_pips': 7,
-        'take_profit_pips': 14,
+        'stop_loss_pips': 6,  # Reduced from 7
+        'take_profit_pips': 22,  # Increased from 14
         'max_slippage': 0.0005,
         'min_signal_strength': 50,
         'volatility_high': 0.10,
@@ -13849,8 +13849,8 @@ SYMBOL_PARAMETERS = {
     },
     'EURJPY': {
         'atr_multiplier': 1.3,
-        'stop_loss_pips': 10,
-        'take_profit_pips': 20,
+        'stop_loss_pips': 8,  # Reduced from 10
+        'take_profit_pips': 32,  # Increased from 20
         'max_slippage': 0.0006,
         'min_signal_strength': 50,
         'volatility_high': 0.18,
@@ -13858,8 +13858,8 @@ SYMBOL_PARAMETERS = {
     },
     'GBPJPY': {
         'atr_multiplier': 1.5,
-        'stop_loss_pips': 14,
-        'take_profit_pips': 28,
+        'stop_loss_pips': 11,  # Reduced from 14
+        'take_profit_pips': 45,  # Increased from 28
         'max_slippage': 0.0008,
         'min_signal_strength': 50,
         'volatility_high': 0.25,
@@ -13868,8 +13868,8 @@ SYMBOL_PARAMETERS = {
     # PRECIOUS METALS
     'XAUUSD': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 12,
-        'take_profit_pips': 25,
+        'stop_loss_pips': 10,  # Reduced from 12
+        'take_profit_pips': 40,  # Increased from 25
         'max_slippage': 0.001,
         'min_signal_strength': 50,  # Lowered to allow more frequent trading on low-volatility symbols
         'volatility_high': 1.5,
@@ -13877,8 +13877,8 @@ SYMBOL_PARAMETERS = {
     },
     'XAGUSD': {
         'atr_multiplier': 1.7,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
+        'stop_loss_pips': 12,  # Reduced from 15
+        'take_profit_pips': 48,  # Increased from 30
         'max_slippage': 0.001,
         'min_signal_strength': 50,
         'volatility_high': 2.0,
@@ -13887,8 +13887,8 @@ SYMBOL_PARAMETERS = {
     # ENERGY
     'USOIL': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
+        'stop_loss_pips': 12,  # Reduced from 15
+        'take_profit_pips': 48,  # Increased from 30
         'max_slippage': 0.001,
         'min_signal_strength': 50,
         'volatility_high': 2.0,
@@ -13896,8 +13896,8 @@ SYMBOL_PARAMETERS = {
     },
     'UKOIL': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
+        'stop_loss_pips': 12,  # Reduced from 15
+        'take_profit_pips': 48,  # Increased from 30
         'max_slippage': 0.001,
         'min_signal_strength': 50,
         'volatility_high': 2.0,
@@ -14606,11 +14606,11 @@ def evaluate_real_trade_signal(symbol: str, market_data: Dict) -> Dict:
         rsi_signal = 'NEUTRAL'
         rsi_strength = 0
         
-        if rsi < 28:  # Strong oversold
+        if rsi < 30:  # Strong oversold (was 35)
             rsi_signal = 'BUY'
             rsi_strength = 35
             entry_reason.append(f'RSI deeply oversold ({rsi:.0f})')
-        elif rsi < 35:  # Moderate oversold
+        elif rsi < 35:  # Moderate oversold (was 45)
             rsi_signal = 'BUY'
             rsi_strength = 25
             entry_reason.append(f'RSI oversold ({rsi:.0f})')
@@ -14618,11 +14618,11 @@ def evaluate_real_trade_signal(symbol: str, market_data: Dict) -> Dict:
             rsi_signal = 'BUY'
             rsi_strength = 20
             entry_reason.append(f'RSI neutral ({rsi:.0f}) + strong uptrend + MACD')
-        elif rsi > 72:  # Strong overbought
+        elif rsi > 70:  # Strong overbought (was 65)
             rsi_signal = 'SELL'
             rsi_strength = 35
             entry_reason.append(f'RSI deeply overbought ({rsi:.0f})')
-        elif rsi > 65:  # Moderate overbought
+        elif rsi > 65:  # Moderate overbought (was 55)
             rsi_signal = 'SELL'
             rsi_strength = 25
             entry_reason.append(f'RSI overbought ({rsi:.0f})')
@@ -14647,7 +14647,7 @@ def evaluate_real_trade_signal(symbol: str, market_data: Dict) -> Dict:
                     and macd_just_crossed_bullish
                     and strong_trend
                     and volatility == 'LOW'
-                    and 42 <= rsi <= 58
+                    and 40 <= rsi <= 60  # Narrower range (was 42-58)
                 )
                 fallback_sell = (
                     trend == 'DOWN'
@@ -14655,7 +14655,7 @@ def evaluate_real_trade_signal(symbol: str, market_data: Dict) -> Dict:
                     and macd_just_crossed_bearish
                     and strong_trend
                     and volatility == 'LOW'
-                    and 42 <= rsi <= 58
+                    and 40 <= rsi <= 60
                 )
                 if fallback_buy or fallback_sell:
                     rsi_signal = 'BUY' if fallback_buy else 'SELL'
@@ -19880,8 +19880,8 @@ def test_broker_connection():
 
         # ==================== BINANCE ====================
         elif broker == 'Binance':
-            api_key = data.get('api_key')
-            api_secret = data.get('api_secret') or data.get('password')
+            api_key = str(data.get('api_key', '')).strip()
+            api_secret = str(data.get('api_secret') or data.get('password', '')).strip()
             market = (data.get('market') or data.get('server') or 'spot').lower()
             account_id = data.get('account_number') or market.upper()
 
@@ -25604,6 +25604,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     pause_reason = f"🔒 Daily profit lock reached: ${daily_profit:.2f} >= ${profit_lock:.2f}"
                 elif max_daily_loss > 0 and daily_profit < -max_daily_loss:
                     pause_reason = f"⚠️ Daily loss limit hit: ${abs(daily_profit):.2f} >= ${max_daily_loss:.2f}"
+                
+                # Check daily trade limit
+                max_daily_trades = bot_config.get('maxDailyTrades', 10)  # Default 10 trades per day
+                today_trades = len([t for t in (bot_config.get('tradeHistory') or []) if (datetime.now() - datetime.fromisoformat(t.get('timestamp', datetime.now().isoformat()))).days == 0])
+                if today_trades >= max_daily_trades:
+                    pause_reason = f"📊 Daily trade limit reached: {today_trades} >= {max_daily_trades}"
                 
                 if pause_reason:
                     daily_loss_debug = _build_bot_daily_loss_diagnostics(bot_config)

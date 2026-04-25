@@ -143,15 +143,15 @@ class _AccountManagementScreenState extends State<AccountManagementScreen>
                 width: double.infinity,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [const Color(0xFF1A237E).withOpacity(0.3), const Color(0xFF006064).withOpacity(0.2)],
+                    colors: [Theme.of(context).colorScheme.primary.withOpacity(0.3), Theme.of(context).colorScheme.secondary.withOpacity(0.2)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFF1A237E).withOpacity(0.3)),
+                  border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
                   boxShadow: [
                     BoxShadow(
-                      color: const Color(0xFF1A237E).withOpacity(0.15),
+                      color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
                       blurRadius: 20,
                       offset: const Offset(0, 8),
                     ),
@@ -169,13 +169,13 @@ class _AccountManagementScreenState extends State<AccountManagementScreen>
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           gradient: LinearGradient(
-                            colors: [const Color(0xFF1A237E), const Color(0xFF006064)],
+                            colors: [Theme.of(context).colorScheme.primary, Theme.of(context).colorScheme.secondary],
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: const Color(0xFF1A237E).withOpacity(0.4),
+                              color: Theme.of(context).colorScheme.primary.withOpacity(0.4),
                               blurRadius: 20,
                               offset: const Offset(0, 8),
                             ),
@@ -213,14 +213,14 @@ class _AccountManagementScreenState extends State<AccountManagementScreen>
                         ),
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
-                            colors: [const Color(0xFF1A237E), const Color(0xFF283593)],
+                            colors: [Theme.of(context).colorScheme.primary, Theme.of(context).colorScheme.primary.withOpacity(0.8)],
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                           ),
                           borderRadius: BorderRadius.circular(20),
                           boxShadow: [
                             BoxShadow(
-                              color: const Color(0xFF1A237E).withOpacity(0.3),
+                              color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
                               blurRadius: 8,
                               offset: const Offset(0, 4),
                             ),

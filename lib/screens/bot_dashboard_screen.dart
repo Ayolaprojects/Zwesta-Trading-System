@@ -259,7 +259,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     late final String label;
     switch (status) {
       case 'ready':
-        color = const Color(0xFF69F0AE);
+        color = Colors.green;
         label = 'Ready For Live';
         break;
       case 'expired':
@@ -267,7 +267,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         label = 'Promotion Expired';
         break;
       default:
-        color = const Color(0xFFFFB74D);
+        color = Colors.orange;
         if (remainingMinutes != null && remainingMinutes > 0) {
           final hours = remainingMinutes ~/ 60;
           final minutes = remainingMinutes % 60;
@@ -325,7 +325,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       label = '$label • $normalizedReason';
     }
 
-    return _buildMetaChip(label, const Color(0xFF80CBC4));
+    return _buildMetaChip(label, Theme.of(context).colorScheme.primary);
   }
 
   String _formatBotAggregate(CurrencyProvider currencyProvider, List<Map<String, dynamic>> bots, String field, {int decimals = 2}) {
@@ -402,18 +402,22 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         );
 
         return Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: [Color(0xFF0A0E21), Color(0xFF1A1F3A), Color(0xFF0A0E21)],
+              colors: [
+                Theme.of(context).colorScheme.background,
+                Theme.of(context).colorScheme.surface,
+                Theme.of(context).colorScheme.background
+              ],
             ),
           ),
           child: allBots.isEmpty && botService.isLoading
-              ? const Center(child: CircularProgressIndicator(color: Color(0xFF00E5FF)))
+              ? Center(child: CircularProgressIndicator(color: Theme.of(context).colorScheme.primary))
               : RefreshIndicator(
                   onRefresh: () => botService.fetchActiveBots(tradingMode: _tradingMode, force: true),
-                  color: const Color(0xFF00E5FF),
+                  color: Theme.of(context).colorScheme.primary,
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.all(16),
@@ -422,7 +426,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       Theme(
                         data: Theme.of(context).copyWith(
                           cardColor: Colors.white.withOpacity(0.06),
-                          primaryColor: const Color(0xFF00E5FF),
+                          primaryColor: Theme.of(context).colorScheme.primary,
                         ),
                         child: Column(
                           children: [
@@ -470,12 +474,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                                 child: TextButton.icon(
                                   onPressed: () =>
                                       setState(() => _showAccountDetails = true),
-                                  icon: const Icon(Icons.account_balance_wallet,
-                                      size: 20, color: Color(0xFF00E5FF)),
-                                  label: const Text(
+                                  icon: Icon(Icons.account_balance_wallet,
+                                      size: 20, color: Theme.of(context).colorScheme.primary),
+                                  label: Text(
                                     'Show Account Details',
                                     style: TextStyle(
-                                      color: Color(0xFF00E5FF),
+                                      color: Theme.of(context).colorScheme.primary,
                                       fontSize: 13,
                                     ),
                                   ),
@@ -490,14 +494,14 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       // Summary row
                       Row(
                         children: [
-                          _summaryChip(Icons.smart_toy, '$activeBots Active', const Color(0xFF69F0AE)),
+                          _summaryChip(Icons.smart_toy, '$activeBots Active', Colors.green),
                           const SizedBox(width: 10),
-                          _summaryChip(Icons.list_alt, '${allBots.length} Total', const Color(0xFF00E5FF)),
+                          _summaryChip(Icons.list_alt, '${allBots.length} Total', Theme.of(context).colorScheme.primary),
                           const SizedBox(width: 10),
                           _summaryChip(
                             totalProfit >= 0 ? Icons.trending_up : Icons.trending_down,
                             _formatBotAggregate(currencyProvider, allBots, 'profit'),
-                            totalProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                            totalProfit >= 0 ? Colors.green : Theme.of(context).colorScheme.secondary,
                           ),
                         ],
                       ),
