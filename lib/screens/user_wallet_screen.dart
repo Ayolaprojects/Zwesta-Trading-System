@@ -149,8 +149,7 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
         setState(() {
           _errorMessage = 'Could not load broker earnings breakdown';
           _isLoading = false;
-          });
-        }
+        });
       }
 
       _maybeStartOzowStatusPolling();
