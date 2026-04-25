@@ -23,10 +23,10 @@ def _safe_get(url, timeout=10):
     return None
 
 
-def _safe_post(url, json_data=None, timeout=15):
+def _safe_post(url, json_data=None, timeout=15, headers=None):
     """Safely make a POST request, returning JSON or error."""
     try:
-        resp = requests.post(url, json=json_data or {}, timeout=timeout)
+        resp = requests.post(url, json=json_data or {}, headers=headers or {}, timeout=timeout)
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
@@ -228,18 +228,27 @@ def api_unified_positions():
 def api_unified_close_all():
     """Emergency close all positions across ALL brokers."""
     try:
+        payload = request.json or {}
+        forwarded_headers = {}
+        session_token = str(request.headers.get('X-Session-Token') or '').strip()
+        user_header = str(request.headers.get('X-User-ID') or '').strip()
+        if session_token:
+            forwarded_headers['X-Session-Token'] = session_token
+        if user_header:
+            forwarded_headers['X-User-ID'] = user_header
+
         results = {}
 
-        ig_result = _safe_post(f"{BACKEND_URL}/api/ig/close-all-positions")
+        ig_result = _safe_post(f"{BACKEND_URL}/api/ig/close-all-positions", json_data=payload, headers=forwarded_headers)
         results['IG'] = ig_result if ig_result else {'success': False, 'error': 'Not connected'}
 
-        oanda_result = _safe_post(f"{BACKEND_URL}/api/oanda/close-all-positions")
+        oanda_result = _safe_post(f"{BACKEND_URL}/api/oanda/close-all-positions", json_data=payload, headers=forwarded_headers)
         results['OANDA'] = oanda_result if oanda_result else {'success': False, 'error': 'Not connected'}
 
-        fxcm_result = _safe_post(f"{BACKEND_URL}/api/fxcm/close-all-positions")
+        fxcm_result = _safe_post(f"{BACKEND_URL}/api/fxcm/close-all-positions", json_data=payload, headers=forwarded_headers)
         results['FXCM'] = fxcm_result if fxcm_result else {'success': False, 'error': 'Not connected'}
 
-        binance_result = _safe_post(f"{BACKEND_URL}/api/binance/close-all-positions")
+        binance_result = _safe_post(f"{BACKEND_URL}/api/binance/close-all-positions", json_data=payload, headers=forwarded_headers)
         results['Binance'] = binance_result if binance_result else {'success': False, 'error': 'Not connected'}
 
         total_closed = sum(

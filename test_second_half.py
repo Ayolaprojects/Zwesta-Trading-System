@@ -5971,24 +5971,43 @@ def exness_close_order(order_id):
         
         try:
             import MetaTrader5 as mt5
-            
+            from datetime import datetime, timedelta
+
             if not mt5.initialize():
                 return jsonify({'success': False, 'error': 'MT5 not initialized'}), 500
-            
+
             # Get position
             position = mt5.positions_get(ticket=order_id_int)
             if not position:
                 return jsonify({'success': False, 'error': 'Position not found'}), 404
-            
+
             pos = position[0]
-            
+
+            # Enforce minimum holding period (default: 60 seconds)
+            MIN_HOLD_SECONDS = 60
+            open_time = None
+            # MT5 position time is in seconds since epoch
+            if hasattr(pos, 'time'):
+                open_time = datetime.fromtimestamp(pos.time)
+            else:
+                # Fallback: try to get from pos.open_time or similar
+                open_time = None
+            now = datetime.now()
+            if open_time:
+                held_seconds = (now - open_time).total_seconds()
+                if held_seconds < MIN_HOLD_SECONDS:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Minimum holding period not met. Position open for {int(held_seconds)}s, must be at least {MIN_HOLD_SECONDS}s.'
+                    }), 400
+
             # Build close order request
             close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-            
+
             # Get current price
             tick = mt5.symbol_info_tick(pos.symbol)
             price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
-            
+
             request_dict = {
                 'action': mt5.TRADE_ACTION_DEAL,
                 'symbol': pos.symbol,
@@ -6000,9 +6019,9 @@ def exness_close_order(order_id):
                 'type_time': mt5.ORDER_TIME_GTC,
                 'type_filling': mt5.ORDER_FILLING_FOK,
             }
-            
+
             result = mt5.order_send(request_dict)
-            
+
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                 return jsonify({
                     'success': False,

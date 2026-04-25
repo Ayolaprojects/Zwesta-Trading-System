@@ -15,10 +15,12 @@ import uuid
 import hashlib
 import threading
 import random
+import re
 import string
 import smtplib
 import subprocess
 import importlib
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -781,10 +783,15 @@ def _dedupe_key_for_active_credential(row: Dict[str, Any]) -> Tuple[Any, ...]:
     broker_name = canonicalize_broker_name(row.get('broker_name'))
     account_number = str(row.get('account_number') or '').strip()
     username = str(row.get('username') or '').strip()
+    api_key = str(row.get('api_key') or '').strip()
+    server = str(row.get('server') or '').strip().lower() or 'spot'
     normalized_is_live = int(normalize_mt5_is_live_flag(broker_name, row.get('is_live'), row.get('server')))
 
     if broker_uses_single_mode_slot(broker_name):
         return (broker_name, normalized_is_live)
+
+    if broker_name == 'Binance' and api_key:
+        return (broker_name, api_key, server, normalized_is_live)
 
     if broker_name == 'FXCM' and username:
         return (broker_name, username, normalized_is_live)
@@ -936,8 +943,8 @@ def _resolve_active_broker_credential_for_bot(
         if normalized_credential_id:
             cursor.execute(
                 '''
-                SELECT credential_id, broker_name, account_number, username, password, server,
-                       is_live, api_key, account_currency, updated_at, created_at
+                  SELECT credential_id, broker_name, account_number, username, password, server,
+                      is_live, api_key, account_currency, mt5_terminal_path, updated_at, created_at
                 FROM broker_credentials
                 WHERE credential_id = ? AND user_id = ? AND is_active = 1
                 LIMIT 1
@@ -950,8 +957,8 @@ def _resolve_active_broker_credential_for_bot(
 
         def _query_candidates(match_account: bool) -> List[Dict[str, Any]]:
             query = '''
-                SELECT credential_id, broker_name, account_number, username, password, server,
-                       is_live, api_key, account_currency, updated_at, created_at
+                  SELECT credential_id, broker_name, account_number, username, password, server,
+                      is_live, api_key, account_currency, mt5_terminal_path, updated_at, created_at
                 FROM broker_credentials
                 WHERE user_id = ?
                   AND is_active = 1
@@ -962,7 +969,7 @@ def _resolve_active_broker_credential_for_bot(
                 query += ' AND is_live = ?'
                 params.append(desired_is_live)
             if match_account and normalized_account:
-                query += ' AND account_number = ?'
+                query += ' AND TRIM(account_number) = ?'
                 params.append(normalized_account)
             query += " ORDER BY COALESCE(updated_at, created_at, '') DESC, credential_id DESC"
             cursor.execute(query, tuple(params))
@@ -2217,6 +2224,71 @@ def distribute_profit_split_and_commissions(user_id, profit, bot_id):
     }
 
 
+_public_crypto_market_data_cache: Dict[str, Dict[str, Any]] = {}
+_PUBLIC_CRYPTO_MARKET_DATA_TTL_SECONDS = 20
+
+
+def _fetch_public_crypto_market_data(symbol: str) -> Optional[Dict[str, Any]]:
+    normalized_symbol = str(_resolve_analysis_symbol(symbol) or symbol or '').strip().upper()
+    if normalized_symbol.endswith('M'):
+        normalized_symbol = normalized_symbol[:-1]
+    if not normalized_symbol.endswith('USDT'):
+        return None
+
+    now = time.monotonic()
+    cached_entry = _public_crypto_market_data_cache.get(normalized_symbol)
+    if cached_entry and (now - float(cached_entry.get('ts') or 0.0)) < _PUBLIC_CRYPTO_MARKET_DATA_TTL_SECONDS:
+        cached_data = cached_entry.get('data')
+        if isinstance(cached_data, dict):
+            return dict(cached_data)
+
+    try:
+        import requests
+
+        for base_url in ('https://api.binance.com/api/v3', 'https://testnet.binance.vision/api/v3'):
+            response = requests.get(
+                f'{base_url}/klines',
+                params={'symbol': normalized_symbol, 'interval': '5m', 'limit': 50},
+                timeout=5,
+            )
+            if response.status_code != 200:
+                continue
+
+            payload = response.json()
+            if not isinstance(payload, list) or not payload:
+                continue
+
+            close_prices = []
+            for candle in payload:
+                if isinstance(candle, list) and len(candle) > 4:
+                    try:
+                        close_prices.append(float(candle[4]))
+                    except (TypeError, ValueError):
+                        continue
+
+            if not close_prices:
+                continue
+
+            current_price = float(close_prices[-1])
+            high_price = max(close_prices)
+            low_price = min(close_prices)
+            volatility_pct = abs(high_price - low_price) / current_price * 100 if current_price > 0 else 1.0
+            market_data = {
+                'current_price': current_price,
+                'price': current_price,
+                'volatility_pct': max(volatility_pct, 0.1),
+                'price_history': close_prices[-50:],
+                'analysis_symbol': normalized_symbol,
+                'data_source': 'binance_public_klines',
+            }
+            _public_crypto_market_data_cache[normalized_symbol] = {'ts': now, 'data': market_data}
+            return dict(market_data)
+    except Exception as exc:
+        logger.debug(f'Public crypto market data fetch failed for {normalized_symbol}: {exc}')
+
+    return None
+
+
 def _get_market_data_for_symbol(symbol: str) -> Dict[str, Any]:
     resolved_symbol = _resolve_analysis_symbol(symbol)
     candidate_symbols = []
@@ -2230,6 +2302,11 @@ def _get_market_data_for_symbol(symbol: str) -> Dict[str, Any]:
     for candidate in candidate_symbols:
         if candidate in commodity_market_data:
             return commodity_market_data[candidate]
+
+    public_crypto_market_data = _fetch_public_crypto_market_data(symbol)
+    if public_crypto_market_data:
+        return public_crypto_market_data
+
     return {'current_price': 0, 'volatility_pct': 1.0, 'price_history': [0]}
 
 
@@ -2680,6 +2757,37 @@ def _build_bot_daily_loss_diagnostics(bot_config: Dict[str, Any]) -> Dict[str, A
         'tradeHistoryCount': len(trade_history),
         'recentDailyProfits': recent_daily,
     }
+
+
+def _reset_persisted_daily_pause_on_restart(bot_config: Dict[str, Any]) -> bool:
+    """Clear carried-over same-day P/L guards when restoring bots after a backend restart."""
+    today = datetime.now().strftime('%Y-%m-%d')
+    daily_profits = bot_config.get('dailyProfits') if isinstance(bot_config.get('dailyProfits'), dict) else {}
+    today_profit = _safe_float(daily_profits.get(today, bot_config.get('dailyProfit', 0.0)), 0.0)
+    profit_lock = _safe_float(bot_config.get('profitLock'), 0.0)
+    max_daily_loss = _safe_float(bot_config.get('maxDailyLoss'), 0.0)
+
+    hit_profit_lock = profit_lock > 0 and today_profit >= profit_lock
+    hit_daily_loss = max_daily_loss > 0 and today_profit <= -max_daily_loss
+    if not (hit_profit_lock or hit_daily_loss):
+        return False
+
+    daily_profits = dict(daily_profits)
+    daily_profits[today] = 0.0
+    bot_config['dailyProfits'] = daily_profits
+    bot_config['dailyProfit'] = 0.0
+    if bot_config.get('status') == 'PAUSED':
+        bot_config['status'] = 'ACTIVE'
+    pause_reason = str(bot_config.get('pauseReason') or '')
+    if 'Daily loss limit hit' in pause_reason or 'Daily profit lock reached' in pause_reason:
+        bot_config['pauseReason'] = None
+
+    logger.warning(
+        f"♻️ Bot {bot_config.get('botId')}: cleared persisted daily P/L guard for {today} "
+        f"during backend restart (carried pnl={today_profit:.2f}, "
+        f"profit_lock={profit_lock:.2f}, max_daily_loss={max_daily_loss:.2f})"
+    )
+    return True
 
 
 @app.route('/api/admin/bot-daily-loss-debug', methods=['GET'])
@@ -5603,6 +5711,8 @@ class MT5Connection(BrokerConnection):
                 direction = mapped[0]
                 result.append({
                     'ticket': deal.ticket,
+                    'deal_id': deal.ticket,
+                    'position_id': getattr(deal, 'position_id', None),
                     'symbol': deal.symbol,
                     'type': direction,
                     'entryCategory': mapped[1],
@@ -5636,8 +5746,74 @@ class BinanceConnection(BrokerConnection):
         super().__init__(BrokerType.BINANCE, credentials)
         self.market = (credentials.get('market') or credentials.get('server') or 'spot').lower()
         is_live = bool(credentials.get('is_live', False))
-        self.base_url = 'https://api.binance.com/api' if is_live else 'https://testnet.binance.vision/api'
-        self.fapi_url = 'https://fapi.binance.com/fapi' if is_live else 'https://testnet.binancefuture.com/fapi'
+        # Support both Binance Demo Mode and the legacy spot/futures testnet hosts.
+        self.base_url = 'https://api.binance.com/api' if is_live else 'https://demo-api.binance.com/api'
+        self.fapi_url = 'https://fapi.binance.com/fapi' if is_live else 'https://demo-fapi.binance.com/fapi'
+        self._demo_base_url_fallbacks = [] if is_live else [
+            'https://demo-api.binance.com/api',
+            'https://testnet.binance.vision/api',
+        ]
+        self._demo_fapi_url_fallbacks = [] if is_live else [
+            'https://demo-fapi.binance.com/fapi',
+            'https://testnet.binancefuture.com/fapi',
+        ]
+        self.effective_is_live = is_live
+        self._time_offset_ms = 0
+        self._time_offset_updated_at = 0.0
+        self._spot_balances = {}
+
+    def _get_spot_asset_free_balance(self, asset: str) -> float:
+        asset_key = str(asset or '').strip().upper()
+        if not asset_key:
+            return 0.0
+
+        balance_entry = self._spot_balances.get(asset_key)
+        if not balance_entry:
+            self.get_account_info()
+            balance_entry = self._spot_balances.get(asset_key)
+
+        try:
+            return float((balance_entry or {}).get('free', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _get_spot_asset_total_balance(self, asset: str) -> float:
+        asset_key = str(asset or '').strip().upper()
+        if not asset_key:
+            return 0.0
+
+        balance_entry = self._spot_balances.get(asset_key)
+        if not balance_entry:
+            self.get_account_info()
+            balance_entry = self._spot_balances.get(asset_key)
+
+        try:
+            free_balance = float((balance_entry or {}).get('free', 0.0) or 0.0)
+            locked_balance = float((balance_entry or {}).get('locked', 0.0) or 0.0)
+            return free_balance + locked_balance
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _get_spot_symbol_price(self, instrument: str) -> float:
+        normalized_instrument = self._normalize_symbol(instrument)
+        if not normalized_instrument:
+            return 0.0
+
+        try:
+            import requests
+
+            response = requests.get(
+                f"{self.base_url}/v3/ticker/price",
+                params={'symbol': normalized_instrument},
+                timeout=5,
+            )
+            if response.status_code != 200:
+                return 0.0
+            payload = response.json() if response.content else {}
+            return float(payload.get('price', 0.0) or 0.0)
+        except Exception as exc:
+            logger.debug(f"Binance spot ticker lookup failed for {normalized_instrument}: {exc}")
+            return 0.0
 
     def _headers(self) -> Dict:
         return {
@@ -5650,7 +5826,8 @@ class BinanceConnection(BrokerConnection):
         from urllib.parse import urlencode
 
         signed_params = dict(params)
-        signed_params['timestamp'] = int(time.time() * 1000)
+        signed_params.setdefault('recvWindow', 10000)
+        signed_params['timestamp'] = int(time.time() * 1000) + int(self._time_offset_ms)
         query_string = urlencode(signed_params)
         signature = hmac.new(
             str(self.credentials.get('api_secret', '')).encode('utf-8'),
@@ -5659,6 +5836,101 @@ class BinanceConnection(BrokerConnection):
         ).hexdigest()
         signed_params['signature'] = signature
         return signed_params
+
+    def _sync_server_time(self, force: bool = False) -> None:
+        try:
+            import requests
+
+            now = time.monotonic()
+            if not force and self._time_offset_updated_at and (now - self._time_offset_updated_at) < 300:
+                return
+
+            endpoint = f"{self.base_url}/v3/time"
+            resp = requests.get(endpoint, timeout=10)
+            if resp.status_code != 200:
+                return
+
+            payload = resp.json() if resp.content else {}
+            server_time = int(payload.get('serverTime', 0) or 0)
+            if server_time <= 0:
+                return
+
+            self._time_offset_ms = server_time - int(time.time() * 1000)
+            self._time_offset_updated_at = now
+        except Exception as e:
+            logger.debug(f"Binance server time sync failed: {e}")
+
+    def _request_with_time_retry(self, method: str, url: str, *, headers: Dict, params: Dict, timeout: int):
+        import requests
+
+        self._sync_server_time()
+        response = requests.request(method, url, headers=headers, params=self._sign_params(params), timeout=timeout)
+        if response.status_code != 400:
+            return response
+
+        try:
+            payload = response.json()
+        except Exception:
+            return response
+
+        if payload.get('code') != -1021:
+            return response
+
+        self._sync_server_time(force=True)
+        return requests.request(method, url, headers=headers, params=self._sign_params(params), timeout=timeout)
+
+    def _is_invalid_demo_auth_response(self, response) -> bool:
+        if response is None:
+            return False
+        if response.status_code not in {400, 401}:
+            return False
+        try:
+            payload = response.json()
+        except Exception:
+            return False
+        return payload.get('code') in {-2014, -2015}
+
+    def _try_demo_spot_endpoint_fallback(self, candidates: Optional[List[str]] = None) -> bool:
+        fallback_candidates = candidates if candidates is not None else self._demo_base_url_fallbacks
+        if not fallback_candidates:
+            return False
+
+        current_url = self.base_url
+        for candidate in fallback_candidates:
+            if candidate == current_url:
+                continue
+
+            previous_url = self.base_url
+            previous_offset = self._time_offset_ms
+            previous_updated_at = self._time_offset_updated_at
+            self.base_url = candidate
+            self._time_offset_ms = 0
+            self._time_offset_updated_at = 0.0
+
+            try:
+                resp = self._request_with_time_retry(
+                    'GET',
+                    f"{self.base_url}/v3/account",
+                    headers=self._headers(),
+                    params={},
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    logger.info(f"Binance demo endpoint fallback succeeded on {candidate}")
+                    return True
+                if not self._is_invalid_demo_auth_response(resp):
+                    self.base_url = previous_url
+                    self._time_offset_ms = previous_offset
+                    self._time_offset_updated_at = previous_updated_at
+                    return False
+            except Exception:
+                pass
+
+            self.base_url = previous_url
+            self._time_offset_ms = previous_offset
+            self._time_offset_updated_at = previous_updated_at
+
+        return False
 
     def _normalize_symbol(self, symbol: str) -> Optional[str]:
         if not symbol:
@@ -5676,28 +5948,46 @@ class BinanceConnection(BrokerConnection):
         }
         if symbol in symbol_map:
             return symbol_map[symbol]
-        if symbol.endswith(('USDT', 'BUSD', 'USDC', 'BTC', 'ETH')):
+        if _is_binance_supported_symbol(symbol):
             return symbol
         return None
 
     def connect(self) -> bool:
         try:
-            import requests
-
             if not self.credentials.get('api_key') or not self.credentials.get('api_secret'):
                 logger.error('Binance: Missing API key or API secret')
                 return False
 
-            resp = requests.get(
+            resp = self._request_with_time_retry(
+                'GET',
                 f"{self.base_url}/v3/account",
                 headers=self._headers(),
-                params=self._sign_params({}),
+                params={},
                 timeout=15,
             )
             if resp.status_code == 200:
                 self.connected = True
                 self.get_account_info()
                 return True
+
+            if self._try_demo_spot_endpoint_fallback():
+                self.effective_is_live = False
+                self.connected = True
+                self.get_account_info()
+                return True
+
+            if bool(self.credentials.get('is_live', False)) and self.market != 'futures' and self._is_invalid_demo_auth_response(resp):
+                compatibility_candidates = [
+                    'https://demo-api.binance.com/api',
+                    'https://testnet.binance.vision/api',
+                ]
+                if self._try_demo_spot_endpoint_fallback(compatibility_candidates):
+                    logger.warning('Binance live auth failed, but demo/testnet spot auth succeeded; treating this credential as demo.')
+                    self.credentials['is_live'] = False
+                    self.effective_is_live = False
+                    self.connected = True
+                    self.get_account_info()
+                    return True
 
             logger.error(f"Binance authentication failed: {resp.status_code} - {resp.text}")
             return False
@@ -5711,20 +6001,27 @@ class BinanceConnection(BrokerConnection):
 
     def get_account_info(self) -> Dict:
         try:
-            import requests
-
             if not self.connected:
                 return {}
 
-            resp = requests.get(
+            resp = self._request_with_time_retry(
+                'GET',
                 f"{self.base_url}/v3/account",
                 headers=self._headers(),
-                params=self._sign_params({}),
+                params={},
                 timeout=10,
             )
             if resp.status_code == 200:
                 acct = resp.json()
                 balances = acct.get('balances', [])
+                self._spot_balances = {
+                    str(balance.get('asset', '')).upper(): {
+                        'free': float(balance.get('free', 0) or 0),
+                        'locked': float(balance.get('locked', 0) or 0),
+                    }
+                    for balance in balances
+                    if str(balance.get('asset', '')).strip()
+                }
                 usdt = next((b for b in balances if b.get('asset') == 'USDT'), {'free': '0', 'locked': '0'})
                 balance = float(usdt.get('free', 0)) + float(usdt.get('locked', 0))
                 self.account_info = {
@@ -5743,16 +6040,15 @@ class BinanceConnection(BrokerConnection):
 
     def get_positions(self) -> List[Dict]:
         try:
-            import requests
-
             if not self.connected:
                 return []
 
             if self.market == 'futures':
-                resp = requests.get(
+                resp = self._request_with_time_retry(
+                    'GET',
                     f"{self.fapi_url}/v2/positionRisk",
                     headers=self._headers(),
-                    params=self._sign_params({}),
+                    params={},
                     timeout=10,
                 )
                 if resp.status_code == 200:
@@ -5772,22 +6068,37 @@ class BinanceConnection(BrokerConnection):
                         })
                     return result
             else:
-                resp = requests.get(
-                    f"{self.base_url}/v3/openOrders",
-                    headers=self._headers(),
-                    params=self._sign_params({}),
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    return [{
-                        'deal_id': str(order.get('orderId', '')),
-                        'symbol': order.get('symbol', ''),
-                        'type': order.get('side', ''),
-                        'size': float(order.get('origQty', 0)),
-                        'level': float(order.get('price', 0)),
+                self.get_account_info()
+                result = []
+                for asset, balance_entry in list(self._spot_balances.items()):
+                    if asset in {'USDT', 'BUSD', 'USDC', 'FDUSD'}:
+                        continue
+
+                    total_quantity = self._get_spot_asset_total_balance(asset)
+                    if total_quantity <= 0:
+                        continue
+
+                    instrument = self._normalize_symbol(f'{asset}USDT')
+                    if not instrument:
+                        continue
+
+                    current_price = self._get_spot_symbol_price(instrument)
+                    result.append({
+                        'ticket': f'SPOT-{asset}',
+                        'deal_id': f'SPOT-{asset}',
+                        'symbol': instrument,
+                        'type': 'BUY',
+                        'size': total_quantity,
+                        'volume': total_quantity,
+                        'level': current_price,
+                        'openPrice': current_price,
+                        'currentPrice': current_price,
                         'profit_loss': 0,
+                        'profit': 0,
+                        'openTime': datetime.now().isoformat(),
                         'broker': 'Binance',
-                    } for order in resp.json()]
+                    })
+                return result
         except Exception as e:
             logger.error(f"Error getting Binance positions: {e}")
 
@@ -5795,8 +6106,6 @@ class BinanceConnection(BrokerConnection):
 
     def place_order(self, symbol: str, order_type: str, volume: float, **kwargs) -> Dict:
         try:
-            import requests
-
             if not self.connected:
                 return {'success': False, 'error': 'Not connected to Binance'}
 
@@ -5805,6 +6114,21 @@ class BinanceConnection(BrokerConnection):
                 return {'success': False, 'error': f'Unsupported Binance symbol: {symbol}. Use crypto pairs like BTCUSDT.'}
 
             quantity = max(round(float(volume), 4), 0.001)
+            if self.market != 'futures' and order_type.upper() == 'SELL' and instrument.endswith('USDT'):
+                base_asset = instrument[:-4]
+                available_quantity = self._get_spot_asset_free_balance(base_asset)
+                if available_quantity <= 0:
+                    return {
+                        'success': False,
+                        'error': f'Binance spot account has no {base_asset} available to sell. Spot mode cannot open naked SELL positions.',
+                    }
+                quantity = min(quantity, round(available_quantity, 4))
+                if quantity < 0.001:
+                    return {
+                        'success': False,
+                        'error': f'Binance spot account only has {available_quantity:.6f} {base_asset} free, below the minimum sellable size.',
+                    }
+
             params = {
                 'symbol': instrument,
                 'side': order_type.upper(),
@@ -5812,7 +6136,7 @@ class BinanceConnection(BrokerConnection):
                 'quantity': str(quantity),
             }
             endpoint = f"{self.fapi_url}/v1/order" if self.market == 'futures' else f"{self.base_url}/v3/order"
-            resp = requests.post(endpoint, headers=self._headers(), params=self._sign_params(params), timeout=15)
+            resp = self._request_with_time_retry('POST', endpoint, headers=self._headers(), params=params, timeout=15)
             if resp.status_code == 200:
                 result = resp.json()
                 return {
@@ -5829,7 +6153,6 @@ class BinanceConnection(BrokerConnection):
 
     def close_position(self, position_id: str) -> Dict:
         try:
-            import requests
             if not self.connected:
                 return {'success': False, 'error': 'Not connected to Binance'}
             if self.market == 'futures':
@@ -5845,20 +6168,29 @@ class BinanceConnection(BrokerConnection):
                     'quantity': str(pos['size']),
                     'reduceOnly': 'true',
                 }
-                resp = requests.post(
-                    f'{self.fapi_url}/v1/order',
-                    headers=self._headers(),
-                    params=self._sign_params(params),
-                    timeout=15,
-                )
+                resp = self._request_with_time_retry('POST', f'{self.fapi_url}/v1/order', headers=self._headers(), params=params, timeout=15)
             else:
-                params = self._sign_params({'orderId': position_id})
-                resp = requests.delete(
-                    f'{self.base_url}/v3/openOrders',
-                    headers=self._headers(),
-                    params=params,
-                    timeout=15,
-                )
+                open_orders = self.get_positions()
+                order = next((entry for entry in open_orders if str(entry.get('deal_id')) == str(position_id)), None)
+                if not order:
+                    return {'success': False, 'error': f'Binance spot order {position_id} not found'}
+
+                spot_symbol = str(order.get('symbol', '')).upper()
+                if str(position_id).startswith('SPOT-'):
+                    spot_size = max(_safe_float(order.get('size') or order.get('volume'), 0.0), 0.0)
+                    if spot_size < 0.001:
+                        return {'success': False, 'error': f'Binance spot holding {position_id} is below the minimum sellable size'}
+                    resp = self._request_with_time_retry('POST', f'{self.base_url}/v3/order', headers=self._headers(), params={
+                        'symbol': spot_symbol,
+                        'side': 'SELL',
+                        'type': 'MARKET',
+                        'quantity': str(round(spot_size, 4)),
+                    }, timeout=15)
+                else:
+                    resp = self._request_with_time_retry('DELETE', f'{self.base_url}/v3/order', headers=self._headers(), params={
+                        'symbol': spot_symbol,
+                        'orderId': position_id,
+                    }, timeout=15)
             if resp.status_code in (200, 201):
                 return {'success': True, 'position_id': position_id, 'broker': 'Binance'}
             return {'success': False, 'error': resp.text}
@@ -5868,7 +6200,6 @@ class BinanceConnection(BrokerConnection):
 
     def get_trades(self) -> List[Dict]:
         try:
-            import requests
             if not self.connected:
                 return []
             result = []
@@ -5876,12 +6207,7 @@ class BinanceConnection(BrokerConnection):
             watch_symbols = getattr(self, '_active_symbols', ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'])
             for symbol in watch_symbols[:5]:  # limit to avoid rate limits
                 try:
-                    resp = requests.get(
-                        endpoint,
-                        headers=self._headers(),
-                        params=self._sign_params({'symbol': symbol, 'limit': 20}),
-                        timeout=10,
-                    )
+                    resp = self._request_with_time_retry('GET', endpoint, headers=self._headers(), params={'symbol': symbol, 'limit': 20}, timeout=10)
                     if resp.status_code == 200:
                         for trade in resp.json():
                             result.append({
@@ -9081,8 +9407,8 @@ def warm_trading_mode_credential(user_id: str, credential_id: str, mode: str):
     }
 
 
-def get_user_trading_mode_value(user_id: str) -> str:
-    """Return the persisted user trading mode, defaulting to DEMO."""
+def get_user_trading_mode_value(user_id: str, fallback_mode: str = 'DEMO') -> str:
+    """Return the persisted user trading mode, defaulting to the provided fallback."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -9097,10 +9423,10 @@ def get_user_trading_mode_value(user_id: str) -> str:
         )
         row = cursor.fetchone()
         conn.close()
-        return (row['trading_mode'] if row and row['trading_mode'] else 'DEMO').upper()
+        return (row['trading_mode'] if row and row['trading_mode'] else fallback_mode).upper()
     except Exception as exc:
         logger.warning(f"Could not read trading mode for user {user_id}: {exc}")
-        return 'DEMO'
+        return str(fallback_mode or 'DEMO').upper()
 
 @app.route('/api/user/trading-mode', methods=['GET'])
 @require_api_key
@@ -9563,6 +9889,7 @@ def get_account_balances():
             account_info = None
             error_msg = None
             timed_out = False
+            allow_cached_balance_fallback = True
             failed_auth_status = get_failed_auth_status(account_num) if broker_name in ['Exness', 'XM', 'XM Global', 'PXBT'] else None
             
             try:
@@ -9662,27 +9989,37 @@ def get_account_balances():
                             'api_key': cred['api_key'],
                             'api_secret': cred['password'],
                             'account_number': account_num,
+                            'server': cred.get('server') or 'spot',
                             'is_live': is_live,
                         })
                         result = [None]
                         def connect_binance():
                             if binance_conn.connect():
-                                balance_info = binance_conn.get_balance()
+                                balance_info = binance_conn.account_info or binance_conn.get_account_info() or {}
                                 result[0] = {
                                     'accountNumber': account_num,
                                     'balance': balance_info.get('balance', 0),
-                                    'equity': balance_info.get('balance', 0),
-                                    'marginFree': balance_info.get('available', 0),
+                                    'equity': balance_info.get('equity', balance_info.get('balance', 0)),
+                                    'marginFree': balance_info.get('marginFree', balance_info.get('margin_free', 0)),
                                     'currency': balance_info.get('currency', 'USDT'),
                                     'displayCurrency': balance_info.get('currency', 'USDT'),
                                     'broker': 'Binance',
                                     'leverage': 1,
                                 }
+                                persist_account_snapshot(
+                                    'Binance',
+                                    account_num,
+                                    result[0],
+                                    credential_id=cred.get('credential_id'),
+                                    user_id=user_id,
+                                )
                             binance_conn.disconnect()
                         
                         thread = threading.Thread(target=connect_binance, daemon=True)
                         thread.start()
-                        thread.join(timeout=5)  # 5-second timeout
+                        # Binance connect() performs a signed account request and may retry on demo/testnet hosts.
+                        # Give it enough time to complete before declaring the balance path timed out.
+                        thread.join(timeout=35)
                         
                         if thread.is_alive():
                             logger.warning(f"Binance balance fetch timed out for {account_num}")
@@ -9699,13 +10036,28 @@ def get_account_balances():
                 elif broker_name == 'FXCM':
                     try:
                         cached_fxcm_snapshot = _get_cached_fxcm_endpoint_snapshot(cred['credential_id'])
-                        if cached_fxcm_snapshot and isinstance(cached_fxcm_snapshot.get('accountInfo'), dict):
+                        snapshot_account_info = cached_fxcm_snapshot.get('accountInfo') if cached_fxcm_snapshot else None
+                        snapshot_account_number = str(
+                            (snapshot_account_info or {}).get('accountNumber')
+                            or (snapshot_account_info or {}).get('account_id')
+                            or ''
+                        ).strip()
+                        if (
+                            cached_fxcm_snapshot
+                            and isinstance(snapshot_account_info, dict)
+                            and snapshot_account_info
+                            and (not snapshot_account_number or snapshot_account_number == account_num)
+                        ):
                             account_info = dict(cached_fxcm_snapshot['accountInfo'])
                             account_info['accountNumber'] = account_info.get('accountNumber') or account_num
                             account_info['marginFree'] = account_info.get('marginFree', account_info.get('margin_free', 0))
                             account_info['total_pl'] = account_info.get('profit', account_info.get('total_pl', 0))
                             account_info['displayCurrency'] = account_info.get('currency', display_currency)
                             error_msg = None
+                        elif cached_fxcm_snapshot and snapshot_account_number and snapshot_account_number != account_num:
+                            logger.warning(
+                                f"Ignoring mismatched FXCM snapshot for credential {cred['credential_id']}: requested {account_num}, snapshot has {snapshot_account_number}"
+                            )
                         else:
                             fxcm_conn = FXCMConnection({
                                 'api_key': cred.get('api_key'),
@@ -9715,6 +10067,7 @@ def get_account_balances():
                                 'server': cred.get('server'),
                                 'connection': 'Real' if bool(cred['is_live']) else 'Demo',
                                 'is_live': bool(cred['is_live']),
+                                'credential_id': cred['credential_id'],
                             })
                             if fxcm_conn.connect():
                                 account_info = fxcm_conn.get_account_info()
@@ -9732,9 +10085,11 @@ def get_account_balances():
                                 account_info['displayCurrency'] = account_info.get('currency', display_currency)
                             if not account_info:
                                 error_msg = fxcm_conn.last_error or 'Failed to connect to FXCM API'
+                                allow_cached_balance_fallback = False
                     except Exception as e:
                         logger.warning(f"FXCM balance error: {e}")
                         error_msg = str(e)
+                        allow_cached_balance_fallback = False
 
                 elif broker_name == 'OANDA':
                     try:
@@ -9892,6 +10247,11 @@ def get_account_balances():
                 cache_snapshot_age = None
                 sqlite_cache_used = False
                 suppress_cached_balance = bool(is_live and failed_auth_status)
+                if broker_name == 'FXCM' and not allow_cached_balance_fallback:
+                    suppress_cached_balance = True
+                    logger.warning(
+                        f"🚫 Suppressing cached FXCM balance for {cache_key}: live read unavailable and no fresh FXCM snapshot was returned"
+                    )
 
                 if suppress_cached_balance:
                     logger.warning(
@@ -11166,6 +11526,7 @@ def get_trades_alias():
     try:
         user_id = request.user_id  # From require_session decorator
         trades_list = []
+        seen_trade_keys = set()
         
         # Query database for user's bots and their associated trades
         conn = build_sqlite_connection(wal=False)
@@ -11196,8 +11557,70 @@ def get_trades_alias():
                         trade = dict(row)
                         trade['userId'] = user_id  # Ensure user isolation
                         trades_list.append(trade)
+                        trade_key = str(trade.get('ticket') or trade.get('trade_id') or trade.get('tradeId') or trade.get('trade_id') or '')
+                        if trade_key:
+                            seen_trade_keys.add(trade_key)
                     except:
                         pass
+
+            if not trades_list:
+                cursor.execute(
+                    '''
+                    SELECT credential_id
+                    FROM broker_credentials
+                    WHERE user_id = ? AND is_active = 1
+                    ORDER BY broker_name, credential_id DESC
+                    ''',
+                    (user_id,)
+                )
+                for cred_row in cursor.fetchall():
+                    credential_id = str(cred_row[0] if not isinstance(cred_row, sqlite3.Row) else cred_row['credential_id'])
+                    broker_conn = None
+                    try:
+                        conn_label, broker_conn = get_broker_connection(
+                            credential_id,
+                            user_id,
+                            bot_id=f'trades-history:{credential_id}',
+                        )
+                        if not _is_live_broker_connection(broker_conn):
+                            if broker_conn:
+                                logger.warning(
+                                    f"Skipping invalid trade history connection for user {user_id}, credential {credential_id}: {broker_conn}"
+                                )
+                            continue
+
+                        broker_trades = broker_conn.get_trades() or []
+                        for broker_trade in broker_trades:
+                            if not isinstance(broker_trade, dict) or not _is_meaningful_broker_trade(broker_trade):
+                                continue
+
+                            normalized_trade = _normalize_broker_trade_preview(broker_trade)
+                            trade_key = str(
+                                normalized_trade.get('ticket')
+                                or normalized_trade.get('trade_id')
+                                or normalized_trade.get('tradeId')
+                                or ''
+                            ).strip()
+                            if trade_key and trade_key in seen_trade_keys:
+                                continue
+
+                            normalized_trade['userId'] = user_id
+                            normalized_trade['source'] = 'live-broker'
+                            trades_list.append(normalized_trade)
+                            if trade_key:
+                                seen_trade_keys.add(trade_key)
+                    except Exception as broker_error:
+                        logger.warning(
+                            f"Trade history fallback failed for user {user_id}, credential {credential_id}: {broker_error}"
+                        )
+                    finally:
+                        if hasattr(broker_conn, 'disconnect'):
+                            try:
+                                broker_conn.disconnect()
+                            except Exception:
+                                pass
+
+                trades_list.sort(key=_trade_history_timestamp_key, reverse=True)
             
             logger.info(f"Returning {len(trades_list)} trades for user {user_id}")
             return jsonify({
@@ -12087,14 +12510,212 @@ VALID_SYMBOLS = {
 BINANCE_VALID_SYMBOLS = {
     # Tier 1 — Large Cap
     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT',
+    'TONUSDT', 'XLMUSDT',
     # Tier 2 — High Volume Alt-coins
-    'AVAXUSDT', 'MATICUSDT', 'LINKUSDT', 'LTCUSDT', 'TRXUSDT', 'DOTUSDT', 'ATOMUSDT',
+    'AVAXUSDT', 'MATICUSDT', 'LINKUSDT', 'LTCUSDT', 'BCHUSDT', 'ETCUSDT',
+    'TRXUSDT', 'DOTUSDT', 'ATOMUSDT', 'FILUSDT', 'ICPUSDT', 'HBARUSDT', 'VETUSDT',
     # Tier 3 — DeFi & Layer-2 (high volatility / liquidity)
     'SHIBUSDT', 'UNIUSDT', 'NEARUSDT', 'ARBUSDT', 'OPUSDT', 'APTUSDT',
-    'INJUSDT',  'SUIUSDT',  'FTMUSDT',  'AAVEUSDT',
+    'INJUSDT',  'SUIUSDT',  'FTMUSDT',  'AAVEUSDT', 'SEIUSDT', 'TIAUSDT',
+    'JUPUSDT', 'ENAUSDT', 'FETUSDT', 'IMXUSDT',
     # Tier 4 — Gaming / Metaverse / Cross-chain
-    'SANDUSDT', 'MANAUSDT', 'RUNEUSDT', 'ALGOUSDT',
+    'SANDUSDT', 'MANAUSDT', 'RUNEUSDT', 'ALGOUSDT', 'GALAUSDT',
+    # Tier 5 — Meme / high-beta liquid pairs
+    'PEPEUSDT', 'WIFUSDT', 'BONKUSDT',
+    # BTC quote markets
+    'ETHBTC', 'BNBBTC', 'SOLBTC', 'XRPBTC', 'ADABTC', 'DOGEBTC',
+    'LINKBTC', 'AVAXBTC', 'LTCBTC', 'DOTBTC', 'ATOMBTC', 'SHIBBTC',
+    # ETH quote markets
+    'BNBETH', 'SOLETH', 'XRPETH', 'ADAETH', 'DOGEETH', 'LINKETH',
+    'AVAXETH', 'LTCETH', 'DOTETH', 'ATOMETH', 'SHIBETH',
+    # BNB quote markets
+    'ETHBNB', 'SOLBNB', 'XRPBNB', 'ADABNB', 'DOGEBNB', 'LINKBNB',
+    'AVAXBNB', 'LTCBNB', 'DOTBNB', 'ATOMBNB', 'SHIBBNB',
 }
+
+BINANCE_DYNAMIC_QUOTE_ASSETS = {
+    'USDT', 'USDC', 'FDUSD', 'TUSD',
+    'BTC', 'ETH', 'BNB',
+    'USD', 'EUR', 'GBP', 'TRY', 'BRL', 'ARS', 'AUD', 'JPY',
+}
+
+
+def _parse_binance_quote_asset(symbol: str) -> str:
+    normalized = str(symbol or '').upper().replace('/', '').replace('_', '').replace('-', '')
+    if not normalized:
+        return ''
+    for quote in sorted(BINANCE_DYNAMIC_QUOTE_ASSETS, key=len, reverse=True):
+        if normalized.endswith(quote) and len(normalized) > len(quote):
+            return quote
+    return ''
+
+
+def _is_binance_supported_symbol(symbol: str) -> bool:
+    normalized = str(symbol or '').upper().replace('/', '').replace('_', '').replace('-', '')
+    if normalized in BINANCE_VALID_SYMBOLS:
+        return True
+    quote_asset = _parse_binance_quote_asset(normalized)
+    if not quote_asset:
+        return False
+    base_asset = normalized[:-len(quote_asset)]
+    return bool(base_asset) and bool(re.fullmatch(r'[A-Z0-9]{2,15}', base_asset))
+
+
+def _resolve_binance_symbol_catalog_mode(credential_id: str = '') -> bool:
+    normalized_credential_id = str(credential_id or '').strip()
+    if not normalized_credential_id:
+        return False
+
+    conn = None
+    try:
+        conn = build_sqlite_connection(timeout=10.0, row_factory=True)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT is_live
+            FROM broker_credentials
+            WHERE credential_id = ? AND is_active = 1
+            LIMIT 1
+            ''',
+            (normalized_credential_id,),
+        )
+        row = cursor.fetchone()
+        return bool(row['is_live']) if row else False
+    except Exception:
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _get_dynamic_binance_symbol_catalog(is_live: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+    base_url = 'https://api.binance.com/api' if is_live else 'https://testnet.binance.vision/api'
+    response = requests.get(f'{base_url}/v3/exchangeInfo', timeout=15)
+    response.raise_for_status()
+
+    base_name_map = {
+        'BTC': '₿ Bitcoin',
+        'ETH': 'Ξ Ethereum',
+        'BNB': '◈ BNB',
+        'SOL': '◎ Solana',
+        'XRP': '✕ XRP',
+        'ADA': '◌ Cardano',
+        'DOGE': '🐕 Dogecoin',
+        'LINK': '⛓ Chainlink',
+        'AVAX': '▲ Avalanche',
+        'LTC': 'Ł Litecoin',
+        'DOT': '● Polkadot',
+        'ATOM': '⚛ Cosmos',
+        'TON': '◉ Toncoin',
+        'XLM': '✦ Stellar',
+    }
+    category_map = {
+        'BTC': 'Large Cap',
+        'ETH': 'Large Cap',
+        'BNB': 'Large Cap',
+        'SOL': 'Large Cap',
+        'XRP': 'Large Cap',
+        'ADA': 'Large Cap',
+        'DOGE': 'Large Cap',
+        'TON': 'Large Cap',
+        'XLM': 'Large Cap',
+        'LINK': 'Altcoin',
+        'AVAX': 'Altcoin',
+        'LTC': 'Altcoin',
+        'DOT': 'Altcoin',
+        'ATOM': 'Altcoin',
+        'BCH': 'Altcoin',
+        'ETC': 'Altcoin',
+        'TRX': 'Altcoin',
+        'FIL': 'Altcoin',
+        'ICP': 'Altcoin',
+        'HBAR': 'Altcoin',
+        'VET': 'Altcoin',
+        'AAVE': 'DeFi & L2',
+        'UNI': 'DeFi & L2',
+        'ARB': 'DeFi & L2',
+        'OP': 'DeFi & L2',
+        'INJ': 'DeFi & L2',
+        'SUI': 'DeFi & L2',
+        'APT': 'DeFi & L2',
+        'NEAR': 'DeFi & L2',
+        'FTM': 'DeFi & L2',
+        'SEI': 'DeFi & L2',
+        'TIA': 'DeFi & L2',
+        'JUP': 'DeFi & L2',
+        'ENA': 'DeFi & L2',
+        'FET': 'DeFi & L2',
+        'IMX': 'DeFi & L2',
+        'SHIB': 'Meme',
+        'PEPE': 'Meme',
+        'WIF': 'Meme',
+        'BONK': 'Meme',
+        'GALA': 'Gaming',
+        'SAND': 'Gaming',
+        'MANA': 'Gaming',
+        'RUNE': 'Gaming',
+        'ALGO': 'Gaming',
+    }
+    stable_quotes = {'USDT', 'USDC', 'FDUSD', 'TUSD'}
+    fiat_quotes = {'USD', 'EUR', 'GBP', 'TRY', 'BRL', 'ARS', 'AUD', 'JPY'}
+
+    categorized: Dict[str, List[Dict[str, Any]]] = {
+        'binance_stablecoin_quotes': [],
+        'binance_crypto_quotes': [],
+        'binance_fiat_quotes': [],
+    }
+    seen_symbols: Set[str] = set()
+
+    for symbol_info in response.json().get('symbols', []):
+        symbol = str(symbol_info.get('symbol') or '').upper()
+        if not symbol or symbol in seen_symbols:
+            continue
+        if str(symbol_info.get('status') or '').upper() != 'TRADING':
+            continue
+        if symbol_info.get('isSpotTradingAllowed') is False:
+            continue
+
+        quote_asset = str(symbol_info.get('quoteAsset') or '').upper()
+        base_asset = str(symbol_info.get('baseAsset') or '').upper()
+        if quote_asset not in BINANCE_DYNAMIC_QUOTE_ASSETS:
+            continue
+        if not _is_binance_supported_symbol(symbol):
+            continue
+
+        display_name = base_name_map.get(base_asset, base_asset)
+        if quote_asset in stable_quotes:
+            category_bucket = 'binance_stablecoin_quotes'
+        elif quote_asset in fiat_quotes:
+            category_bucket = 'binance_fiat_quotes'
+        else:
+            category_bucket = 'binance_crypto_quotes'
+
+        category_label = category_map.get(base_asset, 'Crypto')
+        if quote_asset in stable_quotes and quote_asset != 'USDT':
+            category_label = f'{category_label} • {quote_asset} Quote'
+        elif quote_asset in {'BTC', 'ETH', 'BNB'}:
+            category_label = f'{category_label} • {quote_asset} Quote'
+        elif quote_asset in fiat_quotes:
+            category_label = f'{category_label} • Fiat {quote_asset}'
+
+        categorized[category_bucket].append({
+            'symbol': symbol,
+            'name': f'{display_name} / {quote_asset}',
+            'type': 'Crypto',
+            'analysis_symbol': f'{base_asset}USDT' if quote_asset != 'USDT' else symbol,
+            'baseAsset': base_asset,
+            'quoteAsset': quote_asset,
+            'category': category_label,
+            'lucrative': base_asset in {'BTC', 'ETH', 'SOL', 'BNB'},
+        })
+        seen_symbols.add(symbol)
+
+    for key in categorized:
+        categorized[key].sort(key=lambda item: (item.get('quoteAsset', ''), item.get('symbol', '')))
+    return {key: value for key, value in categorized.items() if value}
 
 PXBT_VALID_SYMBOLS = {
     'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF',
@@ -12899,7 +13520,7 @@ def validate_and_correct_symbols(symbols, broker_name=None):
             normalized = binance_symbol_map.get(str(symbol).upper(), normalized)
             normalized = binance_symbol_map.get(normalized, normalized)
 
-            if normalized in BINANCE_VALID_SYMBOLS and normalized not in corrected:
+            if _is_binance_supported_symbol(normalized) and normalized not in corrected:
                 corrected.append(normalized)
             else:
                 logger.warning(f"⚠️ Unsupported Binance symbol {symbol} - skipping")
@@ -15382,6 +16003,54 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
     )
 
     tradeable_opportunities = [opp for opp in opportunities if _is_symbol_tradeable_now(opp.get('symbol', ''))]
+    spot_inventory_symbols: Set[str] = set()
+    if normalized_broker_type == 'Binance' and active_conn and getattr(active_conn, 'market', 'spot') != 'futures':
+        try:
+            for position in active_conn.get_positions() or []:
+                position_symbol = str(position.get('symbol') or '').upper()
+                position_size = _safe_float(position.get('size') or position.get('volume'), 0.0)
+                if position_symbol and position_size > 0:
+                    spot_inventory_symbols.add(position_symbol)
+        except Exception as inventory_error:
+            logger.debug(f"🧠 Bot {bot_id}: Could not inspect Binance spot inventory: {inventory_error}")
+
+        if not spot_inventory_symbols:
+            preferred_buy_opportunities = [
+                opp for opp in tradeable_opportunities
+                if 'BUY' in str(opp.get('signal', '')).upper()
+            ]
+            if not preferred_buy_opportunities:
+                relaxed_buy_threshold = max(
+                    _adaptive_signal_threshold_floor(bot_config),
+                    min(signal_threshold - 10, ADAPTIVE_FALLBACK_MIN_STRENGTH),
+                )
+                if relaxed_buy_threshold < signal_threshold:
+                    relaxed_buy_scan = scan_all_opportunities(
+                        strategy_func,
+                        account_id,
+                        risk_per_trade,
+                        relaxed_buy_threshold,
+                        strategy_cache,
+                        symbol_universe=symbol_universe,
+                        fallback_slack=0,
+                        bot_config=bot_config,
+                        allow_raw_signal_fallback=use_raw_signal_fallback,
+                    )
+                    preferred_buy_opportunities = [
+                        opp for opp in relaxed_buy_scan
+                        if 'BUY' in str(opp.get('signal', '')).upper() and _is_symbol_tradeable_now(opp.get('symbol', ''))
+                    ]
+                    if preferred_buy_opportunities:
+                        logger.info(
+                            f"🧠 Bot {bot_id}: Binance spot is flat - using relaxed BUY-only scan "
+                            f"threshold {signal_threshold} -> {relaxed_buy_threshold}"
+                        )
+            tradeable_opportunities = preferred_buy_opportunities
+        else:
+            tradeable_opportunities = [
+                opp for opp in tradeable_opportunities
+                if 'BUY' in str(opp.get('signal', '')).upper() or str(opp.get('symbol') or '').upper() in spot_inventory_symbols
+            ]
     
     if tradeable_opportunities:
         top_3 = ', '.join([f"{o['symbol']}:{o['strength']:.0f} [{o.get('source', 'strategy')}]" for o in tradeable_opportunities[:3]])
@@ -15457,6 +16126,7 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
     # 4. BUILD optimal symbol list for this cycle
     # Start with existing open positions (don't duplicate), then add best new opportunities
     current_open_symbols = set(p.get('symbol', '') for p in bot_config.get('open_positions', {}).values())
+    current_open_symbols.update(spot_inventory_symbols)
     
     cycle_symbols = list(current_open_symbols)  # Keep existing positions' symbols
     
@@ -15482,10 +16152,9 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
             and fallback_strength >= fallback_min_strength
         ):
             cycle_symbols.append(s)
-    
     if set(cycle_symbols) != set(bot_config.get('symbols', [])):
         logger.info(f"🧠 Bot {bot_id}: Cycle symbols REALLOCATED: {cycle_symbols} (was: {bot_config.get('symbols', [])})")
-    
+
     # Store scanner state for the API / UI
     bot_config['lastScanResults'] = {
         'timestamp': datetime.now().isoformat(),
@@ -15634,6 +16303,7 @@ PERSISTED_BOT_STATE_FIELDS = {
     'totalInvestment', 'profitHistory', 'tradeHistory', 'dailyProfits', 'dailyProfit',
     'maxDrawdown', 'peakProfit', 'strategyHistory', 'lastStrategySwitch', 'volatilityLevel',
     'profit', 'drawdownPauseUntil', 'accountBalance', 'accountEquity', 'tradeAmount',
+    'accountEquityHighWatermark',
     'selectedPreset', 'presetName',
     'autoAdaptationEnabled', 'lastAdaptationAt', 'lastAdaptationReason',
     'effectivePositionSizeMultiplier', 'effectiveScannerCapitalMultiplier', 'lastSizingAdjustment',
@@ -15702,6 +16372,7 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         'drawdownPauseUntil': None,
         'accountBalance': cached_balance,
         'accountEquity': cached_equity,
+        'accountEquityHighWatermark': cached_equity,
         'open_positions': {},
         'tradeAmount': None,
         'selectedPreset': None,
@@ -15779,13 +16450,15 @@ def _get_demo_promotion_state(bot_config: Dict[str, Any], current_profit: float,
     except Exception:
         created_at = datetime.now()
 
+    now = datetime.now()
     ready_at = bot_config.get('promotionReadyAt')
     expired_at = bot_config.get('promotionExpiredAt')
-    now = datetime.now()
-    expires_at = created_at + timedelta(hours=DEMO_PROMOTION_EVALUATION_HOURS)
-    eligible_now = total_trades >= DEMO_PROMOTION_MIN_TRADES and current_profit > DEMO_PROMOTION_MIN_PROFIT
     state_changed = False
+    expires_at = created_at + timedelta(hours=DEMO_PROMOTION_EVALUATION_HOURS)
+    eligible_now = int(total_trades or 0) >= DEMO_PROMOTION_MIN_TRADES and float(current_profit or 0.0) >= DEMO_PROMOTION_MIN_PROFIT
 
+    status = 'evaluating'
+    label = 'Live Test Running'
     if ready_at:
         status = 'ready'
         label = 'Ready For Live'
@@ -15804,9 +16477,6 @@ def _get_demo_promotion_state(bot_config: Dict[str, Any], current_profit: float,
         state_changed = True
         status = 'expired'
         label = 'Promotion Expired'
-    else:
-        status = 'evaluating'
-        label = 'Live Test Running'
 
     time_remaining_minutes = None
     if status == 'evaluating':
@@ -16115,46 +16785,17 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         broker_name,
     )
     fxcm_threshold_migrated = False
+    fxcm_default_signal_threshold = _default_signal_threshold_for_broker_profile(
+        bot_state['managementProfile'],
+        broker_name,
+    )
     if (
         broker_name == 'FXCM'
-        and bot_state['managementMode'] != 'manual'
-        and bot_state['signalThresholdMode'] == 'auto'
+        and bot_state['signalThresholdMode'] != 'manual'
+        and int(bot_state.get('signalThreshold') or 0) != fxcm_default_signal_threshold
     ):
-        current_threshold = int(_safe_float(bot_state.get('signalThreshold'), 0.0))
-        if current_threshold <= 0 or current_threshold > 10:
-            bot_state['signalThreshold'] = 10
-            fxcm_threshold_migrated = True
-    cadence_floor = _minimum_saved_bot_trade_cadence(
-        bot_state.get('strategy', row['strategy']),
-        bot_state['managementProfile'],
-        bool(bot_state.get('intelligentScanner', False)),
-    )
-    cadence_migrated = False
-    if str(bot_state.get('tradingMode') or '').strip().lower() != cadence_floor['tradingMode']:
-        bot_state['tradingMode'] = cadence_floor['tradingMode']
-        cadence_migrated = True
-    current_trading_interval = int(bot_state.get('tradingInterval') or 0)
-    if current_trading_interval <= 0 or current_trading_interval > cadence_floor['tradingInterval']:
-        bot_state['tradingInterval'] = cadence_floor['tradingInterval']
-        cadence_migrated = True
-    current_poll_interval = int(bot_state.get('pollInterval') or 0)
-    if current_poll_interval <= 0 or current_poll_interval > cadence_floor['pollInterval']:
-        bot_state['pollInterval'] = cadence_floor['pollInterval']
-        cadence_migrated = True
-    if cadence_migrated:
-        bot_state['_cadenceMigrationApplied'] = True
-    restored_symbols = bot_state.get('symbols') or (row['symbols'].split(',') if row['symbols'] else ['EURUSDm'])
-    original_restored_symbols = [str(symbol).strip() for symbol in restored_symbols if str(symbol).strip()]
-    bot_state['symbols'] = validate_and_correct_symbols(restored_symbols, broker_name)
-    bot_state['tradeHistory'] = bot_state.get('tradeHistory') or []
-    _merge_bot_trade_history_from_db(bot_state, row['bot_id'])
-    # ✅ Always resync totalTrades from DB count — covers both: tradeHistory loaded now
-    # AND the case where tradeHistory was already in persisted runtime_state but totalTrades=0
-    try:
-        tsync_conn = build_sqlite_connection(timeout=10.0)
-        tsync_cur = tsync_conn.cursor()
-        tsync_cur.execute('SELECT COUNT(*) FROM trades WHERE bot_id = ?', (row['bot_id'],))
-        db_trade_count = tsync_cur.fetchone()[0] or 0
+        bot_state['signalThreshold'] = fxcm_default_signal_threshold
+        fxcm_threshold_migrated = True
         tsync_conn.close()
         if db_trade_count > bot_state.get('totalTrades', 0):
             bot_state['totalTrades'] = db_trade_count
@@ -16307,14 +16948,16 @@ def _find_broker_closed_trade(active_conn, ticket_str: str) -> Optional[Dict[str
         return None
 
     for broker_trade in broker_trades:
-        broker_ticket = str(
-            broker_trade.get('ticket')
-            or broker_trade.get('deal_id')
-            or broker_trade.get('tradeId')
-            or broker_trade.get('trade_id')
-            or ''
-        )
-        if broker_ticket == ticket_str:
+        candidate_ids = {
+            str(broker_trade.get('ticket') or ''),
+            str(broker_trade.get('deal_id') or ''),
+            str(broker_trade.get('tradeId') or ''),
+            str(broker_trade.get('trade_id') or ''),
+            str(broker_trade.get('position_id') or ''),
+            str(broker_trade.get('positionId') or ''),
+        }
+        candidate_ids.discard('')
+        if ticket_str in candidate_ids:
             return broker_trade
     return None
 
@@ -16633,7 +17276,7 @@ def start_enabled_bots_on_startup():
 
     restarted_bots = 0
 
-    for bot_id, bot_config in active_bots.items():
+    for bot_id, bot_config in list(active_bots.items()):
         if not bot_config.get('enabled'):
             continue
         if bot_id in bot_threads and bot_threads[bot_id].is_alive():
@@ -16649,8 +17292,10 @@ def start_enabled_bots_on_startup():
             bot_config.get('brokerName') or bot_config.get('broker_type'),
         )
 
-        current_user_mode = _normalize_bot_mode_value(get_user_trading_mode_value(bot_config.get('user_id')))
         bot_mode = _normalize_bot_mode_value(bot_config.get('mode'), bot_config.get('is_live'))
+        current_user_mode = _normalize_bot_mode_value(
+            get_user_trading_mode_value(bot_config.get('user_id'), fallback_mode=bot_mode)
+        )
         if bot_mode != current_user_mode:
             running_bots[bot_id] = False
             logger.info(
@@ -16662,6 +17307,8 @@ def start_enabled_bots_on_startup():
         bot_stop_flags[bot_id] = False
         running_bots[bot_id] = True
         bot_credentials = _get_bot_thread_credentials(bot_config)
+        if _reset_persisted_daily_pause_on_restart(bot_config):
+            persist_bot_runtime_state(bot_id)
 
         bot_thread = threading.Thread(
             target=continuous_bot_trading_loop,
@@ -17710,6 +18357,17 @@ def should_trade_today(bot_config, symbol):
     drawdown_pause_hours = bot_config.get('drawdownPauseHours', 6.0) or 6.0
     today = datetime.now().strftime('%Y-%m-%d')
     now = datetime.now()
+    live_equity = max(
+        _safe_float(bot_config.get('accountEquity'), 0.0),
+        _safe_float(bot_config.get('accountBalance'), 0.0),
+    )
+    equity_high_watermark = _safe_float(bot_config.get('accountEquityHighWatermark'), 0.0)
+    if live_equity > 0:
+        if equity_high_watermark <= 0:
+            equity_high_watermark = live_equity
+        else:
+            equity_high_watermark = max(equity_high_watermark, live_equity)
+        bot_config['accountEquityHighWatermark'] = round(equity_high_watermark, 2)
 
     # Hard block: tiny live accounts should not open new BTC/ETH positions.
     mode_value = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower()
@@ -17940,6 +18598,8 @@ def should_trade_today(bot_config, symbol):
                 bot_config['drawdownPauseSetAt'] = None
                 bot_config['maxDrawdown'] = 0.0
                 bot_config['peakProfit'] = current_total_profit
+                if live_equity > 0:
+                    bot_config['accountEquityHighWatermark'] = round(live_equity, 2)
                 logger.info(
                     f"[RISK] Bot {bot_config.get('botId')} drawdown cooldown expired; "
                     f"resuming trading from fresh baseline profit ${current_total_profit:.2f}."
@@ -17953,6 +18613,19 @@ def should_trade_today(bot_config, symbol):
     peak = bot_config.get('peakProfit', 0)
     max_dd = bot_config.get('maxDrawdown', 0)
     dd_threshold = bot_config.get('drawdownPausePercent', 0.0) or 0.0  # e.g., 10 (%)
+    if dd_threshold > 0 and live_equity > 0 and equity_high_watermark > 0:
+        account_drawdown_percent = ((equity_high_watermark - live_equity) / equity_high_watermark) * 100.0
+        if account_drawdown_percent >= dd_threshold:
+            pause_until = now + timedelta(hours=drawdown_pause_hours)
+            bot_config['drawdownPauseUntil'] = pause_until.isoformat()
+            bot_config['drawdownPauseSetAt'] = now.isoformat()
+            logger.warning(
+                f"[RISK] Bot {bot_config.get('botId')} account equity drawdown {account_drawdown_percent:.1f}% "
+                f">= {dd_threshold}% (high={equity_high_watermark:.2f}, current={live_equity:.2f}), "
+                f"pausing trading until {pause_until.isoformat()}."
+            )
+            return False
+
     if peak > 0 and max_dd > 0 and dd_threshold > 0:
         open_positions = bot_config.get('open_positions', {}) or {}
         recent_trade_at = _extract_latest_trade_timestamp(bot_config.get('tradeHistory') or [])
@@ -19062,19 +19735,68 @@ def test_broker_connection():
             if not binance_conn.connect():
                 return jsonify({'success': False, 'error': 'Failed to authenticate with Binance'}), 401
 
+            effective_is_live = bool(getattr(binance_conn, 'effective_is_live', is_live))
             account_info = binance_conn.get_account_info()
             binance_conn.disconnect()
 
             conn = get_db_connection()
             cursor = conn.cursor()
-            credential_id = str(uuid.uuid4())
-            cursor.execute('''
-                INSERT INTO broker_credentials 
-                (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, api_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-            ''', (credential_id, user_id, 'Binance', account_id, api_secret, market, int(is_live), api_key, datetime.now().isoformat(), datetime.now().isoformat()))
+            now_iso = datetime.now().isoformat()
+            cursor.execute(
+                '''
+                                SELECT credential_id
+                FROM broker_credentials
+                                WHERE user_id = ?
+                                    AND broker_name = ?
+                                    AND is_active = 1
+                                    AND is_live = ?
+                                    AND LOWER(COALESCE(server, 'spot')) = LOWER(?)
+                                    AND api_key = ?
+                                ORDER BY CASE WHEN TRIM(COALESCE(credential_id, '')) = '' THEN 1 ELSE 0 END,
+                                                 COALESCE(updated_at, created_at, '') DESC
+                ''',
+                                (user_id, 'Binance', int(effective_is_live), market, api_key),
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                credential_id = existing['credential_id'] if hasattr(existing, 'keys') else existing[0]
+                cursor.execute(
+                    '''
+                    UPDATE broker_credentials
+                    SET account_number = ?, password = ?, server = ?, is_live = ?, is_active = 1, api_key = ?, updated_at = ?
+                    WHERE credential_id = ?
+                    ''',
+                    (account_id, api_secret, market, int(effective_is_live), api_key, now_iso, credential_id),
+                )
+            else:
+                credential_id = str(uuid.uuid4())
+                cursor.execute('''
+                    INSERT INTO broker_credentials 
+                    (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, api_key, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ''', (credential_id, user_id, 'Binance', account_id, api_secret, market, int(effective_is_live), api_key, now_iso, now_iso))
+
+                        cursor.execute(
+                                '''
+                                UPDATE broker_credentials
+                                SET is_active = 0, updated_at = ?
+                                WHERE user_id = ?
+                                    AND broker_name = 'Binance'
+                                    AND is_active = 1
+                                    AND is_live = ?
+                                    AND LOWER(COALESCE(server, 'spot')) = LOWER(?)
+                                    AND api_key = ?
+                                    AND COALESCE(credential_id, '') != ?
+                                ''',
+                                (now_iso, user_id, int(effective_is_live), market, api_key, credential_id),
+                        )
             conn.commit()
             conn.close()
+
+            response_warning = None
+            if effective_is_live != bool(is_live):
+                response_warning = 'Binance key authenticated against demo/testnet, so it was saved as a demo credential.'
 
             return jsonify({
                 'success': True,
@@ -19084,8 +19806,9 @@ def test_broker_connection():
                 'account_number': account_id,
                 'balance': account_info.get('balance', 0),
                 'currency': account_info.get('currency', 'USDT'),
-                'is_live': is_live,
+                'is_live': effective_is_live,
                 'status': 'CONNECTED',
+                'warning': response_warning,
                 'timestamp': datetime.now().isoformat()
             }), 200
 
@@ -21093,6 +21816,7 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'breakEvenActivationShare': 0.5,
     'protectedSymbolCooldownMinutes': 5.0,
     'zeroLossLockEnabled': True,   # Enabled: close immediately when a previously-profitable trade returns to 0
+    'minimumHoldMinutes': 1.0,
 }
 
 PROFIT_PROTECTION_VOLATILITY_PROFILES = {
@@ -21201,6 +21925,8 @@ def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
     )
     if broker_name == 'FXCM':
         return 10
+    if broker_name == 'Binance':
+        return 20
 
     strategy_name = str(bot_config.get('strategy') or '').strip().lower()
     configured_symbols = bot_config.get('symbols') or []
@@ -21229,7 +21955,7 @@ def _crypto_only_signal_threshold(symbols: List[Any]) -> Optional[int]:
     }
     if not base_symbols or not base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
         return None
-    return 40  # Low threshold for crypto bots
+    return 30  # Faster threshold for crypto bots without dropping below the runtime floor
 
 
 def _resolve_runtime_trade_cadence(
@@ -21322,6 +22048,7 @@ def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dic
     normalized['breakEvenActivationShare'] = max(0.1, min(1.0, _safe_float(raw.get('breakEvenActivationShare', raw.get('break_even_activation_share', normalized['breakEvenActivationShare'])), normalized['breakEvenActivationShare'])))
     normalized['protectedSymbolCooldownMinutes'] = max(0.0, min(30.0, _safe_float(raw.get('protectedSymbolCooldownMinutes', raw.get('protected_symbol_cooldown_minutes', normalized['protectedSymbolCooldownMinutes'])), normalized['protectedSymbolCooldownMinutes'])))
     normalized['zeroLossLockEnabled'] = _coerce_bool(raw.get('zeroLossLockEnabled', raw.get('zero_loss_lock_enabled', normalized.get('zeroLossLockEnabled', True))), normalized.get('zeroLossLockEnabled', True))
+    normalized['minimumHoldMinutes'] = max(0.0, min(60.0, _safe_float(raw.get('minimumHoldMinutes', raw.get('minimum_hold_minutes', normalized.get('minimumHoldMinutes', 1.0))), normalized.get('minimumHoldMinutes', 1.0))))
     return normalized
 
 
@@ -21641,6 +22368,13 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         symbol_params = _get_effective_symbol_params(symbol, symbol_market_data)
         max_hold_minutes = _safe_float(symbol_params.get('max_hold_minutes'), 0.0)
         time_in_position = _position_age_minutes(tracked.get('entryTime'))
+        protection_min_hold_minutes = _safe_float(effective_protection.get('minimumHoldMinutes'), 0.0)
+        broker_name = canonicalize_broker_name(
+            bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+        )
+        if broker_name == 'Exness':
+            protection_min_hold_minutes = max(protection_min_hold_minutes, 1.0)
+        protection_hold_satisfied = time_in_position >= protection_min_hold_minutes
         close_reason = None  # Initialize before any conditional assignments
         if max_hold_minutes > 0 and time_in_position >= max_hold_minutes:
             close_reason = 'MAX_HOLD_TIME_EXCEEDED'
@@ -21690,7 +22424,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if allow_wider_trend_exits and peak_profit < break_even_activation_amount:
                 zero_loss_lock_active = False
 
-            if zero_loss_lock_active and peak_profit > 0 and current_profit <= 0 and not _recent_close_request(tracked):
+            if zero_loss_lock_active and peak_profit > 0 and current_profit <= 0 and protection_hold_satisfied and not _recent_close_request(tracked):
                 close_reason = 'ZERO_LOSS_LOCK'
 
         if not close_reason:
@@ -21744,6 +22478,9 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
 
         if not close_reason:
             if not tracked.get('profitProtectionArmed') or _recent_close_request(tracked):
+                continue
+
+            if not protection_hold_satisfied:
                 continue
 
             if current_profit <= locked_floor:
@@ -23825,7 +24562,7 @@ def create_bot():
                 bot_stop_flags[bot_id] = False
 
                 # ==================== WORKER POOL DISPATCH ====================
-                if worker_pool_manager and worker_pool_manager.enabled:
+                if worker_pool_manager and worker_pool_manager.enabled and is_mt5_broker_name(broker_name):
                     # Dispatch to a worker subprocess instead of local thread
                     _worker_creds = None
                     if credential_id:
@@ -24146,10 +24883,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         trading_mode = bot_config.get('tradingMode', 'interval')  # 'interval' or 'signal-driven'
         trading_interval = bot_config.get('tradingInterval', 300)  # Default 5 minutes for time-based
         runtime_signal_floor = _adaptive_signal_threshold_floor(bot_config)
-        signal_threshold = max(
-            int(bot_config.get('signalThreshold', runtime_signal_floor) or runtime_signal_floor),
-            runtime_signal_floor,
-        )    # 0-100, minimum signal strength
+        configured_signal_threshold = int(bot_config.get('signalThreshold', runtime_signal_floor) or runtime_signal_floor)
+        crypto_only_threshold = _crypto_only_signal_threshold(bot_config.get('symbols') or [])
+        if normalized_broker == 'Binance' and crypto_only_threshold is not None:
+            configured_signal_threshold = min(configured_signal_threshold, crypto_only_threshold)
+        signal_threshold = max(configured_signal_threshold, runtime_signal_floor)    # 0-100, minimum signal strength
         poll_interval = bot_config.get('pollInterval', 15)          # Check signals every N seconds in signal-driven mode
         
         if trading_mode == 'signal-driven':
@@ -24279,8 +25017,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     except Exception as startup_profit_sync_error:
                         logger.warning(f"Bot {bot_id}: Could not refresh startup daily PnL state: {startup_profit_sync_error}")
 
-                current_user_mode = get_user_trading_mode_value(user_id).lower()
                 bot_mode = str(bot_config.get('mode') or ('live' if bot_credentials.get('is_live') else 'demo')).lower()
+                current_user_mode = get_user_trading_mode_value(user_id, fallback_mode=bot_mode).lower()
                 if bot_mode != current_user_mode:
                     logger.info(
                         f"⏸️ Bot {bot_id}: Idle because bot mode is {bot_mode.upper()} while user trading mode is {current_user_mode.upper()}"
@@ -24986,6 +25724,32 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             signal_strength,
                             required_strength,
                         )
+                        if (
+                            broker_type == 'Binance'
+                            and active_conn
+                            and getattr(active_conn, 'market', 'spot') != 'futures'
+                        ):
+                            normalized_spot_symbol = active_conn._normalize_symbol(symbol) if hasattr(active_conn, '_normalize_symbol') else symbol
+                            base_asset = str(normalized_spot_symbol or symbol or '').upper()
+                            if base_asset.endswith('USDT'):
+                                base_asset = base_asset[:-4]
+                            available_spot_balance = 0.0
+                            if hasattr(active_conn, '_get_spot_asset_free_balance'):
+                                available_spot_balance = _safe_float(active_conn._get_spot_asset_free_balance(base_asset), 0.0)
+
+                            if order_type.upper() == 'SELL' and available_spot_balance <= 0:
+                                last_order_block_reason = (
+                                    f"Binance spot is flat on {symbol}; skipping SELL until the bot has {base_asset} inventory to exit"
+                                )
+                                logger.info(f"⏭️ Bot {bot_id}: {last_order_block_reason}")
+                                continue
+
+                            if order_type.upper() == 'BUY' and available_spot_balance > 0 and not pyramid_decision['allowed']:
+                                logger.info(
+                                    f"⏭️ Bot {bot_id}: Spot inventory already exists for {symbol} ({available_spot_balance:.6f} {base_asset}) - skipping duplicate BUY"
+                                )
+                                continue
+
                         adjusted_volume = fixed_trade_volume if fixed_trade_volume is not None else trade_params['volume'] * position_size
                         if pyramid_decision['allowed']:
                             adjusted_volume = max(0.01, adjusted_volume * pyramid_decision['multiplier'])
@@ -26381,7 +27145,7 @@ def quick_create_bot():
             quick_profit_defaults = BOT_MANAGEMENT_PROFILES.get('fast_growth', {})
             management_profile = 'fast_growth'  # User-facing label: Quick Profit
             management_mode = 'assisted'
-            signal_threshold = max(60, int(quick_profit_defaults.get('signalThreshold', 60) or 60))
+            signal_threshold = _crypto_only_signal_threshold(symbols) or 35
             allowed_volatility = ['Low', 'Medium']
             max_open_positions = min(2, int(quick_profit_defaults.get('maxOpenPositions', 2) or 2))
             max_positions_per_symbol = 1
@@ -26486,7 +27250,7 @@ def quick_create_bot():
             bot_stop_flags[bot_id] = False
 
             # ==================== WORKER POOL DISPATCH (QUICK BOT) ====================
-            if worker_pool_manager and worker_pool_manager.enabled:
+            if worker_pool_manager and worker_pool_manager.enabled and is_mt5_broker_name(broker_name):
                 _qb_creds = None
                 if credential_id:
                     try:
@@ -28940,12 +29704,11 @@ def login_user():
         #         two_fa_enabled = True
         # except Exception:
         #     pass  # Column may not exist yet
-        
+
         if two_fa_enabled:
-            # Generate 6-digit OTP code
             otp_code = ''.join(random.choices(string.digits, k=6))
             expires_at = (datetime.now() + timedelta(minutes=10)).isoformat()
-            
+
             # Store OTP in a pending_2fa table
             try:
                 cursor.execute('''CREATE TABLE IF NOT EXISTS pending_2fa (
@@ -32456,17 +33219,27 @@ def exness_close_order(order_id):
         
         try:
             import MetaTrader5 as mt5
-            
+
             if not ensure_mt5_ready():
                 return jsonify({'success': False, 'error': 'MT5 not initialized'}), 500
-            
+
             # Get position
             position = mt5.positions_get(ticket=order_id_int)
             if not position:
                 return jsonify({'success': False, 'error': 'Position not found'}), 404
-            
+
             pos = position[0]
-            
+
+            min_hold_seconds = 60
+            open_time = datetime.fromtimestamp(pos.time) if hasattr(pos, 'time') else None
+            if open_time is not None:
+                held_seconds = max(0, int((datetime.now() - open_time).total_seconds()))
+                if held_seconds < min_hold_seconds:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Minimum holding period not met. Position open for {held_seconds}s, must be at least {min_hold_seconds}s.'
+                    }), 400
+
             # Build close order request
             close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
             

@@ -132,6 +132,7 @@ class BinanceClient:
         'DOGEUSD': 'DOGEUSDT', 'AVAXUSD': 'AVAXUSDT', 'MATICUSD': 'MATICUSDT',
         'LINKUSD': 'LINKUSDT', 'DOTUSD': 'DOTUSDT', 'LTCUSD': 'LTCUSDT',
     }
+    QUOTE_ASSETS = ('USDT', 'USDC', 'FDUSD', 'TUSD', 'BTC', 'ETH', 'BNB', 'USD', 'EUR', 'GBP', 'TRY', 'BRL', 'ARS', 'AUD', 'JPY')
 
     def __init__(self, api_key: str, api_secret: str, is_live: bool = False):
         self.api_key = api_key.strip()
@@ -144,7 +145,7 @@ class BinanceClient:
         s = symbol.upper().replace('/', '').replace('_', '').replace('-', '')
         if s in self.SYMBOL_MAP:
             return self.SYMBOL_MAP[s]
-        if s.endswith(('USDT', 'BUSD', 'USDC', 'BTC', 'ETH', 'BNB')):
+        if any(s.endswith(quote) and len(s) > len(quote) for quote in self.QUOTE_ASSETS):
             return s
         return None
 

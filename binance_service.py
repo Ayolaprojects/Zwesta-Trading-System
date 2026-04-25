@@ -3,6 +3,7 @@ import time
 import hmac
 import hashlib
 import logging
+import sys
 from urllib.parse import urlencode
 from flask import Blueprint, jsonify, request
 import requests
@@ -11,6 +12,38 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 binance_api = Blueprint('binance_api', __name__)
+
+
+def _as_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_commission_distributor():
+    for module_name in ('__main__', 'multi_broker_backend_updated'):
+        module = sys.modules.get(module_name)
+        distributor = getattr(module, 'distribute_trade_commissions', None)
+        if callable(distributor):
+            return distributor
+    return None
+
+
+def _record_close_commission(user_id, bot_id, profit_amount, source):
+    distributor = _get_commission_distributor()
+    normalized_user_id = str(user_id or '').strip()
+    if not distributor or not normalized_user_id:
+        return
+
+    commissionable_profit = _as_float(profit_amount)
+    if commissionable_profit <= 0:
+        return
+
+    try:
+        distributor(bot_id, normalized_user_id, commissionable_profit, source=source)
+    except Exception as exc:
+        logger.warning(f"Binance commission distribution skipped: {exc}")
 
 # ==================== CONFIG ====================
 
@@ -275,11 +308,33 @@ def api_binance_close_position():
         data = request.json or {}
         symbol = data.get('instrument') or data.get('symbol')
         order_id = data.get('dealId') or data.get('orderId')
+        user_id = str(data.get('user_id') or '').strip()
+        bot_id = str(data.get('bot_id') or f'binance-manual-close:{symbol or order_id or "position"}')
+        profit_amount = _as_float(data.get('profit_amount'))
 
         if not symbol:
             return jsonify({"success": False, "error": "symbol is required"}), 400
 
         headers = _binance_headers()
+
+        if profit_amount <= 0:
+            risk_resp = requests.get(
+                f"{FAPI_URL}/v2/positionRisk",
+                headers=headers,
+                params=_sign_params({'symbol': symbol}),
+                timeout=10,
+            )
+            if risk_resp.status_code == 200:
+                for position in risk_resp.json():
+                    if position.get('symbol') != symbol:
+                        continue
+                    if _as_float(position.get('positionAmt')) == 0:
+                        continue
+                    profit_amount = _as_float(
+                        position.get('unRealizedProfit', position.get('unrealizedProfit')),
+                        profit_amount,
+                    )
+                    break
 
         # If orderId provided, cancel that specific order
         if order_id:
@@ -307,6 +362,7 @@ def api_binance_close_position():
             )
 
         if resp.status_code == 200:
+            _record_close_commission(user_id, bot_id, profit_amount, 'BINANCE')
             return jsonify({"success": True, "result": resp.json()})
         return jsonify({"success": False, "error": resp.text}), resp.status_code
     except Exception as e:
@@ -320,6 +376,9 @@ def api_binance_close_position():
 def api_binance_close_all():
     """Close all open futures positions via counter-orders."""
     try:
+        data = request.json or {}
+        user_id = str(data.get('user_id') or '').strip()
+        bot_id = str(data.get('bot_id') or 'binance-manual-close-all')
         headers = _binance_headers()
 
         # Get all futures positions
@@ -333,12 +392,14 @@ def api_binance_close_all():
 
         raw = resp.json()
         results = []
+        realized_profit = 0.0
 
         for p in raw:
-            amt = float(p.get('positionAmt', 0))
+            amt = _as_float(p.get('positionAmt', 0))
             if amt == 0:
                 continue
             symbol = p.get('symbol', '')
+            position_profit = _as_float(p.get('unRealizedProfit', p.get('unrealizedProfit')))
             # Close by placing opposite market order
             close_side = 'SELL' if amt > 0 else 'BUY'
             close_params = _sign_params({
@@ -353,11 +414,14 @@ def api_binance_close_all():
                 headers=headers, params=close_params, timeout=15,
             )
             if close_resp.status_code == 200:
+                if position_profit > 0:
+                    realized_profit += position_profit
                 results.append({"symbol": symbol, "success": True})
             else:
                 results.append({"symbol": symbol, "success": False, "error": close_resp.text})
 
         closed_count = sum(1 for r in results if r['success'])
+        _record_close_commission(user_id, bot_id, realized_profit, 'BINANCE')
         return jsonify({
             "success": True,
             "closed": closed_count,

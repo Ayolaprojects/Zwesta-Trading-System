@@ -1,6 +1,7 @@
 import os
 import logging
 import socket
+import sys
 from flask import Blueprint, jsonify, request
 import requests
 from datetime import datetime, timedelta
@@ -9,6 +10,38 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 fxcm_api = Blueprint('fxcm_api', __name__)
+
+
+def _as_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_commission_distributor():
+    for module_name in ('__main__', 'multi_broker_backend_updated'):
+        module = sys.modules.get(module_name)
+        distributor = getattr(module, 'distribute_trade_commissions', None)
+        if callable(distributor):
+            return distributor
+    return None
+
+
+def _record_close_commission(user_id, bot_id, profit_amount, source):
+    distributor = _get_commission_distributor()
+    normalized_user_id = str(user_id or '').strip()
+    if not distributor or not normalized_user_id:
+        return
+
+    commissionable_profit = _as_float(profit_amount)
+    if commissionable_profit <= 0:
+        return
+
+    try:
+        distributor(bot_id, normalized_user_id, commissionable_profit, source=source)
+    except Exception as exc:
+        logger.warning(f"FXCM commission distribution skipped: {exc}")
 
 # In-memory token cache
 _fxcm_tokens = {
@@ -330,10 +363,34 @@ def api_fxcm_close_position():
         if not trade_id:
             return jsonify({"success": False, "error": "dealId/tradeId is required"}), 400
 
+        user_id = str(data.get('user_id') or '').strip()
+        bot_id = str(data.get('bot_id') or f'fxcm-manual-close:{trade_id}')
+        profit_amount = _as_float(data.get('profit_amount'))
+
+        positions_resp = _fxcm_request(
+            'GET',
+            '/trading/get_model',
+            payload=data,
+            params={"models": "OpenPosition"},
+            timeout=10,
+            content_type=False,
+        )
+        if positions_resp.status_code == 200:
+            positions_data = positions_resp.json()
+            raw_positions = positions_data.get('open_positions', positions_data.get('openPositions', []))
+            for position in raw_positions if isinstance(raw_positions, list) else []:
+                if str(position.get('tradeId', '')) == str(trade_id):
+                    profit_amount = _as_float(
+                        position.get('grossPL', position.get('gross_pl', position.get('profit', position.get('pl')))),
+                        profit_amount,
+                    )
+                    break
+
         payload = {"trade_id": str(trade_id)}
 
         resp = _fxcm_request('POST', '/trading/close_trade', payload=data, json=payload, timeout=15)
         if resp.status_code == 200:
+            _record_close_commission(user_id, bot_id, profit_amount, 'FXCM')
             return jsonify({"success": True, "result": resp.json()})
         return jsonify({"success": False, "error": resp.text}), resp.status_code
     except Exception as e:
@@ -345,7 +402,18 @@ def api_fxcm_close_position():
 def api_fxcm_close_all():
     """Close all open positions."""
     try:
-        resp = _fxcm_request('GET', '/trading/get_model', params={"models": "OpenPosition"}, timeout=10, content_type=False)
+        data = request.json or {}
+        user_id = str(data.get('user_id') or '').strip()
+        bot_id = str(data.get('bot_id') or 'fxcm-manual-close-all')
+
+        resp = _fxcm_request(
+            'GET',
+            '/trading/get_model',
+            payload=data,
+            params={"models": "OpenPosition"},
+            timeout=10,
+            content_type=False,
+        )
         if resp.status_code != 200:
             return jsonify({"success": False, "error": "Failed to fetch positions"}), 500
 
@@ -354,17 +422,27 @@ def api_fxcm_close_all():
         positions = raw if isinstance(raw, list) else []
 
         results = []
-        base_url = getattr(resp, 'fxcm_base_url', _base_url())
+        base_url = getattr(resp, 'fxcm_base_url', _base_url(payload=request.json or {}))
+        realized_profit = 0.0
 
         for p in positions:
             trade_id = p.get('tradeId', '')
-            close_resp = requests.post(f"{base_url}/trading/close_trade", headers=_fxcm_headers(), json={"trade_id": str(trade_id)}, timeout=15)
+            position_profit = _as_float(p.get('grossPL', p.get('gross_pl', p.get('profit', p.get('pl')))))
+            close_resp = requests.post(
+                f"{base_url}/trading/close_trade",
+                headers=_fxcm_headers(payload=request.json or {}),
+                json={"trade_id": str(trade_id)},
+                timeout=15,
+            )
             if close_resp.status_code == 200:
+                if position_profit > 0:
+                    realized_profit += position_profit
                 results.append({"tradeId": str(trade_id), "success": True})
             else:
                 results.append({"tradeId": str(trade_id), "success": False, "error": close_resp.text})
 
         closed_count = sum(1 for r in results if r['success'])
+        _record_close_commission(user_id, bot_id, realized_profit, 'FXCM')
         return jsonify({
             "success": True,
             "closed": closed_count,
