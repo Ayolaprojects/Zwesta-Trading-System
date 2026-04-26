@@ -975,14 +975,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return strategies;
   }
 
-    int get _cryptoOnlyAutoThreshold =>
-        (_selectedSymbols.any(
-              (symbol) => _binanceBaseAsset(symbol) == 'BTC',
-            ) ||
-            _selectedBaseSymbols.contains('BTCUSD') ||
-            _selectedBaseSymbols.contains('BTCUSDT'))
-      ? 50
-      : 45;
+    int get _cryptoOnlyAutoThreshold => 5;
 
     String _binanceQuoteAsset(String symbol) {
       final normalized = _normalizeSymbolBase(symbol);
@@ -1068,7 +1061,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   List<int> get _availableSignalThresholds {
     if (_isCryptoOnlySelection) {
-      return const [45, 50];
+      return const [5, 15, 30, 45];
     }
     return const [30, 45, 60, 70];
   }
@@ -1082,8 +1075,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       _selectedStrategy = 'Swing Trend DCA';
     }
 
-    if (_manualSignalThreshold != null && _manualSignalThreshold! < 45) {
-      _manualSignalThreshold = 45;
+    if (_manualSignalThreshold != null && _manualSignalThreshold! < 5) {
+      _manualSignalThreshold = 5;
     }
   }
 
@@ -4417,7 +4410,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               const SizedBox(height: 8),
                               Text(
                                 _isCryptoOnlySelection
-                                    ? 'Crypto-only baskets default to 50 when BTC is selected and 45 for ETH-only baskets.'
+                                    ? 'Crypto-only baskets default to 5 so Binance bots can act on low-strength qualifying signals.'
                                     : 'Auto lets the backend choose the threshold from the profile and adaptive logic. Pick a value only when you want to force the minimum signal strength.',
                                 style: TextStyle(
                                   fontSize: 11,

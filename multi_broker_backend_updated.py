@@ -27,6 +27,78 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
+
+# Simple rate limiting for API endpoints
+import time
+api_call_counts = {}
+API_RATE_LIMIT = 10  # Max calls per minute per IP
+API_RATE_WINDOW = 60  # 60 seconds
+
+# Performance optimizations
+import functools
+from cachetools import TTLCache
+import threading
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import psutil  # For system monitoring
+
+# Thread pool for async operations
+executor = ThreadPoolExecutor(max_workers=4)
+
+# System monitoring
+def get_system_stats():
+    """Get system resource usage"""
+    try:
+        cpu = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        return {
+            'cpu_percent': cpu,
+            'memory_percent': memory.percent,
+            'memory_used_mb': memory.used / 1024 / 1024,
+            'memory_available_mb': memory.available / 1024 / 1024
+        }
+    except:
+        return {'error': 'psutil not available'}
+
+# Aggressive caching
+user_cache = TTLCache(maxsize=2000, ttl=600)  # 10 minute cache, larger
+credential_cache = TTLCache(maxsize=1000, ttl=1200)  # 20 minute cache, larger
+bot_config_cache = TTLCache(maxsize=500, ttl=300)  # 5 minute cache, larger
+health_cache = {}  # Simple cache for health endpoint
+health_cache_lock = threading.Lock()
+HEALTH_CACHE_TTL = 60  # 60 seconds cache
+
+def check_rate_limit():
+    """Simple rate limiting to prevent API abuse"""
+    client_ip = request.remote_addr or 'unknown'
+    now = time.time()
+
+    if client_ip not in api_call_counts:
+        api_call_counts[client_ip] = []
+
+    # Clean old entries
+    api_call_counts[client_ip] = [t for t in api_call_counts[client_ip] if now - t < API_RATE_WINDOW]
+
+    if len(api_call_counts[client_ip]) >= API_RATE_LIMIT:
+        return False
+
+    api_call_counts[client_ip].append(now)
+    return True
+
+def cached_health_response():
+    """Get cached health response if still valid"""
+    with health_cache_lock:
+        now = time.time()
+        if 'data' in health_cache and 'timestamp' in health_cache:
+            if now - health_cache['timestamp'] < HEALTH_CACHE_TTL:
+                return health_cache['data']
+        return None
+
+def set_health_cache(data):
+    """Cache health response"""
+    with health_cache_lock:
+        health_cache['data'] = data
+        health_cache['timestamp'] = time.time()
 Sock = None
 try:
     Sock = getattr(importlib.import_module('flask_sock'), 'Sock', None)
@@ -73,8 +145,38 @@ if sys.platform == 'win32':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
-def _resolve_log_level() -> int:
-    raw_level = str(os.getenv('LOG_LEVEL', 'INFO') or 'INFO').strip().upper()
+def get_cached_user(cursor, user_id):
+    """Get user with caching"""
+    cache_key = f"user_{user_id}"
+    if cache_key in user_cache:
+        return user_cache[cache_key]
+
+    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+    user_row = cursor.fetchone()
+
+    if user_row:
+        user_cache[cache_key] = user_row
+        return user_row
+    return None
+
+def get_cached_credential(cursor, credential_id, user_id):
+    """Get broker credential with caching"""
+    cache_key = f"cred_{credential_id}_{user_id}"
+    if cache_key in credential_cache:
+        return credential_cache[cache_key]
+
+    cursor.execute('''
+        SELECT credential_id, broker_name, account_number, username, is_live, api_key, password, server, is_active,
+               account_currency, cached_balance, cached_margin_free
+        FROM broker_credentials
+        WHERE credential_id = ? AND user_id = ?
+    ''', (credential_id, user_id))
+    credential_row = cursor.fetchone()
+
+    if credential_row:
+        credential_cache[cache_key] = credential_row
+        return credential_row
+    return None
     return getattr(logging, raw_level, logging.INFO)
 
 # Configure logging with UTF-8 encoding and rotation
@@ -2347,6 +2449,49 @@ def _get_cached_strategy_params(strategy_cache: Dict[str, Optional[Dict[str, Any
     return strategy_cache[cache_key]
 
 
+def _resolve_runtime_trade_params(
+    strategy_cache: Dict[str, Optional[Dict[str, Any]]],
+    strategy_func,
+    symbol: str,
+    account_id: str,
+    risk_per_trade: float,
+    market_data: Optional[Dict[str, Any]],
+    bot_config: Optional[Dict[str, Any]],
+    signal_threshold: int,
+) -> Optional[Dict[str, Any]]:
+    trade_params = _get_cached_strategy_params(
+        strategy_cache,
+        strategy_func,
+        symbol,
+        account_id,
+        risk_per_trade,
+        market_data,
+    )
+    if trade_params is not None or not isinstance(bot_config, dict):
+        return trade_params
+
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
+    adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
+    effective_threshold = max(int(signal_threshold or 0), adaptive_floor)
+    if broker_name != 'Binance' or effective_threshold > adaptive_floor:
+        return None
+
+    raw_signal = evaluate_real_trade_signal(symbol, market_data or {})
+    raw_strength = _safe_float(raw_signal.get('strength'), 0.0)
+    if raw_strength < effective_threshold:
+        return None
+
+    fallback_trade_params = _build_adaptive_raw_trade_params(symbol, market_data or {}, raw_signal, bot_config)
+    if fallback_trade_params is None:
+        return None
+
+    fallback_trade_params['execution_source'] = 'runtime_raw_fallback'
+    strategy_cache[_strategy_cache_key(strategy_func, symbol)] = fallback_trade_params
+    return fallback_trade_params
+
+
 def _get_effective_symbol_params(symbol: str, market_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     symbol_key = _normalize_symbol_base(symbol)
     params = dict(SYMBOL_PARAMETERS.get(symbol_key, DEFAULT_SYMBOL_PARAMS))
@@ -3918,14 +4063,134 @@ def init_database():
     conn.close()
     logger.info("Database initialized")
 
+def optimize_database_performance():
+    """Optimize database with indexes for better performance"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Add performance indexes if they don't exist
+        indexes_to_create = [
+            "CREATE INDEX IF NOT EXISTS idx_user_bots_user_id ON user_bots(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_user_bots_bot_id ON user_bots(bot_id)",
+            "CREATE INDEX IF NOT EXISTS idx_broker_credentials_user_id ON broker_credentials(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_broker_credentials_credential_id ON broker_credentials(credential_id)",
+            "CREATE INDEX IF NOT EXISTS idx_bot_credentials_bot_id ON bot_credentials(bot_id)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_bot_id ON trades(bot_id)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_user_id ON trades(user_id)",
+        ]
+
+        for index_sql in indexes_to_create:
+            try:
+                cursor.execute(index_sql)
+            except Exception as e:
+                logger.warning(f"Could not create index: {e}")
+
+        # Optimize database settings for better performance
+        cursor.execute("PRAGMA synchronous = NORMAL")  # Faster than FULL but still safe
+        cursor.execute("PRAGMA journal_mode = WAL")    # Better concurrent access
+        cursor.execute("PRAGMA temp_store = MEMORY")   # Store temp tables in memory
+        cursor.execute("PRAGMA mmap_size = 268435456") # 256MB memory map
+        cursor.execute("PRAGMA cache_size = -64000")   # 64MB cache
+
+        conn.commit()
+        logger.info("✅ Database performance optimization completed")
+    except Exception as e:
+        logger.error(f"❌ Database optimization failed: {e}")
+    finally:
+        if 'conn' in locals():
+            return_db_connection(conn)
+
+import threading
+import queue
+from contextlib import contextmanager
+
+# Database connection pool for better performance
+_db_connection_pool = queue.Queue(maxsize=10)  # Pool of 10 connections
+_db_pool_lock = threading.Lock()
+
 def get_db_connection():
-    """Get database connection with WAL mode for concurrent writes"""
-    # Slightly longer busy timeout prevents transient signup failures during heavy bot writes.
-    return build_sqlite_connection(timeout=8.0, row_factory=True, busy_timeout_ms=8000)
+    """Get database connection from pool with WAL mode for concurrent writes"""
+    try:
+        # Try to get connection from pool
+        conn = _db_connection_pool.get_nowait()
+        # Test if connection is still valid
+        try:
+            conn.execute("SELECT 1").fetchone()
+            return conn
+        except:
+            # Connection is stale, create new one
+            pass
+    except queue.Empty:
+        pass
+
+    # Create new connection if pool is empty or connection is stale
+    conn = build_sqlite_connection(timeout=8.0, row_factory=True, busy_timeout_ms=8000)
+    return conn
+
+def return_db_connection(conn):
+    """Return connection to pool if it's still valid"""
+    try:
+        # Test connection before returning to pool
+        conn.execute("SELECT 1").fetchone()
+        try:
+            _db_connection_pool.put_nowait(conn)
+        except queue.Full:
+            # Pool is full, close connection
+            conn.close()
+    except:
+        # Connection is invalid, close it
+        conn.close()
+
+@contextmanager
+def get_db_connection_context():
+    """Context manager for database connections with automatic pooling"""
+    conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        return_db_connection(conn)
+
+def prewarm_caches():
+    """Pre-warm frequently accessed caches on startup"""
+    try:
+        logger.info("🔄 Pre-warming caches...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Pre-load common users
+        cursor.execute('SELECT user_id FROM users LIMIT 100')
+        users = cursor.fetchall()
+        for user_row in users:
+            user_cache[f"user_{user_row[0]}"] = user_row
+
+        # Pre-load common credentials
+        cursor.execute('SELECT credential_id, user_id FROM broker_credentials LIMIT 50')
+        creds = cursor.fetchall()
+        for cred_row in creds:
+            cred_id, user_id = cred_row
+            cache_key = f"cred_{cred_id}_{user_id}"
+            # Load full credential data
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, username, is_live, api_key, password, server, is_active,
+                       account_currency, cached_balance, cached_margin_free
+                FROM broker_credentials
+                WHERE credential_id = ? AND user_id = ?
+            ''', (cred_id, user_id))
+            full_cred = cursor.fetchone()
+            if full_cred:
+                credential_cache[cache_key] = full_cred
+
+        return_db_connection(conn)
+        logger.info("✅ Cache pre-warming completed")
+    except Exception as e:
+        logger.error(f"❌ Cache pre-warming failed: {e}")
 
 # Initialize database on startup
 if __name__ == "__main__":
     init_database()
+    optimize_database_performance()  # Optimize database performance
+    prewarm_caches()  # Pre-warm caches
 
 # ==================== BACKUP & RECOVERY SYSTEM ====================
 
@@ -5903,20 +6168,28 @@ class BinanceConnection(BrokerConnection):
             if not force and self._time_offset_updated_at and (now - self._time_offset_updated_at) < 300:
                 return
 
+            logger.debug(f"[BINANCE TIME SYNC] Syncing server time (force={force})...")
             endpoint = f"{self.base_url}/v3/time"
             resp = requests.get(endpoint, timeout=10)
             if resp.status_code != 200:
+                logger.warning(f"[BINANCE TIME SYNC] Server time endpoint returned {resp.status_code}")
                 return
 
             payload = resp.json() if resp.content else {}
             server_time = int(payload.get('serverTime', 0) or 0)
             if server_time <= 0:
+                logger.warning(f"[BINANCE TIME SYNC] Invalid server time: {server_time}")
                 return
 
-            self._time_offset_ms = server_time - int(time.time() * 1000)
+            local_time = int(time.time() * 1000)
+            old_offset = self._time_offset_ms
+            self._time_offset_ms = server_time - local_time
             self._time_offset_updated_at = now
+
+            logger.info(f"[BINANCE TIME SYNC] SUCCESS: server_time={server_time}, local_time={local_time}, offset={self._time_offset_ms}ms (was {old_offset}ms)")
         except Exception as e:
-            logger.debug(f"Binance server time sync failed: {e}")
+            logger.warning(f"[BINANCE TIME SYNC] Failed: {e}")
+            # Don't set last_error for time sync failures - they're not fatal
 
     def _request_with_time_retry(self, method: str, url: str, *, headers: Dict, params: Dict, timeout: int):
         import requests
@@ -6062,14 +6335,19 @@ class BinanceConnection(BrokerConnection):
                 logger.error('Binance: Missing API key or API secret')
                 return False
 
+            # Sync server time before authentication (only if needed, not forced every time)
+            logger.info("[BINANCE AUTH] Ensuring server time is synced before authentication...")
+            self._sync_server_time()  # Remove force=True to avoid unnecessary network calls
+
             configured_is_live = bool(self.credentials.get('is_live', False))
             logger.info(
-                "[BINANCE AUTH] account=%s market=%s configured_mode=%s effective_mode=%s endpoint=%s/v3/account",
+                "[BINANCE AUTH] account=%s market=%s configured_mode=%s effective_mode=%s endpoint=%s/v3/account time_offset=%dms",
                 str(self.credentials.get('account_number') or '').strip() or 'BINANCE',
                 self.market,
                 'live' if configured_is_live else 'demo',
                 'live' if self.effective_is_live else 'demo',
                 self.base_url,
+                self._time_offset_ms,
             )
 
             resp = self._request_with_time_retry(
@@ -6237,6 +6515,23 @@ class BinanceConnection(BrokerConnection):
 
         return []
 
+    def _get_symbol_filters(self, symbol: str) -> Dict[str, Any]:
+        """Get LOT_SIZE and other filters for a symbol from Binance exchangeInfo"""
+        try:
+            endpoint = f"{self.base_url}/v3/exchangeInfo?symbol={symbol}"
+            resp = self._request_with_time_retry('GET', endpoint, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                symbol_info = data.get('symbols', [{}])[0]
+                filters = {f['filterType']: f for f in symbol_info.get('filters', [])}
+                return filters
+            else:
+                logger.warning(f"Failed to get symbol info for {symbol}: {resp.status_code}")
+                return {}
+        except Exception as e:
+            logger.error(f"Error getting symbol filters for {symbol}: {e}")
+            return {}
+
     def place_order(self, symbol: str, order_type: str, volume: float, **kwargs) -> Dict:
         try:
             if not self.connected:
@@ -6247,6 +6542,22 @@ class BinanceConnection(BrokerConnection):
                 return {'success': False, 'error': f'Unsupported Binance symbol: {symbol}. Use crypto pairs like BTCUSDT.'}
 
             quantity = max(round(float(volume), 4), 0.001)
+            
+            # Adjust quantity for LOT_SIZE filter
+            filters = self._get_symbol_filters(instrument)
+            lot_size = filters.get('LOT_SIZE', {})
+            if lot_size:
+                min_qty = float(lot_size.get('minQty', '0.001'))
+                max_qty = float(lot_size.get('maxQty', '1000000'))
+                step_size = float(lot_size.get('stepSize', '0.001'))
+                
+                # Ensure quantity is within min/max
+                quantity = max(min_qty, min(quantity, max_qty))
+                
+                # Round to step size
+                quantity = round(quantity / step_size) * step_size
+                quantity = round(quantity, 8)  # Avoid floating point issues
+            
             if self.market != 'futures' and order_type.upper() == 'SELL' and instrument.endswith('USDT'):
                 base_asset = instrument[:-4]
                 available_quantity = self._get_spot_asset_free_balance(base_asset)
@@ -6256,10 +6567,11 @@ class BinanceConnection(BrokerConnection):
                         'error': f'Binance spot account has no {base_asset} available to sell. Spot mode cannot open naked SELL positions.',
                     }
                 quantity = min(quantity, round(available_quantity, 4))
-                if quantity < 0.001:
+                min_qty = float(lot_size.get('minQty', '0.001')) if lot_size else 0.001
+                if quantity < min_qty:
                     return {
                         'success': False,
-                        'error': f'Binance spot account only has {available_quantity:.6f} {base_asset} free, below the minimum sellable size.',
+                        'error': f'Binance spot account only has {available_quantity:.6f} {base_asset} free, below the minimum sellable size ({min_qty}).',
                     }
 
             params = {
@@ -7888,13 +8200,34 @@ def transfer_funds_api():
 
 @app.route('/api/health', methods=['GET'])
 def health():
-    """Health check"""
-    return jsonify({
+    """Health check with aggressive caching and system monitoring"""
+    if not check_rate_limit():
+        return jsonify({'error': 'Rate limit exceeded'}), 429
+
+    # Check cache first
+    cached = cached_health_response()
+    if cached:
+        return jsonify(cached)
+
+    # Generate fresh response with system stats
+    system_stats = get_system_stats()
+    response_data = {
         'status': 'ok',
         'service': 'Zwesta Multi-Broker Backend',
         'version': '2.0.0',
         'timestamp': datetime.now().isoformat(),
-    })
+        'performance': {
+            'cached': False,
+            'active_bots': len(active_bots),
+            'db_connections': _db_connection_pool.qsize() if hasattr(_db_connection_pool, 'qsize') else 0,
+            'system': system_stats
+        }
+    }
+
+    # Cache the response
+    set_health_cache(response_data)
+
+    return jsonify(response_data)
 
 
 @app.route('/api/environment', methods=['GET'])
@@ -16674,6 +17007,13 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     restored_symbols = bot_state.get('symbols') or (row['symbols'].split(',') if row['symbols'] else ['EURUSDm'])
     original_restored_symbols = [str(symbol).strip() for symbol in restored_symbols if str(symbol).strip()]
     bot_state['symbols'] = validate_and_correct_symbols(restored_symbols, broker_name)
+    
+    # Apply crypto threshold override for existing bots (none must use 35%)
+    crypto_only_threshold = _crypto_only_signal_threshold(bot_state['symbols'])
+    if crypto_only_threshold is not None and bot_state.get('signalThreshold') != crypto_only_threshold:
+        logger.info(f"🔄 Bot {row['bot_id']}: Crypto threshold override applied ({bot_state.get('signalThreshold')} → {crypto_only_threshold})")
+        bot_state['signalThreshold'] = crypto_only_threshold
+        fxcm_threshold_migrated = True  # Mark as migrated to trigger persistence
     bot_state['tradeHistory'] = bot_state.get('tradeHistory') or []
     _merge_bot_trade_history_from_db(bot_state, row['bot_id'])
     try:
@@ -21441,7 +21781,7 @@ BOT_RISK_LIMITS = {
 ADAPTIVE_SIGNAL_THRESHOLD_STEP = 5
 ADAPTIVE_SIGNAL_THRESHOLD_LOW_SIGNAL_STEP = 10
 ADAPTIVE_SIGNAL_THRESHOLD_MAX_REDUCTION = 70
-ADAPTIVE_SIGNAL_THRESHOLD_MIN = 30
+ADAPTIVE_SIGNAL_THRESHOLD_MIN = 5
 ADAPTIVE_SCANNER_TRIGGER_MISSES = 1
 ADAPTIVE_STRATEGY_MIN_SIGNAL_REDUCTION_MAX = 45
 ADAPTIVE_FORCED_SCANNER_IDLE_CYCLES = 3
@@ -21536,7 +21876,7 @@ BOT_MANAGEMENT_PROFILES = {
         'drawdownPauseHours': 8.0,    # Shorter cooldown so the bot can recover sooner
         'maxOpenPositions': 2,        # Max 2 trades open at once
         'maxPositionsPerSymbol': 1,   # 1 trade per symbol
-        'signalThreshold': 30,
+        'signalThreshold': 5,
         'allowedVolatility': ['Very Low', 'Low', 'Medium'],
         'autoSwitch': False,          # Stick to swing trend strategy
         'dynamicSizing': True,        # Scale with equity
@@ -21549,7 +21889,7 @@ BOT_MANAGEMENT_PROFILES = {
         'drawdownPauseHours': 8.0,
         'maxOpenPositions': 2,
         'maxPositionsPerSymbol': 1,
-        'signalThreshold': 70,
+        'signalThreshold': 5,
         'allowedVolatility': ['Very Low', 'Low'],
         'autoSwitch': True,
         'dynamicSizing': True,
@@ -21785,7 +22125,7 @@ def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
     if broker_name == 'FXCM':
         return 10
     if broker_name == 'Binance':
-        return 20
+        return 5
 
     strategy_name = str(bot_config.get('strategy') or '').strip().lower()
     configured_symbols = bot_config.get('symbols') or []
@@ -21807,6 +22147,19 @@ def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
 
 
 def _crypto_only_signal_threshold(symbols: List[Any]) -> Optional[int]:
+    normalized_symbols = [
+        str(symbol or '').strip().upper().replace('/', '').replace('_', '').replace('-', '')
+        for symbol in (symbols or [])
+        if str(symbol or '').strip()
+    ]
+    crypto_quote_assets = {'USDT', 'USDC', 'FDUSD', 'TUSD', 'BTC', 'ETH', 'BNB'}
+    if normalized_symbols and all(
+        _is_binance_supported_symbol(symbol)
+        and _parse_binance_quote_asset(symbol) in crypto_quote_assets
+        for symbol in normalized_symbols
+    ):
+        return 5
+
     base_symbols = {
         _normalize_symbol_base(symbol)
         for symbol in (symbols or [])
@@ -21814,7 +22167,7 @@ def _crypto_only_signal_threshold(symbols: List[Any]) -> Optional[int]:
     }
     if not base_symbols or not base_symbols.issubset(SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS):
         return None
-    return 30  # Faster threshold for crypto bots without dropping below the runtime floor
+    return 5  # Faster threshold for crypto bots without dropping below the runtime floor
 
 
 def _resolve_runtime_trade_cadence(
@@ -23918,6 +24271,12 @@ def sanitize_bot_risk_config(
     else:
         signal_threshold = int(crypto_only_threshold if crypto_only_threshold is not None else default_signal_threshold)
 
+    # Always override with crypto threshold for crypto bots (none must use 35%)
+    if crypto_only_threshold is not None:
+        signal_threshold = crypto_only_threshold
+        if signal_threshold_mode == 'manual':
+            warnings.append(f'Crypto bot signal threshold overridden to {crypto_only_threshold}% (crypto bots cannot use 35%)')
+
     allowed_volatility = data.get('allowedVolatility') or profile_defaults['allowedVolatility']
     if not isinstance(allowed_volatility, list):
         allowed_volatility = profile_defaults['allowedVolatility']
@@ -24118,18 +24477,14 @@ def create_bot():
 
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-            user_row = cursor.fetchone()
+
+            # Use cached user lookup
+            user_row = get_cached_user(cursor, user_id)
             if not user_row:
                 return jsonify({'success': False, 'error': 'User not found'}), 404
 
-            cursor.execute('''
-                SELECT credential_id, broker_name, account_number, username, is_live, api_key, password, server, is_active,
-                       account_currency, cached_balance, cached_margin_free
-                FROM broker_credentials
-                WHERE credential_id = ? AND user_id = ?
-            ''', (credential_id, user_id))
-            credential_row = cursor.fetchone()
+            # Use cached credential lookup
+            credential_row = get_cached_credential(cursor, credential_id, user_id)
             if not credential_row:
                 return jsonify({'success': False, 'error': f'Broker credential {credential_id} not found or does not belong to this user'}), 404
 
@@ -25336,13 +25691,15 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 for eval_symbol in symbols:
                     eval_market_data = _enrich_market_data_with_bot_context(bot_config, eval_symbol)
                     eval_signal = evaluate_real_trade_signal(eval_symbol, eval_market_data)
-                    eval_params = _get_cached_strategy_params(
+                    eval_params = _resolve_runtime_trade_params(
                         strategy_cache,
                         strategy_func,
                         eval_symbol,
                         bot_config['accountId'],
                         bot_config['riskPerTrade'],
                         eval_market_data,
+                        bot_config,
+                        signal_threshold,
                     )
                     signal_score = eval_signal.get('strength', 0)
                     signal_score_value = float(signal_score or 0.0)
@@ -25518,13 +25875,15 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             )
                         
                         # Get trade direction from the cached signal evaluation for this cycle.
-                        trade_params = _get_cached_strategy_params(
+                        trade_params = _resolve_runtime_trade_params(
                             strategy_cache,
                             strategy_func,
                             symbol,
                             bot_config['accountId'],
                             bot_config['riskPerTrade'],
                             market_data,
+                            bot_config,
+                            required_strength,
                         )
                         
                         # Skip trade if signal strength is too low
@@ -26986,7 +27345,7 @@ def quick_create_bot():
             quick_profit_defaults = BOT_MANAGEMENT_PROFILES.get('fast_growth', {})
             management_profile = 'fast_growth'  # User-facing label: Quick Profit
             management_mode = 'assisted'
-            signal_threshold = _crypto_only_signal_threshold(symbols) or 35
+            signal_threshold = 5  # Use 5 for crypto quick create bots (was 35)
             allowed_volatility = ['Low', 'Medium']
             max_open_positions = min(2, int(quick_profit_defaults.get('maxOpenPositions', 2) or 2))
             max_positions_per_symbol = 1
@@ -27791,6 +28150,9 @@ def _build_fxcm_bot_broker_snapshot(
 @require_session
 def bot_summary():
     """Return lightweight bot card data for dashboard polling."""
+    if not check_rate_limit():
+        return jsonify({'error': 'Rate limit exceeded', 'success': False}), 429
+
     try:
         user_id = request.user_id
         mode_filter = request.args.get('mode', '').upper()
