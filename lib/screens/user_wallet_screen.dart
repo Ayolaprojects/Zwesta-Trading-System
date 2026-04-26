@@ -425,7 +425,7 @@ class _UserWalletScreenState extends State<UserWalletScreen> {
               ),
             ],
           ),
-          backgroundColor: Colors.grey[900],
+          backgroundColor: const Color(0xFF0A0E21),
           elevation: 0,
           actions: [
             IconButton(

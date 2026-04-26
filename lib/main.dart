@@ -114,7 +114,7 @@ void main() async {
           title: 'ZWESTA TRADING SYSTEM',
           theme: AppTheme.lightTheme,
           darkTheme: AppTheme.darkTheme,
-          themeMode: ThemeMode.system,
+          themeMode: ThemeMode.dark,
           home: const AuthWrapper(),
           debugShowCheckedModeBanner: false,
           supportedLocales: const [
