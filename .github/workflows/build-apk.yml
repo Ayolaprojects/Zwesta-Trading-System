@@ -1,0 +1,72 @@
+name: Build APK Release
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'Zwesta Flutter App/lib/**'
+      - 'Zwesta Flutter App/android/**'
+      - 'Zwesta Flutter App/pubspec.yaml'
+      - 'Zwesta Flutter App/pubspec.lock'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: Backend API base URL to bake into the APK
+        required: false
+        default: http://148.113.5.39:9000
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Zwesta Flutter App
+    env:
+      DEFAULT_API_URL: http://148.113.5.39:9000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.32.5
+          channel: stable
+
+      - name: Print Flutter version
+        run: |
+          flutter --version
+          dart --version
+
+      - name: Get dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Build APK
+        run: |
+          API_URL="${{ github.event.inputs.api_url }}"
+          if [ -z "$API_URL" ]; then
+            API_URL="$DEFAULT_API_URL"
+          fi
+          echo "Building APK with API_URL=$API_URL"
+          flutter build apk --release --dart-define=API_URL="$API_URL"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zwesta-trading-apk-${{ github.run_number }}
+          path: Zwesta Flutter App/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 60
