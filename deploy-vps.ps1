@@ -1,18 +1,20 @@
 # ZWESTA TRADING BOT - VPS AUTOMATED DEPLOYMENT SCRIPT
-# Run as Administrator on Windows Server 38.247.146.198
-# Purpose: Automatically deploy latest Flutter web build to VPS
+# Run as Administrator on Windows Server 148.113.5.39
+# Purpose: Build and deploy the current React frontend to VPS
 
 # =====================================================
 # CONFIGURATION
 # =====================================================
 $VPS_WEB_ROOT = "C:\zwesta-trader-web"
-$LOCAL_BUILD_PATH = "C:\zwesta-trader\Zwesta Flutter App\build\web"
+$FRONTEND_ROOT = "C:\zwesta-trader\zwesta-v3-advanced\frontend"
+$LOCAL_BUILD_PATH = Join-Path $FRONTEND_ROOT "dist"
 $PYTHON_EXECUTABLE = "python"
+$NPM_EXECUTABLE = "npm"
 $HTTP_PORT = 80
 
 Write-Host "╔════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║  ZWESTA TRADING BOT - VPS DEPLOYMENT SCRIPT        ║" -ForegroundColor Cyan
-Write-Host "║  Windows Server 38.247.146.198                     ║" -ForegroundColor Cyan
+Write-Host "║  Windows Server 148.113.5.39                       ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 
 # =====================================================
@@ -29,21 +31,48 @@ if (-not $isAdmin) {
 Write-Host "✅ Administrator privileges confirmed" -ForegroundColor Green
 
 # =====================================================
-# STEP 2: VERIFY LOCAL BUILD EXISTS
+# STEP 2: BUILD FRONTEND FROM CURRENT REPO STATE
 # =====================================================
-Write-Host "`n[2/8] Verifying local build files..." -ForegroundColor Yellow
-if (-not (Test-Path "$LOCAL_BUILD_PATH\index.html")) {
-    Write-Host "❌ ERROR: Build files not found at: $LOCAL_BUILD_PATH" -ForegroundColor Red
-    Write-Host "   Run: flutter build web --release" -ForegroundColor Yellow
+Write-Host "`n[2/8] Building frontend from current repo state..." -ForegroundColor Yellow
+if (-not (Test-Path (Join-Path $FRONTEND_ROOT "package.json"))) {
+    Write-Host "❌ ERROR: Frontend package.json not found at: $FRONTEND_ROOT" -ForegroundColor Red
     exit 1
 }
+
+$previousLocation = Get-Location
+Set-Location $FRONTEND_ROOT
+
+if (-not (Test-Path (Join-Path $FRONTEND_ROOT "node_modules"))) {
+    Write-Host "   Installing frontend dependencies..." -ForegroundColor Cyan
+    & cmd /c "npm install"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ ERROR: npm install failed" -ForegroundColor Red
+        Set-Location $previousLocation
+        exit 1
+    }
+}
+
+& cmd /c "npm run build"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "❌ ERROR: npm run build failed" -ForegroundColor Red
+    Set-Location $previousLocation
+    exit 1
+}
+
+Set-Location $previousLocation
+
+if (-not (Test-Path (Join-Path $LOCAL_BUILD_PATH "index.html"))) {
+    Write-Host "❌ ERROR: Frontend build output not found at: $LOCAL_BUILD_PATH" -ForegroundColor Red
+    exit 1
+}
+
 $fileCount = (Get-ChildItem -Path $LOCAL_BUILD_PATH -Recurse -File).Count
-Write-Host "✅ Found $fileCount build files at $LOCAL_BUILD_PATH" -ForegroundColor Green
+Write-Host "✅ Built $fileCount frontend files at $LOCAL_BUILD_PATH" -ForegroundColor Green
 
 # =====================================================
 # STEP 3: VERIFY PYTHON IS INSTALLED
 # =====================================================
-Write-Host "`n[3/8] Verifying Python installation..." -ForegroundColor Yellow
+Write-Host "`n[3/8] Verifying runtime tools..." -ForegroundColor Yellow
 try {
     $pythonVersion = & python --version 2>&1
     Write-Host "✅ Python found: $pythonVersion" -ForegroundColor Green
@@ -53,18 +82,27 @@ try {
     exit 1
 }
 
+try {
+    $npmVersion = & cmd /c "npm --version" 2>&1
+    Write-Host "✅ npm found: $npmVersion" -ForegroundColor Green
+} catch {
+    Write-Host "❌ ERROR: npm not installed!" -ForegroundColor Red
+    Write-Host "   Install Node.js from: https://nodejs.org/" -ForegroundColor Yellow
+    exit 1
+}
+
 # =====================================================
-# STEP 4: STOP EXISTING PYTHON SERVER
+# STEP 4: STOP EXISTING FRONTEND SERVER
 # =====================================================
-Write-Host "`n[4/8] Stopping existing Python server..." -ForegroundColor Yellow
-$pythonProcesses = Get-Process python -ErrorAction SilentlyContinue
-if ($pythonProcesses) {
-    Write-Host "   Found $(($pythonProcesses | Measure-Object).Count) Python process(es), terminating..." -ForegroundColor Cyan
-    Stop-Process -Name python -Force -ErrorAction SilentlyContinue
+Write-Host "`n[4/8] Stopping existing frontend server on port $HTTP_PORT..." -ForegroundColor Yellow
+$listener = Get-NetTCPConnection -LocalPort $HTTP_PORT -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($listener) {
+    Write-Host "   Stopping process PID $($listener.OwningProcess) bound to port $HTTP_PORT..." -ForegroundColor Cyan
+    Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
-    Write-Host "✅ Python server stopped" -ForegroundColor Green
+    Write-Host "✅ Frontend server stopped" -ForegroundColor Green
 } else {
-    Write-Host "✅ No running Python process found" -ForegroundColor Green
+    Write-Host "✅ No running frontend server found on port $HTTP_PORT" -ForegroundColor Green
 }
 
 # =====================================================
@@ -106,8 +144,7 @@ try {
 Write-Host "`n[7/8] Verifying critical files..." -ForegroundColor Yellow
 $criticalFiles = @(
     "index.html",
-    "flutter.js",
-    "assets/images/logo.png"
+    "assets"
 )
 
 $allFound = $true
@@ -126,7 +163,7 @@ if (-not $allFound) {
 }
 
 # =====================================================
-# STEP 8: START PYTHON HTTP SERVER
+# STEP 8: START FRONTEND STATIC SERVER
 # =====================================================
 Write-Host "`n[8/8] Starting Python HTTP server on port $HTTP_PORT..." -ForegroundColor Yellow
 Write-Host "   Changing directory to: $VPS_WEB_ROOT" -ForegroundColor Cyan
@@ -166,14 +203,14 @@ Write-Host "╔═════════════════════�
 Write-Host "║  ✅ DEPLOYMENT SUCCESSFUL!                        ║" -ForegroundColor Green
 Write-Host "╚════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host "`n📍 ACCESS YOUR APP:" -ForegroundColor Cyan
-Write-Host "   🌍 http://38.247.146.198" -ForegroundColor Yellow
+Write-Host "   🌍 http://148.113.5.39" -ForegroundColor Yellow
 Write-Host "`n🔐 LOGIN CREDENTIALS:" -ForegroundColor Cyan
 Write-Host "   Username: demo" -ForegroundColor Yellow
 Write-Host "   Password: demo123" -ForegroundColor Yellow
 Write-Host "`n📋 DEPLOYMENT SUMMARY:" -ForegroundColor Cyan
 Write-Host "   Files Deployed: $(Get-ChildItem -Path $VPS_WEB_ROOT -Recurse -File | Measure-Object).Count" -ForegroundColor Yellow
 Write-Host "   Server Port: $HTTP_PORT" -ForegroundColor Yellow
-Write-Host "   VPS Address: 38.247.146.198" -ForegroundColor Yellow
+Write-Host "   VPS Address: 148.113.5.39" -ForegroundColor Yellow
 Write-Host "`n⚠️  KEEP THIS WINDOW OPEN TO KEEP SERVER RUNNING" -ForegroundColor Magenta
 Write-Host "   Press Ctrl+C to stop the server" -ForegroundColor Magenta
 Write-Host "`n"
