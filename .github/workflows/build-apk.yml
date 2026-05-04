@@ -25,15 +25,14 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: Zwesta Flutter App
     env:
       DEFAULT_API_URL: http://148.113.5.39:9000
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -53,7 +52,9 @@ jobs:
           dart --version
 
       - name: Get dependencies
-        run: flutter pub get --enforce-lockfile
+        run: |
+          test -f pubspec.yaml
+          flutter pub get --enforce-lockfile
 
       - name: Build APK
         run: |
@@ -68,5 +69,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zwesta-trading-apk-${{ github.run_number }}
-          path: Zwesta Flutter App/build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
           retention-days: 60
