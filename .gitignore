@@ -22,4 +22,7 @@ hs_err_pid*.log
 *.log
 .dart_tool/
 .flutter-plugins-dependencies
+android/key.properties
+android/*.jks
+android/*.keystore
 backups/
