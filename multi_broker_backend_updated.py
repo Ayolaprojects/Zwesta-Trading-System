@@ -36650,12 +36650,26 @@ if __name__ == '__main__':
         # Try ports in order: 9000, 5000, 3000
         ports = [9000, 5000, 3000]
         started = False
+        # Production WSGI server preference: use waitress unless SSL or USE_FLASK_DEV is set.
+        use_waitress = (ssl_context is None) and (os.environ.get('USE_FLASK_DEV', '').lower() not in ('1', 'true', 'yes'))
+        try:
+            from waitress import serve as _waitress_serve
+        except Exception as _werr:
+            _waitress_serve = None
+            if use_waitress:
+                logger.warning(f"waitress not installed ({_werr}); falling back to Flask dev server. pip install waitress")
+                use_waitress = False
+        waitress_threads = int(os.environ.get('WAITRESS_THREADS', '16'))
         for port in ports:
             try:
                 protocol = "https" if ssl_context else "http"
                 logger.info(f"Attempting to start on {protocol}://0.0.0.0:{port}")
-                app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True,
-                        ssl_context=ssl_context)
+                if use_waitress and _waitress_serve is not None:
+                    logger.info(f"\U0001f680 Production WSGI: waitress (threads={waitress_threads})")
+                    _waitress_serve(app, host='0.0.0.0', port=port, threads=waitress_threads, ident='zwesta-trader')
+                else:
+                    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True,
+                            ssl_context=ssl_context)
                 started = True
                 break
             except OSError as e:
