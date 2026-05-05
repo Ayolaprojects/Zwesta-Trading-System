@@ -16429,9 +16429,12 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
         bot_config.get('allowAdaptiveRawFallback', bot_config.get('intelligentScanner', False)),
         bool(bot_config.get('intelligentScanner', False)),
     )
+    # MANUAL MODE GUARD: do not auto-enable raw-signal fallback when threshold mode is manual
+    _raw_fb_manual = str(bot_config.get('signalThresholdMode') or '').strip().lower() == 'manual'
     auto_enable_raw_fallback = (
         not bot_config.get('open_positions')
         and bot_config.get('managementMode', 'assisted') != 'manual'
+        and not _raw_fb_manual
         and (
             force_scan
             or bot_config.get('intelligentScanner', False)
@@ -17328,9 +17331,9 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     bot_state['signalThresholdMode'] = str(
         bot_state.get('signalThresholdMode') or default_signal_threshold_mode
     ).lower()
-    if bot_state['managementMode'] != 'manual':
-        bot_state['signalThresholdMode'] = 'auto'
-    elif bot_state['signalThresholdMode'] != 'manual':
+    # Allow explicit signalThresholdMode='manual' regardless of managementMode so that
+    # users can pin a manual signalThreshold while still using assisted management.
+    if bot_state['signalThresholdMode'] not in ('manual', 'auto'):
         bot_state['signalThresholdMode'] = 'auto'
     bot_state['signalThreshold'] = bot_state.get('signalThreshold') or _default_signal_threshold_for_broker_profile(
         bot_state['managementProfile'],
@@ -19310,7 +19313,12 @@ def should_trade_today(bot_config, symbol):
                      f"resuming from baseline profit ${current_total_profit:.2f}."
             )
 
-    if peak > 0 and dd_threshold > 0:
+    # FIX: profit-relative drawdown ((max_dd/peak)*100) is mathematically broken when peak
+    # profit is small (e.g. peak=$0.60 vs max_dd=$2.16 -> 360%). Disabled in favour of the
+    # account-equity drawdown guard above which is the authoritative risk check.
+    # Only enforce when peak profit is meaningful (>= 1% of high-watermark equity).
+    _peak_meaningful = peak > 0 and (equity_high_watermark <= 0 or peak >= 0.01 * equity_high_watermark)
+    if _peak_meaningful and dd_threshold > 0:
         dd_percent = (max_dd / peak) * 100
         if dd_percent >= dd_threshold:
             pause_until = now + timedelta(hours=drawdown_pause_hours)
@@ -26235,11 +26243,19 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 signal_threshold = management_state['signalThreshold']
                 runtime_mode_value = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower()
                 runtime_is_demo = runtime_mode_value != 'live' and not bool(bot_config.get('is_live'))
-                if canonicalize_broker_name(broker_type) == 'Binance' and runtime_is_demo:
+                # MANUAL MODE GUARD: respect user-configured signalThreshold; do not floor to adaptive=1
+                _threshold_mode_manual = str(bot_config.get('signalThresholdMode') or '').strip().lower() == 'manual'
+                if canonicalize_broker_name(broker_type) == 'Binance' and runtime_is_demo and not _threshold_mode_manual:
                     signal_threshold = adaptive_threshold_floor
                     base_signal_threshold = adaptive_threshold_floor
                     management_state['signalThreshold'] = signal_threshold
                     bot_config['effectiveSignalThreshold'] = signal_threshold
+                elif _threshold_mode_manual:
+                    manual_threshold_value = max(1, int(bot_config.get('signalThreshold') or 50))
+                    signal_threshold = manual_threshold_value
+                    base_signal_threshold = manual_threshold_value
+                    management_state['signalThreshold'] = manual_threshold_value
+                    bot_config['effectiveSignalThreshold'] = manual_threshold_value
                 strategy_name = _choose_strategy_for_cycle(bot_id, bot_config, symbols, signal_threshold)
                 strategy_func = STRATEGY_MAP.get(strategy_name, trend_following_strategy)
                 strategy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -26312,8 +26328,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         f"(temporary threshold {signal_threshold} -> {scanner_threshold})"
                     )
 
-                if canonicalize_broker_name(broker_type) == 'Binance' and runtime_is_demo:
+                if canonicalize_broker_name(broker_type) == 'Binance' and runtime_is_demo and not _threshold_mode_manual:
                     scanner_threshold = adaptive_threshold_floor
+                if _threshold_mode_manual:
+                    scanner_threshold = signal_threshold
+                    adaptive_scanner_active = False
 
                 if adaptive_scanner_active and not bot_config.get('intelligentScanner', False):
                     logger.info(f"🧠 Bot {bot_id}: Adaptive scanner engaged for this cycle because assigned symbols produced no qualifying setup")
@@ -29399,6 +29418,22 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
             if sell_volume <= 0:
                 logger.warning(f"Bot {bot_id}: Cannot auto-close {spot_ticket} — tracked volume is 0")
                 continue
+
+            # NOTIONAL PRE-CHECK: skip auto-close if (volume * price) is below Binance min-notional.
+            # Otherwise Binance rejects with -1013 NOTIONAL and the position becomes a phantom.
+            try:
+                _spot_snapshot = _get_binance_spot_inventory_snapshot(active_conn, tracked_symbol, market_price=live_price)
+                _min_notional = _safe_float(_spot_snapshot.get('minNotional'), 0.0)
+                _proposed_notional = sell_volume * live_price
+                if _min_notional > 0 and _proposed_notional > 0 and _proposed_notional < _min_notional:
+                    logger.warning(
+                        f"Bot {bot_id}: Skipping auto-close SELL on {tracked_symbol} — "
+                        f"notional {_proposed_notional:.4f} < minNotional {_min_notional:.4f} "
+                        f"(volume={sell_volume:.8f} price={live_price:.6f}). Position retained; will retry when price/volume qualify."
+                    )
+                    continue
+            except Exception as _notional_err:
+                logger.debug(f"Bot {bot_id}: NOTIONAL pre-check skipped on {tracked_symbol}: {_notional_err}")
 
             close_result = None
             try:
