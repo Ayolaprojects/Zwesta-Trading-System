@@ -49,7 +49,29 @@ from metaapi_client import MetaApiClient, MetaApiTradingBridge, get_metaapi_clie
 from rest_price_feed import RestPriceFeed, get_price_feed
 from trade_router import TradeRouter, init_trade_router, get_trade_router, ExecutionMode
 from mt5_socket_bridge import SocketBridgeManager, MT5SocketBridge, init_socket_bridges
-from runtime_infrastructure import build_sqlite_connection, get_database_path, get_runtime_infrastructure_summary, using_postgres
+from runtime_infrastructure import build_sqlite_connection as _orig_build_sqlite_connection, get_database_path, get_runtime_infrastructure_summary, using_postgres
+from credential_crypto import (
+    encrypt_secret,
+    decrypt_secret,
+    decrypt_credential_row,
+    decrypt_credential_rows,
+    decrypting_row_factory,
+)
+
+
+def build_sqlite_connection(*args, **kwargs):
+    """Wrapper around runtime_infrastructure.build_sqlite_connection that
+    installs a transparent decrypting row factory whenever a row factory is
+    requested. Marker-based detection (`enc:v1:`) makes this a no-op for
+    non-encrypted columns/tables.
+    """
+    conn = _orig_build_sqlite_connection(*args, **kwargs)
+    try:
+        if kwargs.get('row_factory') or getattr(conn, 'row_factory', None) is not None:
+            conn.row_factory = decrypting_row_factory
+    except Exception:
+        pass
+    return conn
 
 # Load environment variables from .env file
 try:
@@ -829,6 +851,9 @@ def _is_fxcm_placeholder_row(row: Dict[str, Any]) -> bool:
 
 
 def dedupe_active_broker_credentials(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    # Decrypt sensitive fields up-front so all downstream callers (balance fetch,
+    # broker connection setup, dedupe scoring) operate on plaintext values.
+    rows = decrypt_credential_rows(rows)
     deduped_credentials: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
     duplicate_credential_ids: List[str] = []
 
@@ -878,6 +903,38 @@ def dedupe_active_broker_credentials(rows: List[Dict[str, Any]]) -> Tuple[List[D
         deduped_credentials = filtered_credentials
 
     return list(deduped_credentials.values()), duplicate_credential_ids
+
+
+def encrypt_credential_at_rest(cursor, credential_id: str) -> None:
+    """Encrypt api_key + password columns for a given credential_id if they are
+    still stored as plaintext. Idempotent: already-encrypted values are detected
+    by the marker prefix and skipped. Call once after any INSERT/UPDATE that
+    writes broker_credentials and before the surrounding conn.commit().
+    """
+    cred_id = str(credential_id or '').strip()
+    if not cred_id:
+        return
+    try:
+        cursor.execute(
+            'SELECT api_key, password FROM broker_credentials WHERE credential_id = ?',
+            (cred_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return
+        api_key_v = row['api_key'] if hasattr(row, 'keys') else row[0]
+        password_v = row['password'] if hasattr(row, 'keys') else row[1]
+        new_api_key = encrypt_secret(api_key_v) if api_key_v else api_key_v
+        new_password = encrypt_secret(password_v) if password_v else password_v
+        if new_api_key != api_key_v or new_password != password_v:
+            cursor.execute(
+                'UPDATE broker_credentials SET api_key = ?, password = ? WHERE credential_id = ?',
+                (new_api_key, new_password, cred_id),
+            )
+    except Exception as exc:
+        logger.warning(
+            f"[CREDENTIAL CRYPTO] Failed to encrypt-at-rest for credential {cred_id}: {exc}"
+        )
 
 
 def deactivate_duplicate_credential_ids(cursor, duplicate_credential_ids: List[str], user_id: str, reason: str) -> int:
@@ -20182,6 +20239,7 @@ def save_broker_credentials():
             ))
             logger.info(f"✅ Created new broker credential for user {user_id}: {broker_name} | Account: {account_id}")
         
+        encrypt_credential_at_rest(cursor, credential_id)
         conn.commit()
 
         if broker_name == 'FXCM' and resolved_fxcm_info:
@@ -20425,6 +20483,7 @@ def test_broker_connection():
                 ''',
                                 (now_iso, user_id, account_id, int(effective_is_live), market, api_key, credential_id),
             )
+            encrypt_credential_at_rest(cursor, credential_id)
             conn.commit()
             # Invalidate credential cache to ensure fresh data on next access
             cache_key = f"cred_{credential_id}_{user_id}"
@@ -20527,6 +20586,7 @@ def test_broker_connection():
                     login_id if use_username_mode else None,
                     'USD',
                 ))
+            encrypt_credential_at_rest(cursor, credential_id)
             conn.commit()
             # Invalidate credential cache to ensure fresh data on next access
             cache_key = f"cred_{credential_id}_{user_id}"
@@ -20591,6 +20651,7 @@ def test_broker_connection():
                 (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, api_key, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
             ''', (credential_id, user_id, 'OANDA', account_id, '', 'REST-API', int(is_live), api_key, datetime.now().isoformat(), datetime.now().isoformat()))
+            encrypt_credential_at_rest(cursor, credential_id)
             conn.commit()
             conn.close()
 
@@ -20896,6 +20957,7 @@ def test_broker_connection():
                       actual_currency))
                 logger.info(f"✅ Created broker credential: {broker} | Account: {account} | Currency: {actual_currency}")
             
+            encrypt_credential_at_rest(cursor, credential_id)
             conn.commit()
             # Invalidate credential cache to ensure fresh data on next access
             cache_key = f"cred_{credential_id}_{user_id}"
@@ -25294,6 +25356,7 @@ def create_bot():
                             _wc_row = _wc_cursor.fetchone()
                             _wc_conn.close()
                             if _wc_row:
+                                _wc_row = decrypt_credential_row(_wc_row)
                                 _worker_creds = normalize_mt5_bot_credentials({
                                     'account': _wc_row['account_number'] or account_number,
                                     'account_number': _wc_row['account_number'] or account_number,
@@ -25559,7 +25622,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     conn.close()
                     
                     if cred_row:
-                        cred_dict = dict(cred_row)
+                        cred_dict = decrypt_credential_row(cred_row)
                         bot_credentials = {
                             'account': cred_dict.get('account_number', ''),
                             'password': cred_dict.get('password', ''),
@@ -28612,7 +28675,7 @@ def quick_create_bot():
                         _qrow = _qbr.fetchone()
                         _qbc.close()
                         if _qrow:
-                            _qrow = dict(_qrow)
+                            _qrow = decrypt_credential_row(_qrow)
                             _qb_creds = {'account_number': _qrow['account_number'], 'password': _qrow['password'], 'server': _qrow.get('server', ''), 'is_live': bool(_qrow['is_live'])}
                     except Exception as e:
                         logger.warning(f'Quick bot worker dispatch: could not fetch credentials: {e}')
@@ -28633,7 +28696,7 @@ def quick_create_bot():
                                 cred_row = cursor_local.fetchone()
 
                                 if cred_row:
-                                    cred_dict = dict(cred_row)
+                                    cred_dict = decrypt_credential_row(cred_row)
                                     bot_credentials = {
                                         'api_key': cred_dict['api_key'],
                                         'api_secret': cred_dict['password'],
@@ -31888,6 +31951,7 @@ def add_broker_credentials(user_id):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, mt5_terminal_path, created_at, created_at))
         
+        encrypt_credential_at_rest(cursor, credential_id)
         conn.commit()
         conn.close()
         
@@ -33772,6 +33836,7 @@ def add_user_broker():
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, datetime.now().isoformat(), datetime.now().isoformat()))
         
+        encrypt_credential_at_rest(cursor, credential_id)
         conn.commit()
         conn.close()
         

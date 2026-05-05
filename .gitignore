@@ -26,3 +26,6 @@ android/key.properties
 android/*.jks
 android/*.keystore
 backups/
+
+.credentials_key
+
