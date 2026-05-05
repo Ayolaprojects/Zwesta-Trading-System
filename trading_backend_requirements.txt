@@ -3,3 +3,5 @@ Flask-CORS==4.0.0
 MetaTrader5==5.0.5640
 python-dotenv==1.0.0
 requests==2.31.0
+cachetools==5.3.3
+psutil==5.9.8

@@ -1,13 +1,13 @@
 import os
 import sqlite3
 from functools import lru_cache
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 DEFAULT_SQLITE_PATH = r'C:\backend\zwesta_trading.db'
 
 
-def _default_sqlite_candidates() -> list[str]:
+def _default_sqlite_candidates() -> List[str]:
     module_dir = os.path.dirname(os.path.abspath(__file__))
     local_db_path = os.path.join(module_dir, 'zwesta_trading.db')
     return [
