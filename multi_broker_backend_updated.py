@@ -5893,13 +5893,16 @@ class BinanceConnection(BrokerConnection):
     """Binance broker connection via REST API."""
 
     def __init__(self, credentials: Dict = None):
-        if credentials is None:
-            credentials = {
-                'api_key': os.getenv('BINANCE_API_KEY', ''),
-                'api_secret': os.getenv('BINANCE_API_SECRET', ''),
-                'is_live': False,
-                'market': 'spot',
-            }
+        # MULTI-USER SAFETY: never silently fall back to env vars. Each caller must
+        # pass the user's broker_credentials row explicitly so per-user isolation is
+        # guaranteed across all 5000+ users. Failing loudly prevents the "old env keys
+        # leak through" bug class.
+        if not credentials or not credentials.get('api_key') or not credentials.get('api_secret'):
+            raise ValueError(
+                'BinanceConnection requires explicit per-user credentials '
+                '(api_key + api_secret). Load the broker_credentials row for the '
+                'authenticated user_id and pass it in. Env-var fallback is disabled.'
+            )
 
         super().__init__(BrokerType.BINANCE, credentials)
         self.market = (credentials.get('market') or credentials.get('server') or 'spot').lower()
