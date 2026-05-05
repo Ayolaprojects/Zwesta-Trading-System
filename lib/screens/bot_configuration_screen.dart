@@ -302,6 +302,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     {'symbol': 'PEPEUSDT', 'name': '🐸 Pepe / Tether', 'category': 'Meme'},
     {'symbol': 'WIFUSDT', 'name': '🧢 dogwifhat / Tether', 'category': 'Meme'},
     {'symbol': 'BONKUSDT', 'name': '🐕 Bonk / Tether', 'category': 'Meme'},
+    // --- USDC stablecoin pairs (use USDC inventory) ---
+    {'symbol': 'BTCUSDC', 'name': '₿ Bitcoin / USDC', 'category': 'USDC Quote'},
+    {'symbol': 'ETHUSDC', 'name': '◆ Ethereum / USDC', 'category': 'USDC Quote'},
+    {'symbol': 'SOLUSDC', 'name': '◎ Solana / USDC', 'category': 'USDC Quote'},
+    {'symbol': 'BNBUSDC', 'name': '◈ BNB / USDC', 'category': 'USDC Quote'},
+    {'symbol': 'XRPUSDC', 'name': '✕ XRP / USDC', 'category': 'USDC Quote'},
+    {'symbol': 'AVAXUSDC', 'name': '▲ Avalanche / USDC', 'category': 'USDC Quote'},
+    {'symbol': 'LINKUSDC', 'name': '⛓ Chainlink / USDC', 'category': 'USDC Quote'},
   ];
 
   static const List<Map<String, String>> _binanceQuotedAssets = [
