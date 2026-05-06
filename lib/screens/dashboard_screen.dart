@@ -2759,67 +2759,81 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required String label,
     required Color color,
     required String subtitle,
-  }) =>
-      Expanded(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.10),
-            border: Border.all(color: color.withOpacity(0.45)),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 28,
-                height: 28,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.20),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: color),
-                ),
-                child: Text(
-                  icon,
-                  style: TextStyle(
-                    color: color,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 13,
+  }) {
+    final assetName = 'assets/images/${label.toLowerCase()}.png';
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.10),
+          border: Border.all(color: color.withOpacity(0.45)),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Image.asset(
+                assetName,
+                width: 32,
+                height: 32,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 28,
+                  height: 28,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.20),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: color),
+                  ),
+                  child: Text(
+                    icon,
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      label,
-                      style: GoogleFonts.poppins(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                      ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
                     ),
-                    Text(
-                      subtitle,
-                      style: GoogleFonts.poppins(
-                        color: Colors.white60,
-                        fontSize: 9.5,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    subtitle,
+                    style: GoogleFonts.poppins(
+                      color: Colors.white60,
+                      fontSize: 9.5,
                     ),
-                  ],
-                ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
-      );
+      ),
+    );
+  }
 
   // ── PREMIUM WELCOME CARD ──
   Widget _buildPremiumWelcomeCard() => Consumer<AuthService>(
+      builder: (context, authService, _) {
+        final name = authService.currentUser?.firstName ?? 'Trader';
+        final hour = DateTime.now().hour;
         final greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
         
         return _glassCard(
