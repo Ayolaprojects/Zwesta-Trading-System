@@ -2131,6 +2131,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             _buildPremiumWelcomeCard(),
             const SizedBox(height: 16),
+            _buildSystemIntroCard(),
+            const SizedBox(height: 16),
             _buildLiveCandleChart(),
             const SizedBox(height: 16),
             _buildConnectedBrokerCard(),
@@ -2656,11 +2658,168 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return candles;
   }
 
+  // ── SYSTEM INTRO CARD ──
+  // Short pitch shown on the dashboard so new users instantly understand
+  // what Zwesta does and which brokers it auto-trades on.
+  Widget _buildSystemIntroCard() => Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color(0xFF7C4DFF).withOpacity(0.18),
+              const Color(0xFF00E5FF).withOpacity(0.12),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.white.withOpacity(0.10)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00E5FF).withOpacity(0.18),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.auto_awesome,
+                      color: Color(0xFF00E5FF), size: 20),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'How Zwesta works for you',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Zwesta is an automated trading system. You configure bots once '
+              'and our engine scans the markets, scores signals, manages risk, '
+              'and places trades for you on the brokers below — across crypto, '
+              'forex and commodities, in demo or live mode.',
+              style: GoogleFonts.poppins(
+                color: Colors.white.withOpacity(0.82),
+                fontSize: 12.5,
+                height: 1.45,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Trades placed on:',
+              style: GoogleFonts.poppins(
+                color: Colors.white60,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _brokerBadge(
+                  icon: '₿',
+                  label: 'Binance',
+                  color: const Color(0xFFF3BA2F),
+                  subtitle: 'Crypto spot',
+                ),
+                const SizedBox(width: 8),
+                _brokerBadge(
+                  icon: 'E',
+                  label: 'Exness',
+                  color: const Color(0xFF00E5FF),
+                  subtitle: 'FX & metals',
+                ),
+                const SizedBox(width: 8),
+                _brokerBadge(
+                  icon: 'F',
+                  label: 'FXCM',
+                  color: const Color(0xFF7C4DFF),
+                  subtitle: 'Forex',
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+
+  Widget _brokerBadge({
+    required String icon,
+    required String label,
+    required Color color,
+    required String subtitle,
+  }) =>
+      Expanded(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.10),
+            border: Border.all(color: color.withOpacity(0.45)),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.20),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color),
+                ),
+                child: Text(
+                  icon,
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      label,
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                    Text(
+                      subtitle,
+                      style: GoogleFonts.poppins(
+                        color: Colors.white60,
+                        fontSize: 9.5,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
   // ── PREMIUM WELCOME CARD ──
   Widget _buildPremiumWelcomeCard() => Consumer<AuthService>(
-      builder: (context, authService, _) {
-        final name = authService.currentUser?.firstName ?? 'Trader';
-        final hour = DateTime.now().hour;
         final greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
         
         return _glassCard(

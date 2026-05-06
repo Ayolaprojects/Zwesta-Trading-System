@@ -119,6 +119,28 @@ class _LoginScreenState extends State<LoginScreen> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
+                          const SizedBox(height: 18),
+                          // Broker strip — shows users which brokers we trade on.
+                          Text(
+                            'AUTO-TRADES ON',
+                            style: GoogleFonts.poppins(
+                              color: Colors.white54,
+                              fontSize: 9.5,
+                              letterSpacing: 2,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _loginBrokerChip('₿', 'Binance', const Color(0xFFF3BA2F)),
+                              const SizedBox(width: 8),
+                              _loginBrokerChip('E', 'Exness', const Color(0xFF00E5FF)),
+                              const SizedBox(width: 8),
+                              _loginBrokerChip('F', 'FXCM', const Color(0xFF7C4DFF)),
+                            ],
+                          ),
                         ],
                       ),
                     ),
@@ -336,6 +358,48 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ],
     );
+
+  // Compact broker chip used on the login page brand strip.
+  Widget _loginBrokerChip(String icon, String label, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.12),
+          border: Border.all(color: color.withOpacity(0.55)),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 20,
+              height: 20,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.25),
+                shape: BoxShape.circle,
+                border: Border.all(color: color),
+              ),
+              child: Text(
+                icon,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: GoogleFonts.poppins(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      );
 
   // Build login/register form
   Widget _buildLoginRegisterForm(AppLocalizations loc) => Column(
