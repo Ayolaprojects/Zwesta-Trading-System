@@ -104,27 +104,132 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     return bot['is_live'] == true;
   }
 
+  /// Classifies bots by broker. Returns 'Binance' / 'Exness' / 'FXCM' / 'Other'.
+  String _brokerKey(Map<String, dynamic> bot) {
+    final candidates = [
+      bot['broker'],
+      bot['brokerName'],
+      bot['broker_type'],
+      bot['brokerType'],
+      bot['broker_account_id'],
+      bot['accountNumber'],
+    ];
+    for (final raw in candidates) {
+      final s = raw?.toString().toLowerCase() ?? '';
+      if (s.isEmpty) continue;
+      if (s.contains('binance')) return 'Binance';
+      if (s.contains('exness') || s.startsWith('mt5_') || s.startsWith('exness_')) return 'Exness';
+      if (s.contains('fxcm')) return 'FXCM';
+    }
+    return 'Other';
+  }
+
+  Color _brokerAccent(String brokerKey) {
+    switch (brokerKey) {
+      case 'Binance':
+        return const Color(0xFFF3BA2F);
+      case 'Exness':
+        return const Color(0xFF00E5FF);
+      case 'FXCM':
+        return const Color(0xFF7C4DFF);
+      default:
+        return Colors.white70;
+    }
+  }
+
+  String _brokerIconChar(String brokerKey) {
+    switch (brokerKey) {
+      case 'Binance':
+        return '₿';
+      case 'Exness':
+        return 'E';
+      case 'FXCM':
+        return 'F';
+      default:
+        return '•';
+    }
+  }
+
+  /// Extracts the quote asset (the currency profit is denominated in) from a
+  /// Binance trading symbol. Examples:
+  ///   BTCUSDT -> USDT, ETHUSDC -> USDC, SOLFDUSD -> FDUSD,
+  ///   BNBBTC  -> BTC,  ADAETH -> ETH,  SOLUSDT -> USDT.
+  /// Returns null if it cannot confidently identify the quote asset.
+  String? _binanceQuoteFromSymbol(String? symbolRaw) {
+    if (symbolRaw == null) return null;
+    final s = symbolRaw.toString().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    if (s.isEmpty) return null;
+    // Order matters: longest suffixes first so 'FDUSD' wins over 'USD'.
+    const quotes = [
+      'FDUSD', 'TUSD', 'BUSD', 'USDT', 'USDC', 'DAI',
+      'USD', 'EUR', 'GBP', 'TRY', 'ZAR', 'AUD', 'BRL',
+      'BTC', 'ETH', 'BNB', 'SOL', 'XRP',
+    ];
+    for (final q in quotes) {
+      if (s.endsWith(q) && s.length > q.length) return q;
+    }
+    return null;
+  }
+
+  /// First trading symbol on the bot (used for Binance currency inference).
+  String? _firstSymbol(Map<String, dynamic> bot) {
+    final raw = bot['symbol'] ?? bot['symbols'];
+    if (raw == null) return null;
+    if (raw is List && raw.isNotEmpty) return raw.first?.toString();
+    final str = raw.toString();
+    if (str.isEmpty || str.toLowerCase() == 'n/a') return null;
+    // Allow "BTCUSDT, ETHUSDT" or "BTCUSDT|ETHUSDT".
+    final parts = str.split(RegExp(r'[,\s|/;]+')).where((p) => p.isNotEmpty).toList();
+    return parts.isEmpty ? str : parts.first;
+  }
+
   String _botDisplayCurrency(Map<String, dynamic> bot) {
-    final rawCurrency = bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
-    if ((rawCurrency == null || rawCurrency.toString().trim().isEmpty) && _isLiveBot(bot)) {
-      return 'ZAR';
+    final brokerKey = _brokerKey(bot);
+
+    // Binance: profit is denominated in the symbol's quote asset
+    // (USDT / USDC / BTC / SOL / etc.). Always derive from symbol when possible
+    // — this beats any stale displayCurrency the backend might have stamped.
+    if (brokerKey == 'Binance') {
+      final quote = _binanceQuoteFromSymbol(_firstSymbol(bot));
+      if (quote != null) return quote;
+      // Fallback: explicit field, else USDT.
+      final raw = bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
+      if (raw != null && raw.toString().trim().isNotEmpty) {
+        return _normalizeCurrencyCode(raw);
+      }
+      return 'USDT';
     }
-    final normalized = _normalizeCurrencyCode(rawCurrency);
-    if (_isLiveBot(bot) && normalized == 'USD' && bot['displayCurrency'] == null) {
-      return 'ZAR';
+
+    // Exness / FXCM / Other: use explicit field if set, else infer.
+    final raw = bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
+    if (raw != null && raw.toString().trim().isNotEmpty) {
+      return _normalizeCurrencyCode(raw);
     }
-    return normalized;
+    switch (brokerKey) {
+      case 'FXCM':
+        return 'USD';
+      case 'Exness':
+        return _isLiveBot(bot) ? 'ZAR' : 'USD';
+      default:
+        return _isLiveBot(bot) ? 'ZAR' : 'USD';
+    }
   }
 
   String _symbolForCode(String currencyCode) {
-    switch (_normalizeCurrencyCode(currencyCode)) {
+    final code = _normalizeCurrencyCode(currencyCode);
+    switch (code) {
       case 'ZAR':
         return 'R';
       case 'GBP':
         return 'GBP';
+      case 'EUR':
+        return '€';
       case 'USD':
-      default:
         return r'$';
+      default:
+        // For crypto / unknown fiat: show the code as a prefix (e.g. "USDT 12.34",
+        // "BTC 0.0012", "SOL 1.42"). Keeps formatting unambiguous.
+        return '$code ';
     }
   }
 
@@ -134,9 +239,16 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     int decimals = 2,
     String? currencyCode,
   }) {
-    final symbol = _symbolForCode(currencyCode ?? _currencyCode(currencyProvider.currency));
-    final absoluteAmount = amount.abs().toStringAsFixed(decimals);
-
+    final code = _normalizeCurrencyCode(currencyCode ?? _currencyCode(currencyProvider.currency));
+    final symbol = _symbolForCode(code);
+    // Crypto quote assets need more precision for small balances.
+    int effDecimals = decimals;
+    if (code == 'BTC' || code == 'ETH') {
+      effDecimals = decimals < 6 ? 6 : decimals;
+    } else if (code == 'BNB' || code == 'SOL' || code == 'XRP') {
+      effDecimals = decimals < 4 ? 4 : decimals;
+    }
+    final absoluteAmount = amount.abs().toStringAsFixed(effDecimals);
     if (amount < 0) {
       return '-$symbol$absoluteAmount';
     }
@@ -674,7 +786,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       else if (botService.errorMessage != null && bots.isEmpty)
                         _errorState(botService.errorMessage!)
                       else
-                        ...remainingBots.map((bot) => _buildBotCard(bot, currencyProvider)),
+                        ..._buildBrokerSections(remainingBots, currencyProvider),
                     ],
                   ),
                 ),
@@ -783,6 +895,124 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     );
 
   Widget _buildBotCard(Map<String, dynamic> bot, CurrencyProvider currencyProvider) => _buildUnifiedBotCard(bot, currencyProvider);
+
+  /// Groups bots by broker (Binance / Exness / FXCM / Other) and renders
+  /// each non-empty group with a header showing count + native-currency P&L.
+  List<Widget> _buildBrokerSections(
+    List<Map<String, dynamic>> botsList,
+    CurrencyProvider currencyProvider,
+  ) {
+    if (botsList.isEmpty) return const [];
+    final grouped = <String, List<Map<String, dynamic>>>{
+      'Binance': [],
+      'Exness': [],
+      'FXCM': [],
+      'Other': [],
+    };
+    for (final bot in botsList) {
+      grouped[_brokerKey(bot)]!.add(bot);
+    }
+    final out = <Widget>[];
+    for (final key in const ['Binance', 'Exness', 'FXCM', 'Other']) {
+      final group = grouped[key]!;
+      if (group.isEmpty) continue;
+      out.add(_brokerSectionHeader(key, group, currencyProvider));
+      out.addAll(group.map((b) => _buildBotCard(b, currencyProvider)));
+      out.add(const SizedBox(height: 8));
+    }
+    return out;
+  }
+
+  Widget _brokerSectionHeader(
+    String brokerKey,
+    List<Map<String, dynamic>> group,
+    CurrencyProvider currencyProvider,
+  ) {
+    final accent = _brokerAccent(brokerKey);
+    final count = group.length;
+    final activeCount = group
+        .where((b) => b['enabled'] == true || b['status'] == 'Active')
+        .length;
+    // Aggregate profit per native currency code (Binance bots in USDT, Exness
+    // live bots in ZAR, etc.). Show each currency total separately.
+    final byCurrency = <String, double>{};
+    for (final b in group) {
+      final code = _botDisplayCurrency(b);
+      final p = double.tryParse(b['profit']?.toString() ?? '0') ?? 0;
+      byCurrency[code] = (byCurrency[code] ?? 0) + p;
+    }
+    final totalsText = byCurrency.entries
+        .map((e) => _formatAmount(currencyProvider, e.value, currencyCode: e.key))
+        .join(' • ');
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8, bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.08),
+        border: Border.all(color: accent.withOpacity(0.35)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: accent.withOpacity(0.18),
+              shape: BoxShape.circle,
+              border: Border.all(color: accent),
+            ),
+            child: Text(
+              _brokerIconChar(brokerKey),
+              style: TextStyle(
+                color: accent,
+                fontWeight: FontWeight.w800,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  brokerKey == 'Other' ? 'Other Brokers' : brokerKey,
+                  style: GoogleFonts.poppins(
+                    color: accent,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+                Text(
+                  '$activeCount active • $count bot${count == 1 ? '' : 's'}',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white60,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (totalsText.isNotEmpty)
+            Flexible(
+              child: Text(
+                totalsText,
+                textAlign: TextAlign.right,
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildUnifiedBotCard(Map<String, dynamic> bot, CurrencyProvider currencyProvider) {
     final botId = bot['botId'] ?? 'Unknown';

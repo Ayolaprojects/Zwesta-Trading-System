@@ -16834,7 +16834,11 @@ PERSISTED_BOT_STATE_FIELDS = {
     'effectivePositionSizeMultiplier', 'effectiveScannerCapitalMultiplier', 'lastSizingAdjustment',
     'promotionReadyAt', 'promotionExpiredAt',
     'open_positions', 'lastPauseEvent', 'intelligentScanner', 'allowAdaptiveRawFallback', 'lastScanResults', 'mode',
-    'profitProtection', 'symbolReentryCooldowns'
+    'profitProtection', 'symbolReentryCooldowns',
+    # Adaptive symbol performance & balance trend (per-bot)
+    'symbolPerformance', 'equityTrendHistory', 'equityTrend', 'equityTrendUpdatedAt',
+    'symbol_cooldown_until',
+    'maxPositionAgeHours', 'agedClosePnlFloor',
 }
 
 DEMO_PROMOTION_MIN_TRADES = 3
@@ -19060,6 +19064,11 @@ def should_trade_today(bot_config, symbol):
         else:
             equity_high_watermark = max(equity_high_watermark, live_equity)
         bot_config['accountEquityHighWatermark'] = round(equity_high_watermark, 2)
+        # Sample live equity into rolling trend history (growing/flat/shrinking).
+        try:
+            _update_equity_trend(bot_config, live_equity)
+        except Exception as _trend_err:
+            logger.debug(f"[BALANCE] equity trend update failed: {_trend_err}")
 
     # Hard block: tiny live accounts should not open new BTC/ETH positions.
     symbol_base = _normalize_symbol_base(symbol)
@@ -19387,8 +19396,130 @@ def should_trade_today(bot_config, symbol):
     return True
 
 
+# ====================================================================
+# Adaptive symbol-performance & balance-trend monitors
+# ====================================================================
+# Trade more on profitable symbols; demote / blacklist loss-makers.
+# Track equity trend so each bot knows whether its account is growing.
+# Persisted via PERSISTED_BOT_STATE_FIELDS so they survive restarts.
+
+SYMBOL_PERF_LOOKBACK = 12          # consider last N closed trades per symbol
+SYMBOL_PERF_MIN_SAMPLES = 4        # need this many before judging
+SYMBOL_PERF_BLACKLIST_LOSS = -5.0  # cumulative PnL <= this -> blacklist
+SYMBOL_PERF_BLACKLIST_WINRATE = 0.30
+SYMBOL_PERF_DEMOTE_WINRATE = 0.45
+SYMBOL_PERF_FAVOR_WINRATE = 0.60
+SYMBOL_PERF_FAVOR_PROFIT = 1.0
+SYMBOL_PERF_FAVOR_MULT = 1.5
+SYMBOL_PERF_DEMOTE_MULT = 0.5
+SYMBOL_PERF_BLACKLIST_COOLDOWN_MIN = 240   # after blacklist, retry only every 4h
+
+EQUITY_TREND_HISTORY_MAX = 20
+
+
+def _evaluate_symbol_performance(bot_config: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    """Score a symbol from this bot's recent closed trades.
+
+    Returns: {'verdict': 'favored'|'normal'|'demoted'|'blacklisted',
+              'multiplier': float, 'wins': int, 'losses': int,
+              'pnl': float, 'samples': int}.
+    Result is cached on bot_config['symbolPerformance'][symbol] for visibility.
+    """
+    history = bot_config.get('tradeHistory') or []
+    relevant = [
+        t for t in history
+        if str(t.get('symbol') or '') == symbol
+        and str(t.get('status') or '').lower() == 'closed'
+    ][-SYMBOL_PERF_LOOKBACK:]
+
+    samples = len(relevant)
+    wins = sum(1 for t in relevant if _safe_float(t.get('profit'), 0.0) > 0)
+    losses = samples - wins
+    pnl = round(sum(_safe_float(t.get('profit'), 0.0) for t in relevant), 4)
+    win_rate = (wins / samples) if samples else 0.0
+
+    if samples < SYMBOL_PERF_MIN_SAMPLES:
+        verdict, multiplier = 'normal', 1.0
+    elif pnl <= SYMBOL_PERF_BLACKLIST_LOSS or win_rate < SYMBOL_PERF_BLACKLIST_WINRATE:
+        verdict, multiplier = 'blacklisted', 0.0
+    elif win_rate < SYMBOL_PERF_DEMOTE_WINRATE or pnl < 0:
+        verdict, multiplier = 'demoted', SYMBOL_PERF_DEMOTE_MULT
+    elif win_rate >= SYMBOL_PERF_FAVOR_WINRATE and pnl >= SYMBOL_PERF_FAVOR_PROFIT:
+        verdict, multiplier = 'favored', SYMBOL_PERF_FAVOR_MULT
+    else:
+        verdict, multiplier = 'normal', 1.0
+
+    record = {
+        'verdict': verdict,
+        'multiplier': multiplier,
+        'wins': wins,
+        'losses': losses,
+        'pnl': pnl,
+        'samples': samples,
+        'winRate': round(win_rate, 3),
+        'updatedAt': datetime.now().isoformat(),
+    }
+    perf_map = bot_config.setdefault('symbolPerformance', {})
+    perf_map[symbol] = record
+    return record
+
+
+def _is_symbol_blacklist_cooldown_active(bot_config: Dict[str, Any], symbol: str) -> bool:
+    """After a blacklist verdict, allow occasional retries (every N min)."""
+    perf = (bot_config.get('symbolPerformance') or {}).get(symbol) or {}
+    if perf.get('verdict') != 'blacklisted':
+        return False
+    last_iso = perf.get('lastSkippedAt')
+    try:
+        if last_iso:
+            last_dt = datetime.fromisoformat(str(last_iso))
+            if (datetime.now() - last_dt).total_seconds() < SYMBOL_PERF_BLACKLIST_COOLDOWN_MIN * 60:
+                return True
+    except Exception:
+        pass
+    perf['lastSkippedAt'] = datetime.now().isoformat()
+    return False
+
+
+def _update_equity_trend(bot_config: Dict[str, Any], live_equity: float) -> None:
+    """Sample live equity into a rolling history; classify trend.
+
+    Stored on bot_config:
+      - equityTrendHistory: list[{'t': iso, 'equity': float}]
+      - equityTrend: 'growing' | 'flat' | 'shrinking'
+      - equityTrendUpdatedAt: iso
+    """
+    if live_equity is None or live_equity <= 0:
+        return
+    history = bot_config.get('equityTrendHistory') or []
+    now_iso = datetime.now().isoformat()
+    history.append({'t': now_iso, 'equity': round(float(live_equity), 4)})
+    if len(history) > EQUITY_TREND_HISTORY_MAX:
+        history = history[-EQUITY_TREND_HISTORY_MAX:]
+    bot_config['equityTrendHistory'] = history
+
+    if len(history) >= 4:
+        first = float(history[0]['equity']) or live_equity
+        last = float(history[-1]['equity']) or live_equity
+        delta_pct = ((last - first) / first) * 100.0 if first > 0 else 0.0
+        if delta_pct >= 0.5:
+            trend = 'growing'
+        elif delta_pct <= -0.5:
+            trend = 'shrinking'
+        else:
+            trend = 'flat'
+        prev_trend = bot_config.get('equityTrend')
+        bot_config['equityTrend'] = trend
+        bot_config['equityTrendUpdatedAt'] = now_iso
+        if trend != prev_trend:
+            logger.info(
+                f"[BALANCE] Bot {bot_config.get('botId')}: equity trend = {trend} "
+                f"({delta_pct:+.2f}% over last {len(history)} samples, "
+                f"start={first:.2f} -> now={last:.2f})"
+            )
+
+
 def _apply_loss_streak_safety(bot_config: Dict[str, Any], closed_trade: Dict[str, Any]) -> None:
-    """Apply cooldown protection after consecutive closed losses."""
     realized_profit = _safe_float(closed_trade.get('profit'), 0.0)
     if realized_profit >= 0:
         bot_config['consecutiveLosses'] = 0
@@ -22630,16 +22761,17 @@ def _default_strategy_trading_cadence(strategy_name: str, management_profile: st
         return {'tradingMode': 'signal-driven', 'tradingInterval': 90, 'pollInterval': 8}
 
     if normalized_strategy == 'swing trend dca':
-        return {'tradingMode': 'signal-driven', 'tradingInterval': 300, 'pollInterval': 30}
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 180, 'pollInterval': 15}
 
     if normalized_strategy == 'trend following':
-        return {'tradingMode': 'signal-driven', 'tradingInterval': 600, 'pollInterval': 60}
-    
-    if intelligent_scanner:
-        return {'tradingMode': 'signal-driven', 'tradingInterval': 120, 'pollInterval': 10}
+        # Lowered from 600s -> 90s: 600s starved Binance bots (10 min between cycles)
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 90, 'pollInterval': 8}
 
-    base_interval = 150 if normalized_profile == 'beginner' else 120 if normalized_profile == 'balanced' else 90
-    base_poll = 15 if normalized_profile == 'beginner' else 12 if normalized_profile == 'balanced' else 10
+    if intelligent_scanner:
+        return {'tradingMode': 'signal-driven', 'tradingInterval': 90, 'pollInterval': 8}
+
+    base_interval = 120 if normalized_profile == 'beginner' else 90 if normalized_profile == 'balanced' else 60
+    base_poll = 12 if normalized_profile == 'beginner' else 10 if normalized_profile == 'balanced' else 5
     return {'tradingMode': 'signal-driven', 'tradingInterval': base_interval, 'pollInterval': base_poll}
 
 
@@ -25725,8 +25857,9 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
             _persist_normalized_bot_symbols(bot_id, bot_config, normalized_symbols)
         
         # Get trading mode configuration
-        trading_mode = bot_config.get('tradingMode', 'interval')  # 'interval' or 'signal-driven'
-        trading_interval = bot_config.get('tradingInterval', 300)  # Default 5 minutes for time-based
+        # Defaults aligned to fast cadence: signal-driven mode + 90s cycle (was 'interval'/300s)
+        trading_mode = bot_config.get('tradingMode') or 'signal-driven'
+        trading_interval = int(bot_config.get('tradingInterval') or 90)  # Default 90s (was 300s)
         runtime_signal_floor = _adaptive_signal_threshold_floor(bot_config)
         configured_signal_threshold = int(bot_config.get('signalThreshold', runtime_signal_floor) or runtime_signal_floor)
         crypto_only_threshold = _crypto_only_signal_threshold(bot_config.get('symbols') or [])
@@ -26435,6 +26568,40 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         if not should_trade_symbol_based_on_risk_management(bot_config, symbol):
                             continue
 
+                        # Adaptive symbol-performance gate: trade more on winners,
+                        # demote / skip losers based on this bot's own closed trades.
+                        try:
+                            _perf = _evaluate_symbol_performance(bot_config, symbol)
+                            _verdict = _perf.get('verdict', 'normal')
+                            if _verdict == 'blacklisted':
+                                if _is_symbol_blacklist_cooldown_active(bot_config, symbol):
+                                    last_order_block_reason = (
+                                        f"{symbol} blacklisted (winRate={_perf.get('winRate')}, pnl={_perf.get('pnl')})"
+                                    )
+                                    logger.info(
+                                        f"❌ Bot {bot_id}: Skipping {symbol} - blacklisted by symbol performance "
+                                        f"(samples={_perf.get('samples')}, wins={_perf.get('wins')}, losses={_perf.get('losses')}, pnl={_perf.get('pnl')})"
+                                    )
+                                    continue
+                                else:
+                                    logger.info(
+                                        f"🔁 Bot {bot_id}: {symbol} blacklisted but cooldown elapsed - allowing 1 probe trade"
+                                    )
+                            elif _verdict == 'favored':
+                                logger.info(
+                                    f"⬆️ Bot {bot_id}: {symbol} favored "
+                                    f"(winRate={_perf.get('winRate')}, pnl={_perf.get('pnl')}, mult={_perf.get('multiplier')})"
+                                )
+                            elif _verdict == 'demoted':
+                                logger.info(
+                                    f"⬇️ Bot {bot_id}: {symbol} demoted "
+                                    f"(winRate={_perf.get('winRate')}, pnl={_perf.get('pnl')}, mult={_perf.get('multiplier')})"
+                                )
+                            _symbol_perf_multiplier = float(_perf.get('multiplier') or 1.0)
+                        except Exception as _perf_err:
+                            logger.debug(f"Bot {bot_id}: symbol-perf eval failed for {symbol}: {_perf_err}")
+                            _symbol_perf_multiplier = 1.0
+
                         # Dynamic position sizing
                         configured_trade_amount = bot_config.get('tradeAmount')
                         fixed_trade_amount = configured_trade_amount
@@ -26447,6 +26614,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 balance_basis,
                                 bot_config.get('displayCurrency'),
                             )
+
+                        # Apply per-symbol performance multiplier (favor winners / shrink losers)
+                        if fixed_trade_amount and _symbol_perf_multiplier and _symbol_perf_multiplier != 1.0:
+                            fixed_trade_amount = round(float(fixed_trade_amount) * _symbol_perf_multiplier, 2)
 
                         bot_currency = str(bot_config.get('displayCurrency') or 'USD').upper()
                         fixed_trade_volume = None
@@ -26861,6 +27032,33 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             else:
                                 symbols_to_try = [symbol, 'EURUSDm']  # Fallback only if primary fails
                             
+                            # ⏰ POST-CLOSE COOLDOWN: skip re-entry on a symbol whose previous
+                            # position was just closed (TP/SL hit OR user manually closed in MT5).
+                            # Without this, MT5/Exness bots fire a fresh entry on the very next
+                            # cycle and ignore the user's manual close ("keeps coming back").
+                            try:
+                                _cd_map = bot_config.get('symbol_cooldown_until') or {}
+                                _cd_iso = _cd_map.get(symbol)
+                                if _cd_iso:
+                                    _cd_until = datetime.fromisoformat(str(_cd_iso))
+                                    _now_dt = datetime.now()
+                                    if _now_dt < _cd_until:
+                                        _rem_min = max(0, int((_cd_until - _now_dt).total_seconds() / 60))
+                                        last_order_block_reason = (
+                                            f"{symbol} on post-close cooldown (~{_rem_min}m remaining)"
+                                        )
+                                        logger.info(
+                                            f"⏸️ Bot {bot_id}: {symbol} on post-close cooldown "
+                                            f"(~{_rem_min}m remaining) - skipping new entry"
+                                        )
+                                        continue
+                                    else:
+                                        # cooldown expired → clean up
+                                        _cd_map.pop(symbol, None)
+                                        bot_config['symbol_cooldown_until'] = _cd_map
+                            except Exception as _cd_check_e:
+                                logger.debug(f"Bot {bot_id}: cooldown check error for {symbol}: {_cd_check_e}")
+
                             # ✅ POSITION LIMIT CHECK: Enforce maxOpenPositions to prevent unlimited trades
                             max_open = bot_config.get('effectiveMaxOpenPositions') or bot_config.get('maxOpenPositions') or 5
                             max_per_symbol = bot_config.get('effectiveMaxPositionsPerSymbol') or bot_config.get('maxPositionsPerSymbol') or max_open
@@ -27796,7 +27994,27 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     continue
 
                                 closed_tickets.append(ticket_str)
-                                
+
+                                # ⏰ Set post-close cooldown on the symbol so the bot does NOT
+                                # immediately reopen after a manual close in MT5 / TP-SL hit.
+                                # Configurable via bot_config['postCloseCooldownMinutes'] (default 60).
+                                # Only applied for MT5/Exness path; Binance spot has its own
+                                # inventory-based serialization that already prevents re-entry storms.
+                                if is_mt5:
+                                    try:
+                                        _close_sym = str(tracked.get('symbol') or '').strip()
+                                        if _close_sym:
+                                            _cd_minutes = int(bot_config.get('postCloseCooldownMinutes') or 60)
+                                            if _cd_minutes > 0:
+                                                _cd_until_iso = (datetime.now() + timedelta(minutes=_cd_minutes)).isoformat()
+                                                bot_config.setdefault('symbol_cooldown_until', {})[_close_sym] = _cd_until_iso
+                                                logger.info(
+                                                    f"⏰ Bot {bot_id}: Post-close cooldown set on {_close_sym} "
+                                                    f"for {_cd_minutes}m (until {_cd_until_iso}) - prevents auto-reopen after manual close"
+                                                )
+                                    except Exception as _cd_set_e:
+                                        logger.warning(f"Bot {bot_id}: Could not set post-close cooldown: {_cd_set_e}")
+
                                 # Position is gone — closed by TP/SL or manually
                                 # Get the actual P&L from MT5 trade history
                                 real_profit = 0
@@ -29487,6 +29705,39 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
                 trigger_reason = 'TP_HIT'
             elif sl_price > 0 and live_price <= sl_price:
                 trigger_reason = 'SL_HIT'
+
+            # Position-age fallback: if BUY has been camping for longer than
+            # `maxPositionAgeHours` and is at break-even or better, auto-SELL
+            # so the bot can free spot inventory and trade again. Without this
+            # a Binance spot bot can sit on a single BUY for hours when SL/TP
+            # never trigger — the user reported this as "1 trade then stale".
+            if not trigger_reason:
+                try:
+                    _max_age_h = _safe_float(bot_config.get('maxPositionAgeHours'), 4.0)
+                    if _max_age_h > 0:
+                        _entry_iso = str(tracked.get('entryTime') or tracked.get('time') or '').strip()
+                        if _entry_iso:
+                            try:
+                                _entry_dt = datetime.fromisoformat(_entry_iso.replace('Z', ''))
+                                _age_hours = (datetime.now() - _entry_dt).total_seconds() / 3600.0
+                            except Exception:
+                                _age_hours = 0.0
+                            if _age_hours >= _max_age_h:
+                                _cur_pnl = _safe_float(tracked.get('profit'), 0.0)
+                                _be_floor = _safe_float(bot_config.get('agedClosePnlFloor'), -0.50)
+                                if _cur_pnl >= _be_floor:
+                                    trigger_reason = 'POSITION_AGE_TIMEOUT'
+                                    logger.info(
+                                        f"⏳ Bot {bot_id}: {tracked_symbol} BUY held for {_age_hours:.1f}h "
+                                        f"(>= {_max_age_h}h) at PnL={_cur_pnl} — auto-SELL to free inventory"
+                                    )
+                                else:
+                                    logger.debug(
+                                        f"Bot {bot_id}: {tracked_symbol} BUY age {_age_hours:.1f}h but PnL {_cur_pnl} < floor {_be_floor} — holding"
+                                    )
+                except Exception as _age_err:
+                    logger.debug(f"Bot {bot_id}: age-close eval failed: {_age_err}")
+
             if not trigger_reason:
                 continue
 
