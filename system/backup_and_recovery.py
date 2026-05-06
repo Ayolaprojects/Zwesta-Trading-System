@@ -237,7 +237,24 @@ class RecoveryManager:
             return False
         
         if not self.check_database_integrity():
-            logger.warning("⚠️ Database corrupted")
+            logger.warning("⚠️ Database integrity check failed")
+            # SELF-HEAL ATTEMPT: 'wrong # of entries in index' is fixable via REINDEX
+            # without restoring from an older backup (which would lose recent state).
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.execute('REINDEX')
+                conn.commit()
+                conn.close()
+                logger.info("🔧 Ran REINDEX to repair index entries; rechecking integrity...")
+            except Exception as e:
+                logger.warning(f"REINDEX failed: {e}")
+
+            if self.check_database_integrity():
+                logger.info("✅ Database self-healed via REINDEX; skipping backup restore.")
+                self._log_recovery('reindex_self_heal', 'integrity restored without rollback')
+                return True
+
+            logger.warning("⚠️ Database corrupted (REINDEX did not resolve)")
             backups = self.backup_manager.list_backups()
             if not backups:
                 logger.error("❌ No backups available - data loss may have occurred")

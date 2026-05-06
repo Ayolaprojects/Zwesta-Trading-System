@@ -2409,6 +2409,16 @@ def _enrich_market_data_with_bot_context(
     base_market_data['adaptive_signal_threshold_offset'] = adaptive_offset
     base_market_data['adaptive_signal_miss_count'] = adaptive_miss_count
     base_market_data['adaptive_min_signal_reduction'] = adaptive_reduction
+    # When user has pinned a manual signalThreshold, propagate it so the per-symbol
+    # strategy floor (min_signal_strength) clamps to the user's intent. Otherwise the
+    # hardcoded SYMBOL_PARAMETERS floor of 50 silently overrides a manual threshold of e.g. 2.
+    try:
+        if str(bot_config.get('signalThresholdMode') or '').strip().lower() == 'manual':
+            _manual_thr = int(bot_config.get('signalThreshold') or 0)
+            if _manual_thr > 0:
+                base_market_data['bot_signal_threshold_override'] = _manual_thr
+    except (TypeError, ValueError):
+        pass
     return base_market_data
 
 
@@ -2444,6 +2454,19 @@ def _get_effective_symbol_params(symbol: str, market_data: Optional[Dict[str, An
         adaptive_reduction = min(adaptive_reduction, 5)
 
     params['effective_min_signal_strength'] = max(5, int(params['min_signal_strength']) - max(0, adaptive_reduction))
+    # Honor bot manual signalThreshold: clamp per-symbol floor down to user's threshold
+    # (never raise it). This lets a manual threshold of e.g. 2 actually allow weak signals
+    # to pass strategy gates instead of being silently filtered by the 50-floor in SYMBOL_PARAMETERS.
+    if isinstance(market_data, dict):
+        _bot_thr_override = market_data.get('bot_signal_threshold_override')
+        if _bot_thr_override is not None:
+            try:
+                params['effective_min_signal_strength'] = max(
+                    5,
+                    min(int(params['effective_min_signal_strength']), int(_bot_thr_override)),
+                )
+            except (TypeError, ValueError):
+                pass
     return params
 
 
@@ -18056,9 +18079,11 @@ def load_user_bots_from_database(enabled_only: bool = False):
 
             restored_bot = _restore_bot_runtime_state(row)
             # OVERRIDE: Force use of profile default thresholds (disable persisted high thresholds)
-            profile = _normalize_management_profile(restored_bot.get('managementProfile', 'beginner'))
-            profile_defaults = BOT_MANAGEMENT_PROFILES.get(profile, BOT_MANAGEMENT_PROFILES['beginner'])
-            restored_bot['signalThreshold'] = profile_defaults.get('signalThreshold', 5)
+            # MANUAL MODE GUARD: skip override when user has pinned signalThresholdMode='manual'
+            if str(restored_bot.get('signalThresholdMode') or '').strip().lower() != 'manual':
+                profile = _normalize_management_profile(restored_bot.get('managementProfile', 'beginner'))
+                profile_defaults = BOT_MANAGEMENT_PROFILES.get(profile, BOT_MANAGEMENT_PROFILES['beginner'])
+                restored_bot['signalThreshold'] = profile_defaults.get('signalThreshold', 5)
             active_bots[bot_id] = restored_bot
             if restored_bot.pop('_cadenceMigrationApplied', False) or restored_bot.pop('_runtimeStateAdjusted', False):
                 persist_bot_runtime_state(bot_id, force=True)
@@ -19124,10 +19149,14 @@ def should_trade_today(bot_config, symbol):
         )
         return False
     
-    # CUMULATIVE PROFIT PROTECTION: 30% loss floor on historical profits
+    # CUMULATIVE PROFIT PROTECTION: 30% loss floor on historical profits.
+    # Only activate after meaningful trading history AND meaningful profit, to avoid
+    # firing on $0.30 historical profit (single seeded position) with a small floating loss.
     cumulative_profit = bot_config.get('totalProfit', 0.0) or 0.0
-    cumulative_loss_allowance = (cumulative_profit * 0.30) if cumulative_profit > 0 else 0
-    
+    _winning_trades_count = int(bot_config.get('winningTrades', 0) or 0)
+    _floor_eligible = cumulative_profit >= 5.0 and _winning_trades_count >= 5
+    cumulative_loss_allowance = (cumulative_profit * 0.30) if _floor_eligible else 0
+
     if cumulative_loss_allowance > 0:
         # Calculate current session losses (closed trades + open position P&L)
         current_day_profit = bot_config.get('dailyProfits', {}).get(today, 0.0)
@@ -19317,7 +19346,17 @@ def should_trade_today(bot_config, symbol):
     # profit is small (e.g. peak=$0.60 vs max_dd=$2.16 -> 360%). Disabled in favour of the
     # account-equity drawdown guard above which is the authoritative risk check.
     # Only enforce when peak profit is meaningful (>= 1% of high-watermark equity).
-    _peak_meaningful = peak > 0 and (equity_high_watermark <= 0 or peak >= 0.01 * equity_high_watermark)
+    # When HWM is unset/zero, disable the check entirely until equity baseline is established.
+    # Require both 1% of HWM AND minimum $5 absolute, AND at least 5 winning trades,
+    # so a tiny seeded floating-profit blip doesn't trip a 50% drawdown pause on a
+    # bot with virtually no real history.
+    _winning_trades_for_dd = int(bot_config.get('winningTrades', 0) or 0)
+    _peak_meaningful = (
+        peak >= 5.0
+        and equity_high_watermark > 0
+        and peak >= 0.01 * equity_high_watermark
+        and _winning_trades_for_dd >= 5
+    )
     if _peak_meaningful and dd_threshold > 0:
         dd_percent = (max_dd / peak) * 100
         if dd_percent >= dd_threshold:
@@ -24562,11 +24601,13 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
     adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
     crypto_only_threshold = _crypto_only_signal_threshold(bot_config.get('symbols') or [])
     signal_threshold_mode = str(bot_config.get('signalThresholdMode') or 'auto').lower()
-    if is_assisted:
-        signal_threshold_mode = 'auto'
-    elif signal_threshold_mode != 'manual':
+    # MANUAL MODE GUARD: an explicit signalThresholdMode='manual' must survive even
+    # under assisted management. Previously this was force-coerced to 'auto', which
+    # silently clobbered user-pinned thresholds on every cycle.
+    if signal_threshold_mode != 'manual':
         signal_threshold_mode = 'auto'
     bot_config['signalThresholdMode'] = signal_threshold_mode
+    _user_manual_threshold = signal_threshold_mode == 'manual'
     effective = {
         'profile': profile,
         'mode': 'assisted' if is_assisted else 'manual',
@@ -24692,12 +24733,24 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
 
     # In Binance demo mode keep the threshold at the runtime floor so
     # peer profile sync/adaptation cannot over-restrict entry gating.
-    if (not is_live) and broker_name == 'Binance':
+    # MANUAL MODE GUARD: skip when user has pinned signalThresholdMode='manual'.
+    if (not is_live) and broker_name == 'Binance' and not _user_manual_threshold:
         effective['signalThreshold'] = adaptive_floor
 
     adaptive_offset = int(bot_config.get('adaptiveSignalThresholdOffset') or 0)
-    if adaptive_offset > 0 and bot_config.get('managementState') != 'recovery':
+    if adaptive_offset > 0 and bot_config.get('managementState') != 'recovery' and not _user_manual_threshold:
         effective['signalThreshold'] = max(adaptive_floor, effective['signalThreshold'] - adaptive_offset)
+
+    # MANUAL MODE GUARD: when user has pinned a manual threshold and explicit maxOpenPositions,
+    # restore them after all the assisted overrides above.
+    if _user_manual_threshold:
+        effective['signalThreshold'] = max(1, int(bot_config.get('signalThreshold') or 50))
+        _user_max_open = int(bot_config.get('maxOpenPositions') or 0)
+        if _user_max_open > 0:
+            effective['maxOpenPositions'] = _user_max_open
+        _user_max_per_sym = int(bot_config.get('maxPositionsPerSymbol') or 0)
+        if _user_max_per_sym > 0:
+            effective['maxPositionsPerSymbol'] = _user_max_per_sym
 
     bot_config['effectiveSignalThreshold'] = effective['signalThreshold']
     bot_config['effectiveMaxOpenPositions'] = effective['maxOpenPositions']
@@ -25677,9 +25730,15 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         runtime_signal_floor = _adaptive_signal_threshold_floor(bot_config)
         configured_signal_threshold = int(bot_config.get('signalThreshold', runtime_signal_floor) or runtime_signal_floor)
         crypto_only_threshold = _crypto_only_signal_threshold(bot_config.get('symbols') or [])
-        if normalized_broker == 'Binance' and crypto_only_threshold is not None:
+        # MANUAL MODE GUARD: when user pinned signalThresholdMode='manual', do NOT clamp
+        # the configured threshold down via crypto-only floor or runtime floor.
+        _threshold_mode_manual = str(bot_config.get('signalThresholdMode') or '').strip().lower() == 'manual'
+        if normalized_broker == 'Binance' and crypto_only_threshold is not None and not _threshold_mode_manual:
             configured_signal_threshold = min(configured_signal_threshold, crypto_only_threshold)
-        signal_threshold = max(configured_signal_threshold, runtime_signal_floor)    # 0-100, minimum signal strength
+        if _threshold_mode_manual:
+            signal_threshold = max(1, int(bot_config.get('signalThreshold') or 50))
+        else:
+            signal_threshold = max(configured_signal_threshold, runtime_signal_floor)    # 0-100, minimum signal strength
         poll_interval = bot_config.get('pollInterval', 15)          # Check signals every N seconds in signal-driven mode
         
         if trading_mode == 'signal-driven':
@@ -26263,6 +26322,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 best_signal_strength = 0.0
                 best_signal_symbol = None
                 configured_signal_hits = 0
+                signal_strength_by_symbol: Dict[str, float] = {}
                 for eval_symbol in symbols:
                     eval_market_data = _enrich_market_data_with_bot_context(bot_config, eval_symbol)
                     eval_signal = evaluate_real_trade_signal(eval_symbol, eval_market_data)
@@ -26276,6 +26336,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     )
                     signal_score = eval_signal.get('strength', 0)
                     signal_score_value = float(signal_score or 0.0)
+                    signal_strength_by_symbol[eval_symbol] = signal_score_value
                     if signal_score_value >= best_signal_strength:
                         best_signal_strength = signal_score_value
                         best_signal_symbol = eval_symbol
@@ -26355,10 +26416,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 
                 trades_this_cycle = 0
                 last_order_block_reason = None
+                _block_reason_per_symbol: Dict[str, str] = {}
                 for symbol in symbols:
                     if bot_stop_flags.get(bot_id, False):
                         break  # Stop requested, exit loop
                     
+                    _iter_initial_block_reason = last_order_block_reason
                     try:
                         symbol_is_open, symbol_market_status = market_status_by_symbol.get(symbol, (None, None))
                         if symbol_is_open is None:
@@ -27661,6 +27724,9 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     except Exception as e:
                         logger.error(f"Bot {bot_id}: Error in trade cycle for {symbol}: {e}")
                         continue
+                    finally:
+                        if last_order_block_reason and last_order_block_reason != _iter_initial_block_reason:
+                            _block_reason_per_symbol[symbol] = last_order_block_reason
                 
                 # ==================== CHECK FOR CLOSED POSITIONS (TP/SL HIT) ====================
                 # Compare tracked open_positions against current broker positions.
@@ -28083,7 +28149,22 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             f"threshold={signal_threshold}/100)"
                         )
                     elif last_order_block_reason:
-                        no_trade_reason = last_order_block_reason
+                        # Prefer the block reason from the strongest qualifying symbol so the cycle
+                        # summary reflects what actually blocked a tradeable signal, not the last
+                        # symbol iterated (which may have been a low-strength or closed market).
+                        _qualifying_blocks = [
+                            (sym, signal_strength_by_symbol.get(sym, 0.0), reason)
+                            for sym, reason in _block_reason_per_symbol.items()
+                            if signal_strength_by_symbol.get(sym, 0.0) >= signal_threshold
+                        ]
+                        if _qualifying_blocks:
+                            _qualifying_blocks.sort(key=lambda x: x[1], reverse=True)
+                            _qsym, _qstr, _qreason = _qualifying_blocks[0]
+                            no_trade_reason = (
+                                f"strongest qualifying signal {_qsym}:{_qstr:.0f}/100 blocked: {_qreason}"
+                            )
+                        else:
+                            no_trade_reason = last_order_block_reason
                     else:
                         no_trade_reason = 'setup passed signal scan but was blocked by entry filters or broker checks'
                     if no_trade_reason:
