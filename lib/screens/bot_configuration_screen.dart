@@ -654,8 +654,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   bool _enableProfitProtection = true;
   double _profitProtectionActivationPercent = 5;
   double _profitProtectionActivationMinProfit = 5;
+  double _profitProtectionMinLockedProfit = 0;
+  double _profitProtectionMarginTakeProfitPercent = 30;
   double _profitProtectionRetracePercent = 35;
   bool _profitProtectionSwitchOnReversal = true;
+  bool _profitProtectionAdaptiveByVolatility = true;
 
   // Milestone Auto-Withdrawal Settings
   double _milestoneOneProfitPercent = 20;
@@ -2006,6 +2009,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         _profitProtectionActivationMinProfit =
             (profitProtection['activationMinProfit'] as num?)?.toDouble() ??
             _profitProtectionActivationMinProfit;
+        _profitProtectionMinLockedProfit =
+          (profitProtection['minLockedProfit'] as num?)?.toDouble() ??
+          _profitProtectionMinLockedProfit;
+        _profitProtectionMarginTakeProfitPercent =
+          (profitProtection['marginTakeProfitPercent'] as num?)?.toDouble() ??
+          _profitProtectionMarginTakeProfitPercent;
         _profitProtectionRetracePercent =
             (profitProtection['retraceClosePercent'] as num?)?.toDouble() ??
             _profitProtectionRetracePercent;
@@ -2013,6 +2022,10 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             (profitProtection['switchOnReversal'] ??
                 _profitProtectionSwitchOnReversal) ==
             true;
+        _profitProtectionAdaptiveByVolatility =
+          (profitProtection['adaptiveByVolatility'] ??
+            _profitProtectionAdaptiveByVolatility) ==
+          true;
         _investmentAmountController.text = tradeAmount == null
             ? ''
             : ((tradeAmount as num).toDouble() ==
@@ -2529,8 +2542,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         'enabled': _enableProfitProtection,
         'activationPercent': _profitProtectionActivationPercent,
         'activationMinProfit': _profitProtectionActivationMinProfit,
+        'minLockedProfit': _profitProtectionMinLockedProfit,
+        'marginTakeProfitPercent': _profitProtectionMarginTakeProfitPercent,
         'retraceClosePercent': _profitProtectionRetracePercent,
         'switchOnReversal': _profitProtectionSwitchOnReversal,
+        'adaptiveByVolatility': _profitProtectionAdaptiveByVolatility,
       },
     };
   }
@@ -4837,8 +4853,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   child: TextField(
                                     keyboardType: TextInputType.number,
                                     decoration: InputDecoration(
-                                      labelText: 'Min Profit Lock',
+                                      labelText: 'Arm At Min Profit',
                                       hintText: '5',
+                                      helperText:
+                                          'Protection only arms after this profit amount is reached.',
+                                      helperMaxLines: 2,
+                                      alignLabelWithHint: true,
                                       border: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(6),
                                       ),
@@ -4852,6 +4872,48 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   ),
                                 ),
                               ],
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              keyboardType: TextInputType.number,
+                              decoration: InputDecoration(
+                                labelText: 'Guaranteed Profit Floor',
+                                hintText: '8',
+                                helperText:
+                                    'Once armed, do not let a winner give back below this profit floor before the retrace rules are applied.',
+                                helperMaxLines: 2,
+                                alignLabelWithHint: true,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                              ),
+                              onChanged: (value) {
+                                setState(() {
+                                  _profitProtectionMinLockedProfit =
+                                      double.tryParse(value) ?? 0;
+                                });
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              keyboardType: TextInputType.number,
+                              decoration: InputDecoration(
+                                labelText: 'Take Profit At Margin %',
+                                hintText: '30',
+                                helperText:
+                                    'Hard close the trade once profit reaches this percentage of the trade margin. Use 30 to bank spike trades immediately.',
+                                helperMaxLines: 2,
+                                alignLabelWithHint: true,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                              ),
+                              onChanged: (value) {
+                                setState(() {
+                                  _profitProtectionMarginTakeProfitPercent =
+                                      double.tryParse(value) ?? 30;
+                                });
+                              },
                             ),
                             const SizedBox(height: 12),
                             TextField(
@@ -4871,6 +4933,22 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       double.tryParse(value) ?? 35;
                                 });
                               },
+                            ),
+                            SwitchListTile(
+                              value: _profitProtectionAdaptiveByVolatility,
+                              onChanged: (value) {
+                                setState(
+                                  () =>
+                                      _profitProtectionAdaptiveByVolatility =
+                                          value,
+                                );
+                              },
+                              title: const Text('Auto Adjust For Volatility'),
+                              subtitle: const Text(
+                                'Keep this on to let the backend raise activation and floor settings for higher-volatility symbols like BTC/ETH. Turn it off to use your exact profit-lock values.',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                              contentPadding: EdgeInsets.zero,
                             ),
                             SwitchListTile(
                               value: _profitProtectionSwitchOnReversal,

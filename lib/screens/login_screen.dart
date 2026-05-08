@@ -86,18 +86,21 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 20),
                   // Logo and Title
                   Center(
-                    child: Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.08),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.15),
-                          width: 2,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 420),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.15),
+                            width: 2,
+                          ),
                         ),
-                      ),
-                      child: Column(
-                        children: [
+                        child: Column(
+                          children: [
                           const LogoWidget(size: 120, showText: false),
                           const SizedBox(height: 16),
                           Text(
@@ -131,17 +134,19 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                           const SizedBox(height: 8),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                          Wrap(
+                            alignment: WrapAlignment.center,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            spacing: 8,
+                            runSpacing: 8,
                             children: [
-                              _loginBrokerChip('₿', 'Binance', const Color(0xFFF3BA2F)),
-                              const SizedBox(width: 8),
+                              _loginBrokerChip('B', 'Binance', const Color(0xFFF3BA2F)),
                               _loginBrokerChip('E', 'Exness', const Color(0xFF00E5FF)),
-                              const SizedBox(width: 8),
                               _loginBrokerChip('F', 'FXCM', const Color(0xFF7C4DFF)),
                             ],
                           ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -360,46 +365,58 @@ class _LoginScreenState extends State<LoginScreen> {
     );
 
   // Compact broker chip used on the login page brand strip.
-  Widget _loginBrokerChip(String icon, String label, Color color) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.12),
-          border: Border.all(color: color.withOpacity(0.55)),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 20,
-              height: 20,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.25),
-                shape: BoxShape.circle,
-                border: Border.all(color: color),
-              ),
-              child: Text(
-                icon,
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 11,
+  Widget _loginBrokerChip(String icon, String label, Color color) {
+    final assetName = 'assets/images/${label.toLowerCase()}.png';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        border: Border.all(color: color.withOpacity(0.55)),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.asset(
+              assetName,
+              width: 22,
+              height: 22,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(
+                width: 20,
+                height: 20,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.25),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color),
+                ),
+                child: Text(
+                  icon,
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 11,
+                  ),
                 ),
               ),
             ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: GoogleFonts.poppins(
-                color: Colors.white,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: GoogleFonts.poppins(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
             ),
-          ],
-        ),
-      );
+          ),
+        ],
+      ),
+    );
+  }
 
   // Build login/register form
   Widget _buildLoginRegisterForm(AppLocalizations loc) => Column(

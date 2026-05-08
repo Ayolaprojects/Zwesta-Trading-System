@@ -16839,6 +16839,10 @@ PERSISTED_BOT_STATE_FIELDS = {
     'symbolPerformance', 'equityTrendHistory', 'equityTrend', 'equityTrendUpdatedAt',
     'symbol_cooldown_until',
     'maxPositionAgeHours', 'agedClosePnlFloor',
+    # Mean reversion seed-buy parameters
+    'seedBuyEnabled', 'seedBuyStrengthMin', 'seedBuyStrengthMax', 'seedBuyVolume', 'seedBuyProfitTarget', 'seedBuySL',
+    # Binance Futures support (shorting, leverage, position modes)
+    'binanceMarket', 'binanceLeverage', 'binancePositionMode', 'binanceMarginType', 'maxLeveragePerPosition',
 }
 
 DEMO_PROMOTION_MIN_TRADES = 3
@@ -22695,6 +22699,7 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'activationMinProfit': 5.0,
     'portfolioActivationMinProfit': 10.0,
     'minLockedProfit': 0.0,
+    'marginTakeProfitPercent': 30.0,
     'retraceClosePercent': 35.0,
     'switchOnReversal': True,
     'adaptiveByVolatility': True,
@@ -22950,6 +22955,7 @@ def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dic
     normalized['activationMinProfit'] = max(0.0, _safe_float(raw.get('activationMinProfit', raw.get('activation_min_profit', normalized['activationMinProfit'])), normalized['activationMinProfit']))
     normalized['portfolioActivationMinProfit'] = max(0.0, _safe_float(raw.get('portfolioActivationMinProfit', raw.get('portfolio_activation_min_profit', normalized['portfolioActivationMinProfit'])), normalized['portfolioActivationMinProfit']))
     normalized['minLockedProfit'] = max(0.0, _safe_float(raw.get('minLockedProfit', raw.get('min_locked_profit', normalized['minLockedProfit'])), normalized['minLockedProfit']))
+    normalized['marginTakeProfitPercent'] = max(0.0, min(200.0, _safe_float(raw.get('marginTakeProfitPercent', raw.get('margin_take_profit_percent', normalized['marginTakeProfitPercent'])), normalized['marginTakeProfitPercent'])))
     normalized['retraceClosePercent'] = max(5.0, min(95.0, _safe_float(raw.get('retraceClosePercent', raw.get('retrace_close_percent', normalized['retraceClosePercent'])), normalized['retraceClosePercent'])))
     normalized['switchOnReversal'] = _coerce_bool(raw.get('switchOnReversal', raw.get('switch_on_reversal', normalized['switchOnReversal'])), normalized['switchOnReversal'])
     normalized['adaptiveByVolatility'] = _coerce_bool(raw.get('adaptiveByVolatility', raw.get('adaptive_by_volatility', normalized['adaptiveByVolatility'])), normalized['adaptiveByVolatility'])
@@ -23215,15 +23221,20 @@ def _evaluate_pyramid_addon(
 
 
 def _profit_protection_activation_amount(bot_config: Dict[str, Any], protection_config: Dict[str, Any]) -> float:
+    activation_basis = _profit_protection_margin_basis(bot_config, protection_config)
     activation_min_profit = float(protection_config.get('activationMinProfit') or 0.0)
     activation_percent = float(protection_config.get('activationPercent') or 0.0)
+    return max(activation_min_profit, activation_basis * (activation_percent / 100.0))
+
+
+def _profit_protection_margin_basis(bot_config: Dict[str, Any], protection_config: Dict[str, Any]) -> float:
+    activation_min_profit = float(protection_config.get('activationMinProfit') or 0.0)
     fixed_trade_amount = _safe_float(bot_config.get('tradeAmount'), 0.0)
     balance_basis = max(
         _safe_float(bot_config.get('accountEquity'), 0.0),
         _safe_float(bot_config.get('accountBalance'), 0.0),
     )
-    basis = fixed_trade_amount if fixed_trade_amount > 0 else max(balance_basis * 0.02, activation_min_profit)
-    return max(activation_min_profit, basis * (activation_percent / 100.0))
+    return fixed_trade_amount if fixed_trade_amount > 0 else max(balance_basis * 0.02, activation_min_profit)
 
 
 def manage_protected_open_positions(bot_id, bot_config, current_positions, active_conn, is_mt5, mt5_conn):
@@ -23250,7 +23261,12 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         symbol = tracked.get('symbol', current_position.get('symbol', ''))
         symbol_market_data = _get_market_data_for_symbol(symbol)
         effective_protection = _resolve_profit_protection_for_symbol(bot_config, symbol, symbol_market_data)
+        margin_basis = _profit_protection_margin_basis(bot_config, effective_protection)
         activation_amount = _profit_protection_activation_amount(bot_config, effective_protection)
+        margin_take_profit_amount = round(
+            max(0.0, margin_basis * (_safe_float(effective_protection.get('marginTakeProfitPercent'), 30.0) / 100.0)),
+            2,
+        )
         break_even_activation_amount = max(
             _safe_float(effective_protection.get('breakEvenBufferProfit'), 0.0) * 2.0,
             activation_amount * _safe_float(effective_protection.get('breakEvenActivationShare'), 0.5),
@@ -23325,6 +23341,15 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         locked_floor = _safe_float(tracked.get('lockedProfitFloor'), 0.0)
         upswing_retrace_floor = max(0.5, round(peak_profit * UPSWING_RETRACE_CLOSE_SHARE, 2))
         pyramid_locked_floor = max(0.25, round(peak_profit * PYRAMID_ADDON_LOCKED_PROFIT_SHARE, 2))
+
+        if not close_reason:
+            if (
+                current_profit > 0
+                and margin_take_profit_amount > 0
+                and current_profit >= margin_take_profit_amount
+                and not _recent_close_request(tracked)
+            ):
+                close_reason = 'MARGIN_TAKE_PROFIT'
 
         if not close_reason:
             # Zero-loss lock: close any trade that was ever in profit but has fallen back to 0 or negative.
@@ -26707,20 +26732,56 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         # Skip trade if signal strength is too low
                         if trade_params is None:
                             raw_signal = evaluate_real_trade_signal(symbol, market_data)
-                            last_order_block_reason = (
-                                f"{symbol} rejected by strategy: "
-                                f"signal={raw_signal.get('signal', 'NEUTRAL')} "
-                                f"strength={raw_signal.get('strength', 0):.0f}/100 "
-                                f"reason={raw_signal.get('entry_reason', 'Rejected by strategy')}"
-                            )
-                            logger.info(
-                                f"⏭️ Bot {bot_id}: Skipping {symbol} - "
-                                f"signal={raw_signal.get('signal', 'NEUTRAL')} "
-                                f"strength={raw_signal.get('strength', 0):.0f}/100 "
-                                f"trend={raw_signal.get('trend', 'UNKNOWN')} "
-                                f"reason={raw_signal.get('entry_reason', 'Rejected by strategy')}"
-                            )
-                            continue
+                            
+                            # 🌱 MEAN REVERSION SEED-BUY: When no inventory exists and signal is bullish-but-weak
+                            # Place a small starter BUY so future SELL signals can execute
+                            seed_buy_enabled = bot_config.get('seedBuyEnabled', False)
+                            if (seed_buy_enabled and broker_type == 'Binance' 
+                                and getattr(active_conn, 'market', 'spot') == 'spot'
+                                and raw_signal.get('trend') == 'UP' 
+                                and raw_signal.get('strength', 0) >= bot_config.get('seedBuyStrengthMin', 20)
+                                and raw_signal.get('strength', 0) < bot_config.get('seedBuyStrengthMax', 45)):
+                                
+                                # Check for no inventory
+                                tracked_open = bot_config.get('open_positions', {})
+                                has_position = any(p.get('symbol') == symbol for p in tracked_open.values() if isinstance(p, dict))
+                                if not has_position:
+                                    seed_size = bot_config.get('seedBuyVolume', 0.25)
+                                    seed_tp_pct = bot_config.get('seedBuyProfitTarget', 0.05)  # 5%
+                                    
+                                    try:
+                                        seed_qty = position_sizer.calculate_position_size(bot_config) * seed_size
+                                        seed_tp_pips = int(100 * seed_tp_pct / 0.01)  # Approximate pips for TP
+                                        seed_params = {
+                                            'symbol': symbol,
+                                            'type': 'BUY',
+                                            'volume': seed_qty,
+                                            'stop_loss': bot_config.get('seedBuySL', 50),
+                                            'take_profit': seed_tp_pips,
+                                            'signal': {'signal': 'SEED_BUY', 'strength': raw_signal.get('strength', 0)},
+                                            'is_seed_buy': True,
+                                        }
+                                        trade_params = seed_params
+                                        logger.info(f"🌱 Bot {bot_id}: Seed-BUY triggered on {symbol} (strength={raw_signal.get('strength'):.0f}/100, qty={seed_qty:.4f})")
+                                    except Exception as seed_err:
+                                        logger.debug(f"Bot {bot_id}: Seed-BUY calculation failed: {seed_err}")
+                                        trade_params = None
+                            
+                            if trade_params is None:
+                                last_order_block_reason = (
+                                    f"{symbol} rejected by strategy: "
+                                    f"signal={raw_signal.get('signal', 'NEUTRAL')} "
+                                    f"strength={raw_signal.get('strength', 0):.0f}/100 "
+                                    f"reason={raw_signal.get('entry_reason', 'Rejected by strategy')}"
+                                )
+                                logger.info(
+                                    f"⏭️ Bot {bot_id}: Skipping {symbol} - "
+                                    f"signal={raw_signal.get('signal', 'NEUTRAL')} "
+                                    f"strength={raw_signal.get('strength', 0):.0f}/100 "
+                                    f"trend={raw_signal.get('trend', 'UNKNOWN')} "
+                                    f"reason={raw_signal.get('entry_reason', 'Rejected by strategy')}"
+                                )
+                                continue
                         
                         signal_info = trade_params.get('signal', {})
                         signal_strength = _safe_float(signal_info.get('strength'), 0.0)
@@ -29724,7 +29785,7 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
                                 _age_hours = 0.0
                             if _age_hours >= _max_age_h:
                                 _cur_pnl = _safe_float(tracked.get('profit'), 0.0)
-                                _be_floor = _safe_float(bot_config.get('agedClosePnlFloor'), -0.50)
+                                _be_floor = _safe_float(bot_config.get('agedClosePnlFloor'), -2.0)
                                 if _cur_pnl >= _be_floor:
                                     trigger_reason = 'POSITION_AGE_TIMEOUT'
                                     logger.info(
