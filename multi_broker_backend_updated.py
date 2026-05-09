@@ -16075,6 +16075,8 @@ def estimate_fixed_trade_volume(
     broker_name: str,
     mt5_api=None,
     market_price: float = 0.0,
+    market_name: str = 'spot',
+    exchange_leverage: float = 1.0,
 ) -> tuple[float, Dict[str, Any]]:
     details: Dict[str, Any] = {
         'account_currency': str(account_currency or 'USD').upper(),
@@ -16121,6 +16123,21 @@ def estimate_fixed_trade_volume(
         details['price'] = current_price
         details['method'] = 'symbol-metadata'
         estimated_volume = quote_amount / (current_price * contract_size)
+        return max(estimated_volume, 0.0), details
+
+    normalized_broker = canonicalize_broker_name(broker_name)
+    normalized_market = str(market_name or 'spot').strip().lower()
+    if normalized_broker == 'Binance' and current_price > 0:
+        effective_notional = quote_amount
+        if normalized_market == 'futures':
+            leverage_multiplier = max(1.0, float(exchange_leverage or 1.0))
+            effective_notional *= leverage_multiplier
+            details['method'] = 'binance-futures-price-notional'
+        else:
+            details['method'] = 'binance-price-notional'
+        details['contract_size'] = 1.0
+        details['price'] = current_price
+        estimated_volume = effective_notional / current_price
         return max(estimated_volume, 0.0), details
 
     estimated_volume = quote_amount / 100000.0
@@ -18644,6 +18661,8 @@ def update_bot_config(bot_id):
             'displayCurrency': sanitized_risk_config['displayCurrency'],
             'enabled': False,
             'tradeAmount': trade_amount,
+            'binanceMarket': str(effective_data.get('binanceMarket') or bot.get('binanceMarket') or bot.get('market') or 'spot').strip().lower(),
+            'market': str(effective_data.get('binanceMarket') or bot.get('binanceMarket') or bot.get('market') or 'spot').strip().lower(),
             'intelligentScanner': bool(effective_data.get('intelligentScanner', False)),
             'profitProtection': _normalize_profit_protection_config(effective_data.get('profitProtection')),
             'maxOpenPositions': sanitized_risk_config['maxOpenPositions'],
@@ -24038,6 +24057,46 @@ def derive_small_account_trade_amount(balance: float, currency: Optional[str]) -
     return round(max(target_amount, tier_min_trade), 2)
 
 
+def derive_binance_default_trade_amount(
+    balance: float,
+    currency: Optional[str],
+    market_name: Optional[str],
+    max_open_positions: Optional[int],
+    is_live: bool,
+) -> Optional[float]:
+    safe_balance = max(float(balance or 0.0), 0.0)
+    if safe_balance <= 0:
+        return None
+
+    normalized_currency = str(currency or 'USD').strip().upper()
+    normalized_market = str(market_name or 'spot').strip().lower()
+    safe_positions = max(1, min(8, int(round(_safe_float(max_open_positions, 3) or 3))))
+
+    quote_floor_map = {
+        'USD': 40.0,
+        'USDT': 40.0,
+        'USDC': 40.0,
+        'BUSD': 40.0,
+        'ZAR': 700.0,
+    }
+
+    if normalized_market == 'futures':
+        portfolio_ratio = 0.28 if is_live else 0.35
+        per_position_cap_ratio = 0.12 if is_live else 0.15
+        min_trade = max(25.0, quote_floor_map.get(normalized_currency, 40.0) * 0.6)
+    else:
+        portfolio_ratio = 0.72 if is_live else 0.80
+        per_position_cap_ratio = 0.30 if is_live else 0.35
+        min_trade = quote_floor_map.get(normalized_currency, 40.0)
+
+    target_amount = safe_balance * portfolio_ratio / safe_positions
+    capped_target = min(target_amount, safe_balance * per_position_cap_ratio)
+    if capped_target <= 0:
+        return None
+
+    return round(min(safe_balance * 0.95, max(capped_target, min_trade)), 2)
+
+
 def enforce_small_live_account_guard(
     data: Dict[str, Any],
     symbols: List[str],
@@ -25456,6 +25515,27 @@ def create_bot():
                 except (ValueError, TypeError):
                     trade_amount = None
 
+            binance_market_name = str(
+                data.get('binanceMarket')
+                or data.get('market')
+                or credential_data.get('server')
+                or 'spot'
+            ).strip().lower()
+
+            if trade_amount is None and canonicalize_broker_name(broker_name) == 'Binance':
+                balance_basis = max(_safe_float(cached_balance), _safe_float(cached_margin_free))
+                trade_amount = derive_binance_default_trade_amount(
+                    balance_basis,
+                    display_currency or credential_data.get('account_currency'),
+                    binance_market_name,
+                    max_open_positions,
+                    bool(is_live),
+                )
+                if trade_amount is not None:
+                    sanitized_risk_config.setdefault('warnings', []).append(
+                        f"Binance default tradeAmount set to {trade_amount:.2f} {display_currency or credential_data.get('account_currency') or 'USD'} for stronger position sizing"
+                    )
+
             # Guard custom fixed sizing against oversized entries on small balances.
             if trade_amount is not None:
                 balance_basis = max(_safe_float(cached_balance), _safe_float(cached_margin_free))
@@ -25566,6 +25646,8 @@ def create_bot():
                 'promotionReadyAt': None,
                 'promotionExpiredAt': None,
                 'tradeAmount': trade_amount,  # Fixed dollar amount per trade (None = use risk %)
+                'binanceMarket': binance_market_name,
+                'market': binance_market_name,
                 'intelligentScanner': bool(effective_data.get('intelligentScanner', False)),  # Auto-scan all symbols & reallocate
                 'profitProtection': _normalize_profit_protection_config(data.get('profitProtection')),
                 'maxOpenPositions': max_open_positions,
@@ -26666,8 +26748,26 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             _symbol_perf_multiplier = 1.0
 
                         # Dynamic position sizing
+                        binance_market_name = str(
+                            bot_config.get('binanceMarket')
+                            or bot_config.get('market')
+                            or getattr(active_conn, 'market', 'spot')
+                            or 'spot'
+                        ).strip().lower()
                         configured_trade_amount = bot_config.get('tradeAmount')
                         fixed_trade_amount = configured_trade_amount
+                        if not fixed_trade_amount and canonicalize_broker_name(broker_type) == 'Binance':
+                            balance_basis = max(
+                                float(bot_config.get('accountEquity') or 0.0),
+                                float(bot_config.get('accountBalance') or 0.0),
+                            )
+                            fixed_trade_amount = derive_binance_default_trade_amount(
+                                balance_basis,
+                                bot_config.get('displayCurrency'),
+                                binance_market_name,
+                                bot_config.get('effectiveMaxOpenPositions') or bot_config.get('maxOpenPositions') or 3,
+                                str(bot_config.get('mode') or 'demo').lower() == 'live',
+                            )
                         if not fixed_trade_amount and _normalize_management_profile(bot_config.get('managementProfile')) == 'small_account':
                             balance_basis = max(
                                 float(bot_config.get('accountEquity') or 0.0),
@@ -26685,6 +26785,9 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         bot_currency = str(bot_config.get('displayCurrency') or 'USD').upper()
                         fixed_trade_volume = None
                         mt5_api = mt5_conn.mt5 if (is_mt5 and mt5_conn and hasattr(mt5_conn, 'mt5')) else None
+                        futures_controls = {'enabled': False}
+                        if canonicalize_broker_name(broker_type) == 'Binance' and binance_market_name == 'futures':
+                            futures_controls = _resolve_binance_futures_order_controls(bot_config)
                         if fixed_trade_amount:
                             adaptive_trade_amount, sizing_snapshot = _resolve_adaptive_trade_amount(
                                 bot_config,
@@ -26698,6 +26801,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 bot_currency,
                                 broker_type,
                                 mt5_api=mt5_api,
+                                market_name=binance_market_name,
+                                exchange_leverage=float(futures_controls.get('exchangeLeverage') or 1.0),
                             )
                             position_size = 1.0
                             conversion_note = volume_details.get('conversion_note')
@@ -26707,7 +26812,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 f"💵 Bot {bot_id}: Adaptive trade amount {float(fixed_trade_amount):.2f} {bot_currency} "
                                 f"(base {float(_safe_float(configured_trade_amount, fixed_trade_amount)):.2f}, "
                                 f"multiplier {_safe_float(sizing_snapshot.get('multiplier'), 1.0):.2f}) -> "
-                                f"target volume {fixed_trade_volume:.4f} lots ({volume_details.get('method')})"
+                                f"target volume {fixed_trade_volume:.4f} units ({volume_details.get('method')})"
                             )
                             if is_mt5 and mt5_api is not None and fixed_trade_volume is not None:
                                 try:
@@ -26755,6 +26860,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 bot_currency,
                                 broker_type,
                                 market_price=float(market_data.get('current_price', 0.0) or 0.0),
+                                market_name=binance_market_name,
+                                exchange_leverage=float(futures_controls.get('exchangeLeverage') or 1.0),
                             )
                         
                         # Get trade direction from the cached signal evaluation for this cycle.
@@ -27450,12 +27557,22 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     break
                         else:
                             try:
+                                order_kwargs = {
+                                    'quote_amount': float(fixed_trade_amount or 0.0),
+                                    'market_price': float(market_data.get('current_price', 0.0) or 0.0),
+                                }
+                                if canonicalize_broker_name(broker_type) == 'Binance' and binance_market_name == 'futures':
+                                    if futures_controls.get('enabled'):
+                                        order_kwargs['exchange_leverage'] = int(futures_controls.get('exchangeLeverage') or BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE)
+                                        order_kwargs['margin_type'] = str(futures_controls.get('marginType') or 'ISOLATED')
+                                        bot_config['effectiveBinanceFuturesLeverage'] = int(order_kwargs['exchange_leverage'])
+                                        bot_config['lastBinanceFuturesLeverageReason'] = futures_controls.get('reason')
+
                                 order_result = active_conn.place_order(
                                     symbol=symbol,
                                     order_type=order_type,
                                     volume=round(adjusted_volume, 4),
-                                    quote_amount=float(fixed_trade_amount or 0.0),
-                                    market_price=float(market_data.get('current_price', 0.0) or 0.0),
+                                    **order_kwargs,
                                 )
                                 if order_result.get('success', False):
                                     logger.info(f"✅ Bot {bot_id}: {broker_type} order placed on {order_result.get('symbol', symbol)}")
