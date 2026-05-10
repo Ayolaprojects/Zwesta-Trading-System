@@ -17787,6 +17787,39 @@ def log_pause_event(bot_id: str, user_id: str, symbol: str, pause_type: str, ret
         return None
 
 
+def _resolve_binance_market_for_context(
+    *,
+    credential_row: Optional[Dict[str, Any]] = None,
+    bot_id: Optional[str] = None,
+    bot_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    normalized_market = str(
+        (bot_config or {}).get('binanceMarket')
+        or (bot_config or {}).get('market')
+        or ''
+    ).strip().lower()
+    if normalized_market in {'spot', 'futures'}:
+        return normalized_market
+
+    runtime_bot = active_bots.get(str(bot_id)) if bot_id and isinstance(active_bots, dict) else None
+    normalized_market = str(
+        (runtime_bot or {}).get('binanceMarket')
+        or (runtime_bot or {}).get('market')
+        or ''
+    ).strip().lower()
+    if normalized_market in {'spot', 'futures'}:
+        return normalized_market
+
+    normalized_market = str(
+        (credential_row or {}).get('market')
+        or (credential_row or {}).get('server')
+        or 'spot'
+    ).strip().lower()
+    if normalized_market not in {'spot', 'futures'}:
+        normalized_market = 'spot'
+    return normalized_market
+
+
 def _get_bot_thread_credentials(bot_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     credential_id = bot_config.get('credentialId')
     resolved_credential = _resolve_active_broker_credential_for_bot(
@@ -17827,11 +17860,17 @@ def _get_bot_thread_credentials(bot_config: Dict[str, Any]) -> Optional[Dict[str
 
         broker_name = canonicalize_broker_name(credential_row['broker_name'])
         if broker_name == 'Binance':
+            resolved_market = _resolve_binance_market_for_context(
+                credential_row=credential_row,
+                bot_id=bot_config.get('botId'),
+                bot_config=bot_config,
+            )
             return {
                 'api_key': credential_row['api_key'],
                 'api_secret': credential_row['password'],
                 'account_number': credential_row['account_number'],
-                'server': credential_row['server'] or 'spot',
+                'server': resolved_market,
+                'market': resolved_market,
                 'is_live': bool(credential_row['is_live']),
             }
 
@@ -25939,13 +25978,30 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     
                     if cred_row:
                         cred_dict = decrypt_credential_row(cred_row)
-                        bot_credentials = {
-                            'account': cred_dict.get('account_number', ''),
-                            'password': cred_dict.get('password', ''),
-                            'server': cred_dict.get('server', 'Exness-MT5Real27'),
-                            'broker': cred_dict.get('broker_name', 'Exness'),
-                            'is_live': bool(cred_dict.get('is_live', False))
-                        }
+                        resolved_broker_name = canonicalize_broker_name(cred_dict.get('broker_name', 'Exness'))
+                        if resolved_broker_name == 'Binance':
+                            resolved_market = _resolve_binance_market_for_context(
+                                credential_row=cred_dict,
+                                bot_id=bot_id,
+                                bot_config=bot_config,
+                            )
+                            bot_credentials = {
+                                'api_key': cred_dict.get('api_key', ''),
+                                'api_secret': cred_dict.get('password', ''),
+                                'account_number': cred_dict.get('account_number', ''),
+                                'server': resolved_market,
+                                'market': resolved_market,
+                                'broker': resolved_broker_name,
+                                'is_live': bool(cred_dict.get('is_live', False)),
+                            }
+                        else:
+                            bot_credentials = {
+                                'account': cred_dict.get('account_number', ''),
+                                'password': cred_dict.get('password', ''),
+                                'server': cred_dict.get('server', 'Exness-MT5Real27'),
+                                'broker': resolved_broker_name,
+                                'is_live': bool(cred_dict.get('is_live', False))
+                            }
                         logger.info(f"📌 Bot {bot_id}: Loaded credentials from database (credential_id={credential_id})")
                     else:
                         logger.warning(f"⚠️  Bot {bot_id}: Credential {credential_id} not found in database")
@@ -28908,7 +28964,11 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
             api_key = cred['api_key']
             api_secret = cred['password']
             account_number = cred['account_number']
-            server = cred['server'] or 'spot'
+            resolved_market = _resolve_binance_market_for_context(
+                credential_row=cred,
+                bot_id=bot_id,
+                bot_config=active_bots.get(str(bot_id)) if bot_id and isinstance(active_bots, dict) else None,
+            )
             is_live = cred['is_live']
 
             if not api_key or not api_secret:
@@ -28920,11 +28980,12 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                 'api_key': api_key,
                 'api_secret': api_secret,
                 'account_number': account_number,
-                'server': server,
+                'server': resolved_market,
+                'market': resolved_market,
                 'is_live': is_live,
             })
             if binance_conn.connect():
-                logger.info(f"✅ {context_label}: Connected to Binance ({account_number or server})")
+                logger.info(f"✅ {context_label}: Connected to Binance ({account_number or resolved_market}, market={resolved_market})")
                 return 'Binance', binance_conn
             error_msg = 'Failed to connect to Binance'
             logger.error(error_msg)
