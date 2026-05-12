@@ -21,12 +21,11 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     // Set environment based on build mode
-    // Release/Production builds use VPS, Debug uses localhost
+    // Both debug and release default to the VPS backend unless API_URL is
+    // supplied via --dart-define.
     if (kReleaseMode) {
-      // Production: Use VPS IP
       EnvironmentConfig.setEnvironment(Environment.production);
     } else {
-      // Debug: Use staging (VPS) by default for testing
       const String envMode = String.fromEnvironment('ZWESTA_ENV', defaultValue: 'staging');
       EnvironmentConfig.setEnvironment(
         envMode == 'development'

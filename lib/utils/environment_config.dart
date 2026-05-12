@@ -3,11 +3,11 @@ import 'package:flutter/foundation.dart';
 enum Environment { development, staging, production }
 
 class EnvironmentConfig {
-  // Default API URLs — use HTTPS when SSL certs are deployed on VPS
-  // Change to https:// once cert.pem/key.pem are placed on the VPS
-  static const String _devApiUrl = 'http://148.113.5.39:9000';  // VPS development
-  static const String _stagingApiUrl = 'http://148.113.5.39:9000';  // VPS staging
-  static const String _prodApiUrl = 'http://148.113.5.39:9000';  // VPS production
+  // Default API URLs point to the VPS backend unless overridden with
+  // --dart-define=API_URL=... at build or run time.
+  static const String _devApiUrl = 'http://148.113.5.39:9000';
+  static const String _stagingApiUrl = 'http://148.113.5.39:9000';
+  static const String _prodApiUrl = 'http://148.113.5.39:9000';
 
   static const String _devApiKey = 'your_generated_api_key_here_dev';
   static const String _stagingApiKey = 'your_generated_api_key_here_staging';
@@ -30,13 +30,13 @@ class EnvironmentConfig {
   static String? _overrideApiUrl;
   static bool? _overrideOfflineMode;
 
-  static Environment _currentEnvironment = kDebugMode 
-      ? Environment.staging  // Use VPS in debug mode (staging = VPS IP)
+    static Environment _currentEnvironment = kDebugMode 
+      ? Environment.development
       : Environment.production;
 
   static Environment get currentEnvironment => _currentEnvironment;
 
-  /// Set custom API URL (useful for VPS configuration)
+  /// Set custom API URL at runtime.
   static void setApiUrl(String url) {
     _overrideApiUrl = url;
   }

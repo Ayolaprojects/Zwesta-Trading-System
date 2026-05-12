@@ -9,6 +9,12 @@ REM   3. Android Emulator (if available)
 REM ============================================================================
 
 cd /d "%~dp0"
+set "FLUTTER_BIN=C:\tools\flutter\bin\flutter.bat"
+
+if not exist "%FLUTTER_BIN%" (
+  echo ERROR: Flutter SDK not found at %FLUTTER_BIN%
+  exit /b 1
+)
 
 echo.
 echo ================================================================================
@@ -53,7 +59,7 @@ REM ============================================================================
 echo.
 echo [Step 3] Starting Flutter Web on Port 3001...
 echo.
-start "Zwesta Frontend (Port 3001)" /d "%~dp0" cmd /k "flutter run -d chrome --web-port=3001"
+start "Zwesta Frontend (Port 3001)" /d "%~dp0" cmd /k "\"%FLUTTER_BIN%\" run -d chrome --web-port=3001"
 echo [Step 3] OK - Web app starting in new terminal...
 timeout /t 3 /nobreak >NUL
 
