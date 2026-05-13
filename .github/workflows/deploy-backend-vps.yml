@@ -1,0 +1,44 @@
+name: Deploy Backend to VPS
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - '_vps_deploy_bundle/**'
+      - '.github/workflows/deploy-backend-vps.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-backend-bundle:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate backend bundle syntax
+        run: python -m py_compile _vps_deploy_bundle/multi_broker_backend_updated.py
+
+      - name: Package backend deploy bundle
+        run: |
+          mkdir -p dist
+          cd _vps_deploy_bundle
+          zip -r ../dist/backend-deploy-bundle.zip . -x "*/__pycache__/*"
+
+      - name: Upload backend bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-deploy-bundle-${{ github.run_number }}
+          path: dist/backend-deploy-bundle.zip
+          retention-days: 30
