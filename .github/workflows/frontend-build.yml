@@ -1,5 +1,8 @@
 name: Frontend Build
 
+# Touching this workflow file is enough to re-run the frontend build when
+# backend-only pushes would otherwise miss the path filters below.
+
 on:
   push:
     branches:
