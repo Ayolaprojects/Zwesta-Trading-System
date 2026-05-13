@@ -37,6 +37,23 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
 
+      - name: Resolve Flutter app gitlink ref
+        id: flutter_ref
+        run: |
+          APP_REF="$(git rev-parse HEAD:"Zwesta Flutter App")"
+          echo "ref=$APP_REF" >> "$GITHUB_OUTPUT"
+          echo "Resolved Flutter app ref: $APP_REF"
+
+      - name: Materialize Flutter app source
+        run: |
+          rm -rf "Zwesta Flutter App"
+
+      - name: Checkout Flutter app source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.flutter_ref.outputs.ref }}
+          path: Zwesta Flutter App
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
