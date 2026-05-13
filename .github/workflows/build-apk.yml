@@ -27,6 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEFAULT_API_URL: http://148.113.5.39:9000
+    defaults:
+      run:
+        working-directory: Zwesta Flutter App
 
     steps:
       - name: Checkout code
