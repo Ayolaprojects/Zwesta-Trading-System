@@ -255,6 +255,17 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     return '$symbol$absoluteAmount';
   }
 
+  String _formatPositionSize(
+    double quantity, {
+    required bool isBinance,
+  }) {
+    if (isBinance) {
+      final decimals = quantity >= 1 ? 3 : (quantity >= 0.1 ? 4 : 6);
+      return '${quantity.toStringAsFixed(decimals)} qty';
+    }
+    return '${quantity.toStringAsFixed(2)} lots';
+  }
+
   String _formatProfileLabel(String? profile) {
     switch ((profile ?? '').trim().toLowerCase()) {
       case 'beginner':
@@ -1071,14 +1082,19 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final isPromotionEligible = isDemoBot && (bot['promotionEligible'] == true || promotionStatus == 'ready');
     final accountBalance = double.tryParse(bot['accountBalance']?.toString() ?? '0') ?? 0;
     final accountEquity = double.tryParse(bot['accountEquity']?.toString() ?? '0') ?? 0;
-    final capitalBasis = double.tryParse(bot['roiBasis']?.toString() ?? '0') ??
+    final effectiveTradeAmount = double.tryParse(bot['effectiveTradeAmount']?.toString() ?? '0') ?? 0;
+    final configuredCapital = effectiveTradeAmount > 0
+      ? effectiveTradeAmount
+      : (tradeAmount > 0 ? tradeAmount : 0);
+    final investedCapital = double.tryParse(bot['roiBasis']?.toString() ?? '0') ??
       double.tryParse(bot['totalInvestment']?.toString() ?? '0') ??
-      accountBalance;
+      0;
     final openPositionsCount = int.tryParse(bot['openPositionsCount']?.toString() ?? '${openPositions.length}') ?? openPositions.length;
     final symbols = bot['symbol'] ?? bot['symbols'] ?? 'N/A';
     final strategy = bot['strategy'] ?? 'Auto';
     final brokerType = bot['broker_type'] ?? bot['broker'] ?? 'MT5';
     final brokerLabel = _botConnectionLabel(bot);
+    final isBinanceBot = _normalizeBrokerLabel(bot['brokerName'] ?? brokerType).toLowerCase() == 'binance';
     final brokerAccent = _brokerAccentColor(_normalizeBrokerLabel(bot['brokerName'] ?? brokerType));
     final displayCurrency = _botDisplayCurrency(bot);
     final tradeAmount = double.tryParse(bot['tradeAmount']?.toString() ?? '0') ?? 0;
@@ -1333,7 +1349,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ),
                     ],
                   ),
-                  if (capitalBasis > 0) ...[
+                  if (configuredCapital > 0) ...[
                     const SizedBox(height: 4),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1343,13 +1359,36 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                           children: [
                             const Icon(Icons.savings_outlined, color: Color(0xFFFFA726), size: 16),
                             const SizedBox(width: 8),
-                            Text('Capital', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                            Text('Trade Capital', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
                           ],
                         ),
                         Flexible(
                           child: Text(
-                            _formatAmount(currencyProvider, capitalBasis, currencyCode: displayCurrency),
+                            _formatAmount(currencyProvider, configuredCapital, currencyCode: displayCurrency),
                             style: GoogleFonts.poppins(color: const Color(0xFFFFA726), fontWeight: FontWeight.w600, fontSize: 13),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (investedCapital > 0 && (configuredCapital <= 0 || (investedCapital - configuredCapital).abs() >= 0.01)) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.insights_outlined, color: Color(0xFFAB47BC), size: 16),
+                            const SizedBox(width: 8),
+                            Text('Invested', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                          ],
+                        ),
+                        Flexible(
+                          child: Text(
+                            _formatAmount(currencyProvider, investedCapital, currencyCode: displayCurrency),
+                            style: GoogleFonts.poppins(color: const Color(0xFFAB47BC), fontWeight: FontWeight.w600, fontSize: 13),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -1452,7 +1491,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         const Spacer(),
                         Flexible(
                           child: Text(
-                            '${posVolume.toStringAsFixed(2)} lots',
+                            _formatPositionSize(posVolume, isBinance: isBinanceBot),
                             style: GoogleFonts.poppins(color: Colors.white54, fontSize: 11),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -1468,7 +1507,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         if (posCurrent > 0 || posProfit != 0) ...[
                           const SizedBox(width: 6),
                           Text(
-                            _formatAmount(currencyProvider, posProfit, currencyCode: displayCurrency),
+                            'P/L ${_formatAmount(currencyProvider, posProfit, currencyCode: displayCurrency)}',
                             style: GoogleFonts.poppins(
                               color: posProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
                               fontSize: 11,
