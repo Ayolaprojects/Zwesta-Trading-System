@@ -580,13 +580,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _loadPreferredBrokerDisplay();
-    _fetchRealBots();
-    _fetchBrokerBalances();
-    _fetchRecentWithdrawals();
+    _runInitialDashboardLoads();
     // Delay auto refresh to avoid calling ModalRoute too early
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startAutoRefresh();
     });
+  }
+
+  void _runInitialDashboardLoads() {
+    _fetchRealBots();
+    _fetchBrokerBalances();
+    _fetchRecentWithdrawals();
   }
 
   @override
@@ -811,7 +815,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _totalBrokerBalance = (localSnapshot['balance'] as num?)?.toDouble() ?? 0.0;
         });
       }
-      rethrow; // Propagate error for retry logic
     } finally {
       if (mounted) setState(() => _brokerBalancesLoading = false);
     }
@@ -848,7 +851,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     } catch (e) {
       print('DEBUG: Withdrawal fetch error: $e');
-      rethrow; // Propagate error for retry logic
     } finally {
       if (mounted) setState(() => _withdrawalsLoading = false);
     }
@@ -895,7 +897,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) {
       // Don't wipe existing bot data on refresh errors - preserve previous data
       print('⚠️ Bot refresh error (keeping previous data): $e');
-      rethrow; // Propagate error for retry logic
     }
   }
 

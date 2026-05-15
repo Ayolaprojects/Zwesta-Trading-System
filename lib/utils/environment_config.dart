@@ -8,6 +8,7 @@ class EnvironmentConfig {
   static const String _devApiUrl = 'http://148.113.5.39:9000';
   static const String _stagingApiUrl = 'http://148.113.5.39:9000';
   static const String _prodApiUrl = 'http://148.113.5.39:9000';
+  static const int _localApiPort = 9000;
 
   static const String _devApiKey = 'your_generated_api_key_here_dev';
   static const String _stagingApiKey = 'your_generated_api_key_here_staging';
@@ -61,6 +62,11 @@ class EnvironmentConfig {
     const String envVar = String.fromEnvironment('API_URL', defaultValue: '');
     if (envVar.isNotEmpty) {
       return envVar;
+    }
+
+    final String? localWebApiUrl = _deriveLocalWebApiUrl();
+    if (localWebApiUrl != null) {
+      return localWebApiUrl;
     }
 
     // Fall back to default based on environment
@@ -174,6 +180,25 @@ class EnvironmentConfig {
       'Authorization': 'Bearer ${EnvironmentConfig.apiKey}',
       'Accept': 'application/json',
     };
+  }
+
+  static String? _deriveLocalWebApiUrl() {
+    if (!kIsWeb) {
+      return null;
+    }
+
+    final String host = Uri.base.host.trim();
+    if (host.isEmpty) {
+      return null;
+    }
+
+    final bool isLocalHost = host == 'localhost' || host == '127.0.0.1';
+    final bool isPrivateLanHost = host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.');
+    if (!isLocalHost && !isPrivateLanHost) {
+      return null;
+    }
+
+    return 'http://$host:$_localApiPort';
   }
 
   /// Get current configuration summary for debugging

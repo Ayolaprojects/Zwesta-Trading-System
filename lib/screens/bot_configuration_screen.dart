@@ -671,6 +671,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   // Small Account Presets
   String? _selectedPreset;
+  List<Map<String, dynamic>> _testedBotTemplates = [];
+  bool _isLoadingTestedBotTemplates = false;
 
   static const Map<String, Map<String, dynamic>> _smallAccountPresets = {
     'crypto': {
@@ -1872,6 +1874,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       }
     }
     await _fetchTradingData();
+    await _loadTestedBotTemplates();
   }
 
   Future<void> _alignActiveCredentialWithTradingMode({
@@ -2053,10 +2056,251 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     if (_activeBrokerName == 'fxcm') {
       _preloadFxcmSymbols();
       await _fetchCommodityData(showLoading: false);
+      if (mounted) {
+        setState(() {
+          _testedBotTemplates = [];
+          _isLoadingTestedBotTemplates = false;
+        });
+      }
       return;
     }
 
     await _fetchCommodityData();
+  }
+
+  Future<void> _loadTestedBotTemplates() async {
+    if (!mounted) {
+      return;
+    }
+    if (_isEditMode || _isCloneMode || !_isBinanceBroker) {
+      setState(() {
+        _testedBotTemplates = [];
+        _isLoadingTestedBotTemplates = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoadingTestedBotTemplates = true;
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sessionToken = prefs.getString('auth_token') ?? '';
+      if (sessionToken.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _testedBotTemplates = [];
+          _isLoadingTestedBotTemplates = false;
+        });
+        return;
+      }
+
+      final response = await http
+          .get(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/templates?broker=Binance'),
+            headers: {'X-Session-Token': sessionToken},
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (!mounted) {
+        return;
+      }
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final templates = List<Map<String, dynamic>>.from(
+          data['templates'] ?? const <Map<String, dynamic>>[],
+        );
+        setState(() {
+          _testedBotTemplates = templates;
+          _isLoadingTestedBotTemplates = false;
+        });
+        return;
+      }
+
+      setState(() {
+        _testedBotTemplates = [];
+        _isLoadingTestedBotTemplates = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load tested bot templates: $e');
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _testedBotTemplates = [];
+        _isLoadingTestedBotTemplates = false;
+      });
+    }
+  }
+
+  String _defaultBotIdFromTemplate(Map<String, dynamic> template) {
+    final base = (template['name'] ?? template['botName'] ?? template['sourceBotId'] ?? 'binance_template')
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9_\-]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    final prefix = base.isEmpty ? 'binance_template' : base;
+    return '${prefix}_${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  Future<void> _createBotFromTemplate(Map<String, dynamic> template) async {
+    if (!_brokerService.hasCredentials || _brokerService.activeCredential == null) {
+      _showError('Please connect a Binance broker account first.');
+      return;
+    }
+
+    final credential = _brokerService.activeCredential!;
+    if (credential.broker.toLowerCase().trim() != 'binance') {
+      _showError('Tested templates are currently available for Binance only.');
+      return;
+    }
+
+    final sourceBotId = (template['sourceBotId'] ?? '').toString().trim();
+    if (sourceBotId.isEmpty) {
+      _showError('Selected template is missing a source bot reference.');
+      return;
+    }
+
+    setState(() {
+      _isCreating = true;
+      _errorMessage = null;
+      _successMessage = null;
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sessionToken = prefs.getString('auth_token') ?? '';
+      if (sessionToken.isEmpty) {
+        throw Exception('Session expired. Please login again.');
+      }
+
+      final templateSymbols = List<String>.from(
+        (template['symbols'] as List?) ?? const <String>[],
+      );
+      final targetBotId = _botIdController.text.trim().isNotEmpty
+          ? _botIdController.text.trim()
+          : _defaultBotIdFromTemplate(template);
+      if (_botIdController.text.trim().isEmpty) {
+        _botIdController.text = targetBotId;
+      }
+
+      final botPayload = _buildBotPayload(credential);
+      botPayload['botId'] = targetBotId;
+      botPayload['name'] = targetBotId;
+      botPayload['symbols'] = templateSymbols.isNotEmpty
+          ? templateSymbols
+          : List<String>.from(_selectedSymbols);
+      botPayload['strategy'] = (template['strategy'] ?? botPayload['strategy']).toString();
+      botPayload['managementProfile'] = (template['managementProfile'] ?? botPayload['managementProfile']).toString();
+      botPayload['selectedPreset'] = template['selectedPreset'];
+      botPayload['presetName'] = template['presetName'];
+      botPayload['autoStart'] = false;
+      botPayload['enabled'] = false;
+
+      final createResponse = await http
+          .post(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/create'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+            body: jsonEncode(botPayload),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      final createData = jsonDecode(createResponse.body);
+      if (createResponse.statusCode != 200 && createResponse.statusCode != 201) {
+        throw Exception(
+          createData['error'] ?? 'Failed to create bot: ${createResponse.statusCode}',
+        );
+      }
+
+      final createdBotId =
+          (createData['botId']?.toString().trim().isNotEmpty ?? false)
+          ? createData['botId'].toString().trim()
+          : targetBotId;
+
+      final syncResponse = await http
+          .post(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/config/$createdBotId/sync-profile'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+            body: jsonEncode({
+              'sourceBotId': sourceBotId,
+              'includeAdaptiveState': true,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      final syncData = jsonDecode(syncResponse.body);
+      if (syncResponse.statusCode != 200 || syncData['success'] != true) {
+        throw Exception(
+          syncData['error'] ?? 'Failed to sync tested template onto new bot.',
+        );
+      }
+
+      final startResponse = await http
+          .post(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/start'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+            body: jsonEncode({'botId': createdBotId, 'user_id': null}),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      final startSucceeded = startResponse.statusCode == 200;
+      String message;
+      if (!startSucceeded) {
+        final startError = jsonDecode(startResponse.body);
+        message =
+            'Template bot created and synced successfully.\n'
+            'Bot ID: $createdBotId\n'
+            'Source template: ${template['name'] ?? sourceBotId}\n\n'
+            'The bot did not start automatically: ${startError['error'] ?? 'Unknown startup failure'}';
+      } else {
+        message =
+            'Template bot created, synced, and started successfully.\n'
+            'Bot ID: $createdBotId\n'
+            'Source template: ${template['name'] ?? sourceBotId}\n\n'
+            'The bot is now running with the tested configuration and adaptive state.';
+      }
+
+      final botService = Provider.of<BotService>(context, listen: false);
+      final currentTradingMode = await _currentTradingMode();
+      await botService.fetchActiveBots(
+        tradingMode: currentTradingMode,
+        force: true,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _successMessage = message;
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _errorMessage = e.toString().replaceFirst('Exception: ', '');
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCreating = false;
+        });
+      }
+    }
   }
 
   Future<void> _fetchCommodityData({bool showLoading = true}) async {
@@ -3534,6 +3778,156 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
+
+                    if (!_isEditMode && !_isCloneMode && _isBinanceBroker) ...[
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.orange.withOpacity(0.5)),
+                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.orange.withOpacity(0.06),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.auto_awesome, color: Colors.orange),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Tested Binance Templates',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Create a new bot from one of your tested Binance bots. The app will create it, copy the exact config and adaptive state, then start it.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey[300],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                TextButton.icon(
+                                  onPressed: _isLoadingTestedBotTemplates
+                                      ? null
+                                      : _loadTestedBotTemplates,
+                                  icon: const Icon(Icons.refresh, size: 18),
+                                  label: const Text('Refresh'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            if (_isLoadingTestedBotTemplates)
+                              const Center(child: CircularProgressIndicator())
+                            else if (_testedBotTemplates.isEmpty)
+                              Text(
+                                'No Binance source bots are available yet. Create or run at least one Binance bot first, then it will appear here as a reusable template.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[400],
+                                ),
+                              )
+                            else
+                              SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(
+                                  children: _testedBotTemplates.map((template) {
+                                    final symbolsPreview = List<String>.from(
+                                      (template['symbolsPreview'] as List?) ?? const <String>[],
+                                    );
+                                    final isTested = template['isTested'] == true;
+                                    return Container(
+                                      width: 300,
+                                      margin: const EdgeInsets.only(right: 12),
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withOpacity(0.12),
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(color: Colors.white12),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  (template['name'] ?? template['botName'] ?? template['sourceBotId']).toString(),
+                                                  style: const TextStyle(
+                                                    fontSize: 15,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: (isTested ? Colors.green : Colors.blueGrey).withOpacity(0.18),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                ),
+                                                child: Text(
+                                                  isTested ? 'Tested' : 'Template',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: isTested ? Colors.greenAccent : Colors.white70,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Preset: ${((template['presetName'] ?? '').toString().trim().isEmpty ? 'Custom' : template['presetName'])} • Profile: ${template['managementProfile'] ?? 'n/a'}',
+                                            style: TextStyle(fontSize: 12, color: Colors.grey[300]),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Trades: ${template['totalTrades'] ?? 0} • Win rate: ${template['winRate'] ?? 0}% • Profit: ${template['totalProfit'] ?? 0}',
+                                            style: TextStyle(fontSize: 12, color: Colors.grey[300]),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Market: ${template['binanceMarket'] ?? 'spot'} • Effective trade amount: ${template['effectiveTradeAmount'] ?? 0}',
+                                            style: TextStyle(fontSize: 12, color: Colors.grey[300]),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            symbolsPreview.isEmpty
+                                                ? 'Symbols will be copied from the source bot.'
+                                                : 'Symbols: ${symbolsPreview.join(', ')}${(template['symbolsCount'] ?? symbolsPreview.length) > symbolsPreview.length ? ' +' : ''}',
+                                            style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: ElevatedButton.icon(
+                                              onPressed: _isCreating
+                                                  ? null
+                                                  : () => _createBotFromTemplate(template),
+                                              icon: const Icon(Icons.flash_on, size: 18),
+                                              label: const Text('Create From Tested Bot'),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }).toList(),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
 
                     // Bot ID and Strategy (Side by Side)
                     Row(
