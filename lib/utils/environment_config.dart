@@ -9,6 +9,7 @@ class EnvironmentConfig {
   static const String _stagingApiUrl = 'http://148.113.5.39:9000';
   static const String _prodApiUrl = 'http://148.113.5.39:9000';
   static const int _localApiPort = 9000;
+  static const bool _defaultUseLocalWebApi = false;
 
   static const String _devApiKey = 'your_generated_api_key_here_dev';
   static const String _stagingApiKey = 'your_generated_api_key_here_staging';
@@ -184,6 +185,14 @@ class EnvironmentConfig {
 
   static String? _deriveLocalWebApiUrl() {
     if (!kIsWeb) {
+      return null;
+    }
+
+    const String envVar = String.fromEnvironment('USE_LOCAL_WEB_API', defaultValue: '');
+    final bool useLocalWebApi = envVar.isEmpty
+        ? _defaultUseLocalWebApi
+        : envVar.toLowerCase() == 'true';
+    if (!useLocalWebApi) {
       return null;
     }
 

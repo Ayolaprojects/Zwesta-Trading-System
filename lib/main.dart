@@ -22,7 +22,8 @@ void main() async {
   try {
     // Set environment based on build mode
     // Both debug and release default to the VPS backend unless API_URL is
-    // supplied via --dart-define.
+    // supplied via --dart-define. Local web routing is opt-in via
+    // --dart-define=USE_LOCAL_WEB_API=true.
     if (kReleaseMode) {
       EnvironmentConfig.setEnvironment(Environment.production);
     } else {

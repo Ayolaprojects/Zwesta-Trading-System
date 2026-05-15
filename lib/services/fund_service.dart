@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import '../utils/environment_config.dart';
+
 class FundService with ChangeNotifier {
-  final String _apiUrl = 'http://localhost:5000'; // Update to your backend URL
+  final String _apiUrl = EnvironmentConfig.apiUrl;
   String? _errorMessage;
   bool _isLoading = false;
 
