@@ -6219,7 +6219,7 @@ class BinanceConnection(BrokerConnection):
                 return
 
             endpoint = f"{self.base_url}/v3/time"
-            resp = requests.get(endpoint, timeout=10)
+            resp = requests.get(endpoint, timeout=5)
             if resp.status_code != 200:
                 return
 
@@ -6393,15 +6393,23 @@ class BinanceConnection(BrokerConnection):
                 account_endpoint,
             )
 
-            resp = self._request_with_time_retry(
-                'GET',
-                account_endpoint,
-                headers=self._headers(),
-                params={},
-                timeout=30,
-            )
-            self._record_auth_attempt('primary', account_endpoint, response=resp)
-            if resp.status_code == 200:
+            auth_timeout = 12
+            resp = None
+            primary_exception = None
+            try:
+                resp = self._request_with_time_retry(
+                    'GET',
+                    account_endpoint,
+                    headers=self._headers(),
+                    params={},
+                    timeout=auth_timeout,
+                )
+                self._record_auth_attempt('primary', account_endpoint, response=resp)
+            except Exception as exc:
+                primary_exception = exc
+                self._record_auth_attempt('primary', account_endpoint, exc=exc)
+
+            if resp is not None and resp.status_code == 200:
                 self.connected = True
                 self.get_account_info()
                 return True
@@ -6414,7 +6422,9 @@ class BinanceConnection(BrokerConnection):
                 self.get_account_info()
                 return True
 
-            if not bool(self.credentials.get('is_live', False)) and self.market != 'futures' and self._is_invalid_demo_auth_response(resp):
+            if not bool(self.credentials.get('is_live', False)) and self.market != 'futures' and (
+                primary_exception is not None or self._is_invalid_demo_auth_response(resp)
+            ):
                 if self._try_live_spot_endpoint_fallback():
                     logger.warning('Binance demo auth failed, but live spot auth succeeded; treating this credential as live.')
                     self.credentials['is_live'] = True
@@ -6441,6 +6451,15 @@ class BinanceConnection(BrokerConnection):
                         'BINANCE_MODE_MISMATCH',
                     )
                     return False
+
+            if primary_exception is not None:
+                attempted = self._describe_auth_attempts()
+                self._set_last_error(
+                    f'Error connecting to Binance: {primary_exception}' + (f' Attempted endpoints: {attempted}' if attempted else ''),
+                    'EXCEPTION',
+                )
+                logger.error(f"Error connecting to Binance: {primary_exception} | attempts={attempted}")
+                return False
 
             error_message, error_code = self._format_auth_error(resp)
             self._set_last_error(error_message, error_code)
@@ -16627,7 +16646,6 @@ def evaluate_open_positions_for_reallocation(bot_config, opportunities, active_c
     
     max_positions = bot_config.get('effectiveMaxOpenPositions') or bot_config.get('maxOpenPositions', 2)
     open_count = len(tracked)
-    
     # If we have room for more positions, no need to close anything
     if open_count < max_positions:
         return [], []
@@ -16640,9 +16658,20 @@ def evaluate_open_positions_for_reallocation(bot_config, opportunities, active_c
         pos_symbol = pos.get('symbol', '')
         open_symbols.add(pos_symbol)
         profit = pos.get('profit', 0)
+        base_symbol = _normalize_symbol_base(pos_symbol)
+        position_age_minutes = _position_age_minutes(
+            pos.get('entryTime') or pos.get('openTime') or pos.get('time')
+        )
+        min_hold_minutes = _minimum_position_hold_minutes(
+            bot_config,
+            {'symbol': base_symbol},
+        )
         
         # Never close a winning position
         if profit > 0:
+            continue
+
+        if position_age_minutes < min_hold_minutes:
             continue
         
         # Check if the CURRENT signal for this symbol has weakened
@@ -16699,6 +16728,64 @@ def evaluate_open_positions_for_reallocation(bot_config, opportunities, active_c
             break
     
     return tickets_to_close, replacement_symbols
+
+
+def _is_exness_forex_symbol(symbol: str) -> bool:
+    base_symbol = _normalize_symbol_base(symbol)
+    currency_codes = {'AUD', 'CAD', 'CHF', 'EUR', 'GBP', 'JPY', 'NZD', 'USD', 'ZAR'}
+    return (
+        len(base_symbol) == 6
+        and base_symbol[:3] in currency_codes
+        and base_symbol[3:] in currency_codes
+    )
+
+
+def _minimum_position_hold_minutes(
+    bot_config: Dict[str, Any],
+    protection_config: Optional[Dict[str, Any]] = None,
+) -> float:
+    protection_config = protection_config or _normalize_profit_protection_config(bot_config.get('profitProtection'))
+    min_hold = max(
+        _safe_float(bot_config.get('reallocationMinHoldMinutes'), 0.0),
+        _safe_float((protection_config or {}).get('minimumHoldMinutes'), 0.0),
+    )
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
+    if broker_name == 'Exness':
+        symbols = bot_config.get('symbols') if isinstance(bot_config.get('symbols'), list) else []
+        symbol_candidates = [str(sym or '').strip() for sym in symbols if sym]
+        if isinstance(protection_config, dict):
+            symbol_candidates.append(str(protection_config.get('symbol') or '').strip())
+        base_symbols = {_normalize_symbol_base(symbol) for symbol in symbol_candidates if symbol}
+        if base_symbols & {'BTCUSD', 'ETHUSD'}:
+            min_hold = max(min_hold, 5.0)
+        elif any(_is_exness_forex_symbol(symbol) for symbol in base_symbols):
+            min_hold = max(min_hold, 4.0)
+        else:
+            min_hold = max(min_hold, 3.0)
+    return round(min_hold, 2)
+
+
+def _protected_symbol_cooldown_minutes(
+    bot_config: Dict[str, Any],
+    symbol: str,
+    protection_config: Optional[Dict[str, Any]] = None,
+) -> float:
+    protection_config = protection_config or {}
+    cooldown_minutes = _safe_float(protection_config.get('protectedSymbolCooldownMinutes'), 5.0)
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
+    if broker_name != 'Exness':
+        return cooldown_minutes
+
+    base_symbol = _normalize_symbol_base(symbol)
+    if base_symbol in {'BTCUSD', 'ETHUSD'}:
+        return max(cooldown_minutes, 12.0)
+    if _is_exness_forex_symbol(base_symbol):
+        return max(cooldown_minutes, 8.0)
+    return cooldown_minutes
 
 
 def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt5_conn, 
@@ -24097,14 +24184,19 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             tracked['lockedProfitFloor'] = round(max(_safe_float(tracked.get('lockedProfitFloor'), 0.0), break_even_floor), 2)
 
         symbol_params = _get_effective_symbol_params(symbol, symbol_market_data)
+        base_symbol = _normalize_symbol_base(symbol)
         max_hold_minutes = _safe_float(symbol_params.get('max_hold_minutes'), 0.0)
         time_in_position = _position_age_minutes(tracked.get('entryTime'))
-        protection_min_hold_minutes = _safe_float(effective_protection.get('minimumHoldMinutes'), 0.0)
         broker_name = canonicalize_broker_name(
             bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
         )
-        if broker_name == 'Exness':
-            protection_min_hold_minutes = max(protection_min_hold_minutes, 1.0)
+        effective_protection['symbol'] = symbol
+        protection_min_hold_minutes = _minimum_position_hold_minutes(bot_config, effective_protection)
+        effective_protection['protectedSymbolCooldownMinutes'] = _protected_symbol_cooldown_minutes(
+            bot_config,
+            symbol,
+            effective_protection,
+        )
         protection_hold_satisfied = time_in_position >= protection_min_hold_minutes
         close_reason = None  # Initialize before any conditional assignments
         if max_hold_minutes > 0 and time_in_position >= max_hold_minutes:
@@ -24251,7 +24343,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
                 cooldown_until = _set_symbol_reentry_cooldown(
                     bot_config,
                     tracked.get('symbol', ''),
-                    _safe_float(effective_protection.get('protectedSymbolCooldownMinutes'), 5.0),
+                    _protected_symbol_cooldown_minutes(bot_config, tracked.get('symbol', ''), effective_protection),
                     close_reason,
                 )
                 protection_events.append({

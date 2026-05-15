@@ -186,6 +186,35 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     'USOilSpot',
     'UKOilSpot',
   ];
+
+  static const List<String> _traditionalRecommendedSymbolOrder = [
+    'EURUSD',
+    'GBPUSD',
+    'USDJPY',
+    'USDCHF',
+    'AUDUSD',
+    'NZDUSD',
+    'USDCAD',
+    'EURGBP',
+    'EURJPY',
+    'GBPJPY',
+    'USDZAR',
+    'GBPZAR',
+    'ZARJPY',
+    'XAUUSD',
+    'XAGUSD',
+    'USOIL',
+    'UKOIL',
+    'US30',
+    'US500',
+    'USTEC',
+    'NAS100',
+    'SPX500',
+    'GER30',
+    'UK100',
+    'BTCUSD',
+    'ETHUSD',
+  ];
   static const List<Map<String, String>> _binanceCoreSymbols = [
     // --- Tier 1: Large Cap ---
     {
@@ -1212,6 +1241,89 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     }
   }
 
+  bool _isTraditionalForexSymbol(String symbol) {
+    final normalized = _normalizeSymbolBase(symbol);
+    const forexCurrencies = {
+      'AUD',
+      'CAD',
+      'CHF',
+      'EUR',
+      'GBP',
+      'JPY',
+      'NZD',
+      'USD',
+      'ZAR',
+    };
+    return normalized.length == 6 &&
+        forexCurrencies.contains(normalized.substring(0, 3)) &&
+        forexCurrencies.contains(normalized.substring(3));
+  }
+
+  int _traditionalRecommendedRank(String symbol) {
+    final normalized = _normalizeSymbolBase(symbol);
+    final index = _traditionalRecommendedSymbolOrder.indexOf(normalized);
+    return index >= 0 ? index : _traditionalRecommendedSymbolOrder.length + 20;
+  }
+
+  String _traditionalGroupTitle(Map<String, String> symbol) {
+    final symbolCode = symbol['symbol'] ?? '';
+    final normalized = _normalizeSymbolBase(symbolCode);
+    final category = (symbol['category'] ?? '').toLowerCase();
+    final recommendationRank = _traditionalRecommendedRank(symbolCode);
+
+    if (recommendationRank < 7) {
+      return 'Recommended Starters';
+    }
+    if (_isTraditionalForexSymbol(normalized)) {
+      final quote = normalized.substring(3);
+      if (quote == 'USD' || normalized.startsWith('USD')) {
+        return 'Forex Majors';
+      }
+      return 'Forex Crosses';
+    }
+    if (category.contains('metal') ||
+        category.contains('energy') ||
+        category.contains('commod')) {
+      return 'Metals & Commodities';
+    }
+    if (category.contains('indice') || category.contains('index')) {
+      return 'Indices';
+    }
+    if (category.contains('crypto')) {
+      return 'Crypto';
+    }
+    if (category.contains('treasury')) {
+      return 'Rates & Treasury';
+    }
+    if (category.contains('stock')) {
+      return 'Stocks';
+    }
+    return 'Other Markets';
+  }
+
+  int _traditionalGroupRank(Map<String, String> symbol) {
+    switch (_traditionalGroupTitle(symbol)) {
+      case 'Recommended Starters':
+        return 0;
+      case 'Forex Majors':
+        return 1;
+      case 'Forex Crosses':
+        return 2;
+      case 'Metals & Commodities':
+        return 3;
+      case 'Indices':
+        return 4;
+      case 'Crypto':
+        return 5;
+      case 'Rates & Treasury':
+        return 6;
+      case 'Stocks':
+        return 7;
+      default:
+        return 8;
+    }
+  }
+
   List<Map<String, String>> get _filteredTradingSymbols {
     final visibleSymbols = List<Map<String, String>>.from(tradingSymbols);
 
@@ -1255,6 +1367,20 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     }
 
     visibleSymbols.sort((left, right) {
+      final leftGroupRank = _traditionalGroupRank(left);
+      final rightGroupRank = _traditionalGroupRank(right);
+      final groupComparison = leftGroupRank.compareTo(rightGroupRank);
+      if (groupComparison != 0) {
+        return groupComparison;
+      }
+
+      final recommendationComparison = _traditionalRecommendedRank(
+        left['symbol'] ?? '',
+      ).compareTo(_traditionalRecommendedRank(right['symbol'] ?? ''));
+      if (recommendationComparison != 0) {
+        return recommendationComparison;
+      }
+
       final leftBucket = _traditionalVolatilityBucket(left['symbol']!);
       final rightBucket = _traditionalVolatilityBucket(right['symbol']!);
       final bucketComparison = _traditionalVolatilityRank(
@@ -1262,6 +1388,13 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       ).compareTo(_traditionalVolatilityRank(rightBucket));
       if (bucketComparison != 0) {
         return bucketComparison;
+      }
+
+      final leftCategory = left['category'] ?? '';
+      final rightCategory = right['category'] ?? '';
+      final categoryComparison = leftCategory.compareTo(rightCategory);
+      if (categoryComparison != 0) {
+        return categoryComparison;
       }
 
       final leftName = left['name'] ?? left['symbol'] ?? '';
@@ -4140,7 +4273,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       _isBinanceBroker
                           ? 'Showing ${_filteredTradingSymbols.length} of ${tradingSymbols.length} Binance pairs. Quote: ${_selectedBinanceQuoteFilter == 'All' ? 'any' : _selectedBinanceQuoteFilter}, category: ${_selectedBinanceCategoryFilter == 'All' ? 'any' : _selectedBinanceCategoryFilter}${_binanceSymbolSearchQuery.trim().isEmpty ? '' : ', search: "${_binanceSymbolSearchQuery.trim()}"'}.'
                           : _selectedTraditionalVolatilityFilter == 'All'
-                              ? '${tradingSymbols.length} symbols available, ordered from stable to high volatility.'
+                              ? '${tradingSymbols.length} symbols available, grouped by recommended markets first and then ordered from stable to high volatility.'
                               : 'Showing ${_filteredTradingSymbols.length} of ${tradingSymbols.length} symbols in the \'${_selectedTraditionalVolatilityFilter}\' category.',
                       style: TextStyle(fontSize: 11, color: Colors.grey[400]),
                     ),
@@ -4175,6 +4308,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   try {
                                     final symbol =
                                       _filteredTradingSymbols[index];
+                                    final groupTitle = !_isBinanceBroker
+                                      ? _traditionalGroupTitle(symbol)
+                                      : '';
+                                    final previousGroupTitle =
+                                      !_isBinanceBroker && index > 0
+                                      ? _traditionalGroupTitle(
+                                          _filteredTradingSymbols[index - 1],
+                                        )
+                                      : '';
+                                    final showGroupHeader =
+                                      !_isBinanceBroker &&
+                                      groupTitle != previousGroupTitle;
                                     final symbolCode =
                                       symbol['symbol'] ?? 'Unknown';
                                     final isBinanceSymbol = _isBinanceBroker;
@@ -4246,20 +4391,40 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       : (marketData['volatility'] ??
                                         'Unknown');
 
-                                    return Container(
-                                      margin: const EdgeInsets.only(bottom: 8),
-                                      decoration: BoxDecoration(
-                                        border: Border.all(
-                                          color: signalColor.withOpacity(
-                                            marketData.isEmpty ? 0.55 : 0.35,
+                                    return Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        if (showGroupHeader)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                              top: 6,
+                                              bottom: 8,
+                                            ),
+                                            child: Text(
+                                              groupTitle,
+                                              style: TextStyle(
+                                                color: Colors.orange[200],
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w700,
+                                                letterSpacing: 0.3,
+                                              ),
+                                            ),
                                           ),
-                                        ),
-                                        borderRadius: BorderRadius.circular(8),
-                                        color: signalColor.withOpacity(
-                                          marketData.isEmpty ? 0.14 : 0.06,
-                                        ),
-                                      ),
-                                      child: CheckboxListTile(
+                                        Container(
+                                          margin: const EdgeInsets.only(bottom: 8),
+                                          decoration: BoxDecoration(
+                                            border: Border.all(
+                                              color: signalColor.withOpacity(
+                                                marketData.isEmpty ? 0.55 : 0.35,
+                                              ),
+                                            ),
+                                            borderRadius: BorderRadius.circular(8),
+                                            color: signalColor.withOpacity(
+                                              marketData.isEmpty ? 0.14 : 0.06,
+                                            ),
+                                          ),
+                                          child: CheckboxListTile(
                                         value: _isSymbolSelected(symbolCode),
                                         onChanged: isUnavailableFxcmSymbol
                                             ? null
@@ -4271,7 +4436,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                               )) {
                                                 _selectedSymbols.add(
                                                   symbolCode,
-                                                );
+                                                    ),
+                                                  ),
+                                                ],
                                               }
                                             } else {
                                               _selectedSymbols.removeWhere(
