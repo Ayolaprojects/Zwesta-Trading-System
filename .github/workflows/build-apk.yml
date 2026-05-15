@@ -54,6 +54,17 @@ jobs:
           ref: ${{ steps.flutter_ref.outputs.ref }}
           path: Zwesta Flutter App
 
+      - name: Free disk space
+        run: |
+          echo "Disk space before cleanup"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo docker system prune -af || true
+          echo "Disk space after cleanup"
+          df -h
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -69,7 +80,8 @@ jobs:
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-35" \
-            "build-tools;35.0.0"
+            "build-tools;35.0.0" \
+            "ndk;25.1.8937393"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
