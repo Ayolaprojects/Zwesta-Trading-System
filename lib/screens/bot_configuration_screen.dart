@@ -25,17 +25,20 @@ class BotConfigurationScreen extends StatefulWidget {
     this.botId,
     this.cloneFromBotId,
     this.promoteToLive = false,
+    this.focusTestedTemplates = false,
   }) : super(key: key);
 
   final String? botId;
   final String? cloneFromBotId;
   final bool promoteToLive;
+  final bool focusTestedTemplates;
 
   @override
   State<BotConfigurationScreen> createState() => _BotConfigurationScreenState();
 }
 
 class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
+  final GlobalKey _testedTemplatesSectionKey = GlobalKey();
   bool get _isEditMode =>
       widget.botId != null && widget.botId!.trim().isNotEmpty;
   bool get _isCloneMode =>
@@ -1872,9 +1875,30 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (!mounted) {
         return;
       }
+      if (widget.focusTestedTemplates) {
+        for (final credential in _brokerService.credentials) {
+          if (credential.broker.toLowerCase().trim() == 'binance') {
+            _brokerService.setActiveCredential(credential);
+            break;
+          }
+        }
+      }
     }
     await _fetchTradingData();
     await _loadTestedBotTemplates();
+    if (widget.focusTestedTemplates && mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final sectionContext = _testedTemplatesSectionKey.currentContext;
+        if (sectionContext != null) {
+          Scrollable.ensureVisible(
+            sectionContext,
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeInOut,
+            alignment: 0.08,
+          );
+        }
+      });
+    }
   }
 
   Future<void> _alignActiveCredentialWithTradingMode({
@@ -3781,6 +3805,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
                     if (!_isEditMode && !_isCloneMode && _isBinanceBroker) ...[
                       Container(
+                        key: _testedTemplatesSectionKey,
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
                           border: Border.all(color: Colors.orange.withOpacity(0.5)),

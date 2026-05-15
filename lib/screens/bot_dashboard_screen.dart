@@ -715,6 +715,42 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ),
                       const SizedBox(height: 12),
 
+                      GestureDetector(
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const BotConfigurationRoute(
+                              focusTestedTemplates: true,
+                            ),
+                          ),
+                        ),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF3BA2F).withOpacity(0.12),
+                            border: Border.all(color: const Color(0xFFF3BA2F), width: 1.6),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.auto_awesome, color: Color(0xFFF3BA2F), size: 22),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Use Tested Binance Template',
+                                style: GoogleFonts.poppins(
+                                  color: const Color(0xFFF3BA2F),
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
                       // ⭐ BINANCE QUICK BOT - One-Click Creation
                       GestureDetector(
                         onTap: () {
