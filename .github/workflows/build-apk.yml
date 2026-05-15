@@ -42,6 +42,19 @@ jobs:
           sudo docker system prune -af || true
           echo "Disk space after cleanup"
           df -h
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;25.1.8937393"
+
       - name: Verify Android SDK
         run: |
           echo "ANDROID_HOME=${ANDROID_HOME}"

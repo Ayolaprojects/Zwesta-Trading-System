@@ -18,6 +18,7 @@ if (hasReleaseKeystore) {
 android {
     namespace = "com.example.zwesta_trading"
     compileSdk = flutter.compileSdkVersion
+    ndkVersion = "25.1.8937393"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
