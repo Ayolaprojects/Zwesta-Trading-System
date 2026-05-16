@@ -5,20 +5,46 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+import java.io.File
 import java.util.Properties
 
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 val hasReleaseKeystore = keystorePropertiesFile.exists()
 
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.inputStream().use { localProperties.load(it) }
+}
+
 if (hasReleaseKeystore) {
     keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 
+val sdkDir =
+    localProperties.getProperty("sdk.dir")
+        ?: System.getenv("ANDROID_SDK_ROOT")
+        ?: System.getenv("ANDROID_HOME")
+
+val preferredNdkVersions = listOf(
+    "25.1.8937393",
+    "26.3.11579264",
+    "27.0.12077973",
+)
+
+val resolvedNdkVersion =
+    sdkDir?.let { configuredSdkDir ->
+        preferredNdkVersions.firstOrNull { version ->
+            File(configuredSdkDir, "ndk/$version/source.properties").exists()
+        }
+    } ?: preferredNdkVersions.first()
+
 android {
     namespace = "com.example.zwesta_trading"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "25.1.8937393"
+    ndkVersion = resolvedNdkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

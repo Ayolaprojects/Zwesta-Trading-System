@@ -1082,10 +1082,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final isPromotionEligible = isDemoBot && (bot['promotionEligible'] == true || promotionStatus == 'ready');
     final accountBalance = double.tryParse(bot['accountBalance']?.toString() ?? '0') ?? 0;
     final accountEquity = double.tryParse(bot['accountEquity']?.toString() ?? '0') ?? 0;
+    final tradeAmount = double.tryParse(bot['tradeAmount']?.toString() ?? '0') ?? 0;
     final effectiveTradeAmount = double.tryParse(bot['effectiveTradeAmount']?.toString() ?? '0') ?? 0;
-    final configuredCapital = effectiveTradeAmount > 0
+    final double configuredCapital = effectiveTradeAmount > 0
       ? effectiveTradeAmount
-      : (tradeAmount > 0 ? tradeAmount : 0);
+      : (tradeAmount > 0 ? tradeAmount : 0.0);
     final investedCapital = double.tryParse(bot['roiBasis']?.toString() ?? '0') ??
       double.tryParse(bot['totalInvestment']?.toString() ?? '0') ??
       0;
@@ -1097,7 +1098,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final isBinanceBot = _normalizeBrokerLabel(bot['brokerName'] ?? brokerType).toLowerCase() == 'binance';
     final brokerAccent = _brokerAccentColor(_normalizeBrokerLabel(bot['brokerName'] ?? brokerType));
     final displayCurrency = _botDisplayCurrency(bot);
-    final tradeAmount = double.tryParse(bot['tradeAmount']?.toString() ?? '0') ?? 0;
     final presetName = (bot['presetName'] ?? '').toString().trim();
     final profileLabel = _formatProfileLabel(bot['managementProfile']?.toString());
     final accountModeLabel = isDemoBot ? 'DEMO' : 'LIVE';

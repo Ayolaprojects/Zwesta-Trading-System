@@ -3322,11 +3322,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Row(
+        title: Row(
           children: [
             LogoWidget(size: 40, showText: false),
-            SizedBox(width: 12),
-            Expanded(child: Text('Bot Configuration')),
+            const SizedBox(width: 12),
+            const Expanded(child: Text('Bot Configuration')),
           ],
         ),
         backgroundColor: Colors.grey[900],
@@ -3466,11 +3466,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 ),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Row(
+              child: Row(
                 children: [
-                  Icon(Icons.auto_awesome, color: Color(0xFF64B5F6), size: 20),
-                  SizedBox(width: 10),
-                  Expanded(
+                  const Icon(Icons.auto_awesome, color: Color(0xFF64B5F6), size: 20),
+                  const SizedBox(width: 10),
+                  const Expanded(
                     child: Text(
                       'Recommended settings pre-applied: 2% risk, 3 max trades, 20% max drawdown, Trend Following strategy.',
                       style: TextStyle(color: Colors.white70, fontSize: 11),
@@ -4425,256 +4425,188 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                             ),
                                           ),
                                           child: CheckboxListTile(
-                                        value: _isSymbolSelected(symbolCode),
-                                        onChanged: isUnavailableFxcmSymbol
-                                            ? null
-                                            : (value) {
-                                          setState(() {
-                                            if (value ?? false) {
-                                              if (!_isSymbolSelected(
-                                                symbolCode,
-                                              )) {
-                                                _selectedSymbols.add(
-                                                  symbolCode,
-                                                    ),
-                                                  ),
-                                                ],
-                                              }
-                                            } else {
-                                              _selectedSymbols.removeWhere(
-                                                (selected) =>
-                                                    _normalizeSymbolBase(
-                                                      selected,
-                                                    ) ==
-                                                    _normalizeSymbolBase(
-                                                      symbolCode,
-                                                    ),
-                                              );
-                                            }
-                                            _applyCryptoSelectionSafetyDefaults();
-                                          });
-                                        },
-                                        title: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              symbol['name'] ?? symbolCode,
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Wrap(
-                                              spacing: 8,
-                                              runSpacing: 6,
+                                            value: _isSymbolSelected(symbolCode),
+                                            onChanged: isUnavailableFxcmSymbol
+                                                ? null
+                                                : (value) {
+                                                    setState(() {
+                                                      if (value ?? false) {
+                                                        if (!_isSymbolSelected(symbolCode)) {
+                                                          _selectedSymbols.add(symbolCode);
+                                                        }
+                                                      } else {
+                                                        _selectedSymbols.removeWhere(
+                                                          (selected) =>
+                                                              _normalizeSymbolBase(selected) ==
+                                                              _normalizeSymbolBase(symbolCode),
+                                                        );
+                                                      }
+                                                      _applyCryptoSelectionSafetyDefaults();
+                                                    });
+                                                  },
+                                            title: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
+                                                Text(symbol['name'] ?? symbolCode),
+                                                const SizedBox(height: 6),
+                                                Wrap(
+                                                  spacing: 8,
+                                                  runSpacing: 6,
+                                                  children: [
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(
                                                         horizontal: 8,
                                                         vertical: 4,
                                                       ),
-                                                  decoration: BoxDecoration(
-                                                    color: signalColor
-                                                        .withOpacity(0.18),
-                                                    border: Border.all(
-                                                      color: signalColor,
-                                                    ),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          4,
+                                                      decoration: BoxDecoration(
+                                                        color: signalColor.withOpacity(0.18),
+                                                        border: Border.all(color: signalColor),
+                                                        borderRadius: BorderRadius.circular(4),
+                                                      ),
+                                                      child: Text(
+                                                        signal,
+                                                        style: TextStyle(
+                                                          color: signalColor,
+                                                          fontSize: 11,
+                                                          fontWeight: FontWeight.bold,
                                                         ),
-                                                  ),
-                                                  child: Text(
-                                                    signal,
-                                                    style: TextStyle(
-                                                      color: signalColor,
-                                                      fontSize: 11,
-                                                      fontWeight:
-                                                          FontWeight.bold,
+                                                      ),
                                                     ),
-                                                  ),
-                                                ),
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(
                                                         horizontal: 8,
                                                         vertical: 4,
                                                       ),
-                                                  decoration: BoxDecoration(
-                                                    color: signalColor
-                                                        .withOpacity(0.12),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          4,
+                                                      decoration: BoxDecoration(
+                                                        color: signalColor.withOpacity(0.12),
+                                                        borderRadius: BorderRadius.circular(4),
+                                                      ),
+                                                      child: Text(
+                                                        visiblePercentageLabel,
+                                                        style: TextStyle(
+                                                          color: signalColor,
+                                                          fontWeight: FontWeight.bold,
+                                                          fontSize: 11,
                                                         ),
-                                                  ),
-                                                  child: Text(
-                                                    visiblePercentageLabel,
-                                                    style: TextStyle(
-                                                      color: signalColor,
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                      fontSize: 11,
+                                                      ),
                                                     ),
-                                                  ),
+                                                  ],
                                                 ),
                                               ],
                                             ),
-                                          ],
-                                        ),
-                                        subtitle: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Wrap(
-                                              spacing: 8,
-                                              runSpacing: 6,
+                                            subtitle: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
+                                                Wrap(
+                                                  spacing: 8,
+                                                  runSpacing: 6,
+                                                  children: [
+                                                    Text(
+                                                      symbol['category'] ?? 'General',
+                                                      style: const TextStyle(fontSize: 11),
+                                                    ),
+                                                    if (isBinanceSymbol)
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(
+                                                          horizontal: 6,
+                                                          vertical: 2,
+                                                        ),
+                                                        decoration: BoxDecoration(
+                                                          color: Colors.blueAccent.withOpacity(0.14),
+                                                          borderRadius: BorderRadius.circular(3),
+                                                          border: Border.all(
+                                                            color: Colors.blueAccent.withOpacity(0.35),
+                                                          ),
+                                                        ),
+                                                        child: Text(
+                                                          '${_binanceQuoteAsset(symbolCode)} quote',
+                                                          style: const TextStyle(
+                                                            fontSize: 9,
+                                                            color: Colors.blueAccent,
+                                                            fontWeight: FontWeight.w700,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(
+                                                        horizontal: 6,
+                                                        vertical: 2,
+                                                      ),
+                                                      decoration: BoxDecoration(
+                                                        color: traditionalBucketColor.withOpacity(0.18),
+                                                        borderRadius: BorderRadius.circular(3),
+                                                        border: Border.all(
+                                                          color: traditionalBucketColor.withOpacity(0.4),
+                                                        ),
+                                                      ),
+                                                      child: Text(
+                                                        traditionalBucket,
+                                                        style: TextStyle(
+                                                          fontSize: 9,
+                                                          color: traditionalBucketColor,
+                                                          fontWeight: FontWeight.w700,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    if (!isBinanceSymbol)
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(
+                                                          horizontal: 6,
+                                                          vertical: 2,
+                                                        ),
+                                                        decoration: BoxDecoration(
+                                                          color: tradeabilityColor.withOpacity(0.18),
+                                                          borderRadius: BorderRadius.circular(3),
+                                                          border: Border.all(
+                                                            color: tradeabilityColor.withOpacity(0.45),
+                                                          ),
+                                                        ),
+                                                        child: Text(
+                                                          tradeabilityLabel,
+                                                          style: TextStyle(
+                                                            fontSize: 9,
+                                                            color: tradeabilityColor,
+                                                            fontWeight: FontWeight.w700,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(
+                                                        horizontal: 6,
+                                                        vertical: 2,
+                                                      ),
+                                                      decoration: BoxDecoration(
+                                                        color: volatility == 'Low risk' || volatility == 'Low'
+                                                            ? Colors.blue.withOpacity(0.2)
+                                                            : volatility == 'High risk' || volatility == 'High'
+                                                                ? Colors.orange.withOpacity(0.2)
+                                                                : Colors.grey.withOpacity(0.2),
+                                                        borderRadius: BorderRadius.circular(3),
+                                                      ),
+                                                      child: Text(
+                                                        volatility,
+                                                        style: const TextStyle(fontSize: 9),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 4),
                                                 Text(
-                                                  symbol['category'] ??
-                                                      'General',
-                                                  style: const TextStyle(
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                                if (isBinanceSymbol)
-                                                  Container(
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                          horizontal: 6,
-                                                          vertical: 2,
-                                                        ),
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.blueAccent
-                                                          .withOpacity(0.14),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            3,
-                                                          ),
-                                                      border: Border.all(
-                                                        color: Colors.blueAccent
-                                                            .withOpacity(0.35),
-                                                      ),
-                                                    ),
-                                                    child: Text(
-                                                      '${_binanceQuoteAsset(symbolCode)} quote',
-                                                      style: const TextStyle(
-                                                        fontSize: 9,
-                                                        color: Colors.blueAccent,
-                                                        fontWeight:
-                                                            FontWeight.w700,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 6,
-                                                        vertical: 2,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color:
-                                                        traditionalBucketColor
-                                                            .withOpacity(0.18),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          3,
-                                                        ),
-                                                    border: Border.all(
-                                                      color:
-                                                          traditionalBucketColor
-                                                              .withOpacity(0.4),
-                                                    ),
-                                                  ),
-                                                  child: Text(
-                                                    traditionalBucket,
-                                                    style: TextStyle(
-                                                      fontSize: 9,
-                                                      color:
-                                                          traditionalBucketColor,
-                                                      fontWeight:
-                                                          FontWeight.w700,
-                                                    ),
-                                                  ),
-                                                ),
-                                                if (!isBinanceSymbol)
-                                                  Container(
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                          horizontal: 6,
-                                                          vertical: 2,
-                                                        ),
-                                                    decoration: BoxDecoration(
-                                                      color: tradeabilityColor
-                                                          .withOpacity(0.18),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            3,
-                                                          ),
-                                                      border: Border.all(
-                                                        color: tradeabilityColor
-                                                            .withOpacity(0.45),
-                                                      ),
-                                                    ),
-                                                    child: Text(
-                                                      tradeabilityLabel,
-                                                      style: TextStyle(
-                                                        fontSize: 9,
-                                                        color: tradeabilityColor,
-                                                        fontWeight:
-                                                            FontWeight.w700,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 6,
-                                                        vertical: 2,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color:
-                                                        volatility ==
-                                                                'Low risk' ||
-                                                            volatility == 'Low'
-                                                        ? Colors.blue
-                                                              .withOpacity(0.2)
-                                                        : volatility ==
-                                                                  'High risk' ||
-                                                              volatility ==
-                                                                  'High'
-                                                        ? Colors.orange
-                                                              .withOpacity(0.2)
-                                                        : Colors.grey
-                                                              .withOpacity(0.2),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          3,
-                                                        ),
-                                                  ),
-                                                  child: Text(
-                                                    volatility,
-                                                    style: const TextStyle(
-                                                      fontSize: 9,
-                                                    ),
+                                                  '💡 $recommendation',
+                                                  maxLines: 2,
+                                                  overflow: TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    fontSize: 10,
+                                                    color: Colors.grey[300],
+                                                    fontStyle: FontStyle.italic,
                                                   ),
                                                 ),
                                               ],
                                             ),
-                                            const SizedBox(height: 4),
-                                            Text(
-                                              '💡 $recommendation',
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                color: Colors.grey[300],
-                                                fontStyle: FontStyle.italic,
-                                              ),
-                                            ),
-                                          ],
+                                          ),
                                         ),
-                                      ),
-                                      );
+                                      ],
+                                    );
                                     } catch (_) {
                                       final fallbackSymbol =
                                           _filteredTradingSymbols[index];

@@ -152,6 +152,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   String _modePrefKey(String baseKey, bool isLive) => '${baseKey}_${isLive ? 'live' : 'demo'}';
 
   String _effectiveAccountNumber() {
+    if (_isBinanceBroker) {
+      return '';
+    }
     if (_isFxcmBroker) {
       return _accountController.text.trim();
     }
@@ -160,6 +163,13 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   Future<void> _persistModeScopedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
+    if (_isBinanceBroker) {
+      await prefs.setString(_modePrefKey('binance_api_key', _isLiveMode), _apiKeyController.text);
+      await prefs.setString(_modePrefKey('binance_api_secret', _isLiveMode), _passwordController.text);
+      await prefs.setString(_modePrefKey('binance_market', _isLiveMode), _serverController.text);
+      return;
+    }
+
     await prefs.setString(_modePrefKey('mt5_account', _isLiveMode), _accountController.text);
     await prefs.setString(_modePrefKey('mt5_password', _isLiveMode), _passwordController.text);
     await prefs.setString(_modePrefKey('mt5_server', _isLiveMode), _serverController.text);
@@ -174,7 +184,12 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('broker', _selectedBroker);
     await prefs.setBool('is_live_mode', _isLiveMode);
-    if (_isFxcmBroker) {
+    if (_isBinanceBroker) {
+      await prefs.setString('broker_api_key', _apiKeyController.text);
+      await prefs.setString('binance_api_secret', _passwordController.text);
+      await prefs.setString('binance_market', _serverController.text);
+      await prefs.remove('account_number');
+    } else if (_isFxcmBroker) {
       await prefs.setString('fxcm_account_number', _accountController.text);
       await prefs.setString('fxcm_password', _passwordController.text);
       await prefs.setString('fxcm_server', _serverController.text);
@@ -191,6 +206,26 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   Future<void> _restoreModeScopedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
+    if (_isBinanceBroker) {
+      final modeApiKey = prefs.getString(_modePrefKey('binance_api_key', _isLiveMode));
+      final modeApiSecret = prefs.getString(_modePrefKey('binance_api_secret', _isLiveMode));
+      final modeMarket = prefs.getString(_modePrefKey('binance_market', _isLiveMode));
+      final fallbackMarket = prefs.getString('binance_market') ?? '';
+      final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
+
+      setState(() {
+        _accountController.clear();
+        _apiKeyController.text = modeApiKey ?? (prefs.getString('broker_api_key') ?? '');
+        _passwordController.text = modeApiSecret ?? (prefs.getString('binance_api_secret') ?? '');
+        _serverController.text = (modeMarket != null && modeMarket.isNotEmpty)
+            ? modeMarket
+            : (fallbackMarket.isNotEmpty ? fallbackMarket : computedServer);
+        _isConnected = false;
+        _activeAccount = null;
+      });
+      return;
+    }
+
     final modeAccount = _isFxcmBroker
       ? prefs.getString(_modePrefKey('fxcm_account', _isLiveMode))
       : prefs.getString(_modePrefKey('mt5_account', _isLiveMode));
@@ -247,25 +282,36 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       savedBroker.toLowerCase().contains('xm') ? 'Exness' : savedBroker,
     );
     final savedMode = prefs.getBool('is_live_mode') ?? false;
+    final isBinanceSavedBroker = normalizedSavedBroker.toLowerCase() == 'binance';
     final isFxcmSavedBroker = normalizedSavedBroker.toLowerCase() == 'fxcm';
     final modeAccount = isFxcmSavedBroker
       ? prefs.getString(_modePrefKey('fxcm_account', savedMode))
-      : prefs.getString(_modePrefKey('mt5_account', savedMode));
+      : (isBinanceSavedBroker
+          ? prefs.getString(_modePrefKey('binance_account', savedMode))
+          : prefs.getString(_modePrefKey('mt5_account', savedMode)));
     final modePassword = isFxcmSavedBroker
       ? prefs.getString(_modePrefKey('fxcm_password', savedMode))
-      : prefs.getString(_modePrefKey('mt5_password', savedMode));
+      : (isBinanceSavedBroker
+          ? prefs.getString(_modePrefKey('binance_api_secret', savedMode))
+          : prefs.getString(_modePrefKey('mt5_password', savedMode)));
     final modeServer = isFxcmSavedBroker
       ? prefs.getString(_modePrefKey('fxcm_server', savedMode))
-      : prefs.getString(_modePrefKey('mt5_server', savedMode));
+      : (isBinanceSavedBroker
+          ? prefs.getString(_modePrefKey('binance_market', savedMode))
+          : prefs.getString(_modePrefKey('mt5_server', savedMode)));
     setState(() {
       _selectedBroker = normalizedSavedBroker;
       _isLiveMode = savedMode;  // Load saved mode
-      _accountController.text = modeAccount ?? (isFxcmSavedBroker
+      _accountController.text = isBinanceSavedBroker
+        ? ''
+        : (modeAccount ?? (isFxcmSavedBroker
         ? (prefs.getString('fxcm_account_number') ?? '')
-        : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? ''));
+        : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '')));
       _passwordController.text = modePassword ?? (isFxcmSavedBroker
         ? (prefs.getString('fxcm_password') ?? '')
-        : (prefs.getString('mt5_password') ?? ''));
+        : (isBinanceSavedBroker
+            ? (prefs.getString('binance_api_secret') ?? '')
+            : (prefs.getString('mt5_password') ?? '')));
       _apiKeyController.text = prefs.getString('broker_api_key') ?? '';
       _usernameController.text = prefs.getString('broker_username') ?? '';
       _isConnected = prefs.getBool('broker_connected') ?? false;
@@ -279,7 +325,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       _autoReconnectEnabled = prefs.getBool('auto_reconnect_enabled') ?? false;
         final savedServer = modeServer ?? (isFxcmSavedBroker
           ? (prefs.getString('fxcm_server') ?? '')
-          : (prefs.getString('mt5_server') ?? ''));
+          : (isBinanceSavedBroker
+              ? (prefs.getString('binance_market') ?? '')
+              : (prefs.getString('mt5_server') ?? '')));
       final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
       final useSavedServer = !(_selectedBroker.toLowerCase() == 'exness' && savedServer != computedServer);
       _serverController.text = useSavedServer && savedServer.isNotEmpty
@@ -866,6 +914,29 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => const BotConfigurationRoute(
+                              focusTestedTemplates: true,
+                            ),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.auto_awesome),
+                      label: const Text('Use Tested Binance Template'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFF3BA2F).withOpacity(0.18),
+                        foregroundColor: const Color(0xFFF3BA2F),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        side: const BorderSide(color: Color(0xFFF3BA2F)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   // View Active Bots Button
                   SizedBox(
                     width: double.infinity,
@@ -949,8 +1020,13 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   if (newValue != null) {
                     setState(() {
                       _selectedBroker = _sanitizeSelectedBroker(newValue);
+                      if (_isBinanceBroker) {
+                        _accountController.clear();
+                        _usernameController.clear();
+                      }
                       _serverController.text = _defaultServerForSelectedBroker();
                     });
+                    _restoreModeScopedCredentials();
                     _persistPreferredBrokerChoice(newValue);
                   }
                 },
