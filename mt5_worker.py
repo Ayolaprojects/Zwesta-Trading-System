@@ -46,6 +46,8 @@ DATABASE_PATH = get_database_path()
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
 COMMAND_POLL_INTERVAL = max(2, int(os.getenv('WORKER_COMMAND_POLL_INTERVAL', '3')))  # seconds between checking for new commands
 TRADING_INTERVAL = 300  # default 5 min between trade cycles
+LONDON_NY_OPEN_UTC  = (8, 0)   # London open
+LONDON_NY_CLOSE_UTC = (15, 0)  # NY midday — peak liquidity window
 SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', '60000')))
 
 # ==================== WORKER STATE ====================
@@ -386,7 +388,7 @@ def evaluate_signal(symbol: str) -> Dict:
             rs = avg_gain / avg_loss
             rsi = 100 - (100 / (1 + rs))
         
-        rsi_signal = 'BUY' if rsi < 35 else ('SELL' if rsi > 65 else None)
+        rsi_signal = 'BUY' if rsi < 30 else ('SELL' if rsi > 70 else None)
         rsi_strength = abs(50 - rsi) * 1.5  # 0-75 range
         
         # === Momentum (rate of change) ===
@@ -465,7 +467,7 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
         trade_amount = bot_config.get('tradeAmount')
         profit_lock = float(bot_config.get('profitLock', 0) or 0)
         max_daily_loss = float(bot_config.get('maxDailyLoss', 0) or 0)
-        signal_threshold = int(bot_config.get('signalThreshold', 50) or 50)
+        signal_threshold = int(bot_config.get('signalThreshold', 65) or 65)
         trading_interval = int(bot_config.get('tradingInterval', TRADING_INTERVAL) or TRADING_INTERVAL)
         
         trade_cycle = 0
@@ -489,11 +491,13 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
                 trade_cycle += 1
                 logger.info(f"Bot {bot_id}: Cycle #{trade_cycle}")
                 
-                # Check market hours
-                symbol_to_check = symbols[0] if symbols else 'EURUSDm'
-                is_open, status_msg = is_market_open(symbol_to_check)
-                if not is_open:
-                    logger.info(f"Bot {bot_id}: {status_msg} - waiting {trading_interval}s")
+                # Check market hours — at least one symbol must be tradeable
+                # Crypto (BTC/ETH) is 24/7 so this stays open on weekends even
+                # when all forex/commodity symbols are closed.
+                any_open = any(is_market_open(s)[0] for s in symbols)
+                if not any_open:
+                    _, closed_msg = is_market_open(symbols[0]) if symbols else (False, 'No symbols')
+                    logger.info(f"Bot {bot_id}: All symbols closed ({closed_msg}) - waiting {trading_interval}s")
                     time.sleep(trading_interval)
                     continue
                 
@@ -526,11 +530,29 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
                 
                 trades_placed = 0
                 
-                for symbol in symbols[:3]:
+                # Pre-compute London/NY session window once per cycle
+                now_utc = datetime.utcnow()
+                utc_mins = now_utc.hour * 60 + now_utc.minute
+                open_mins = LONDON_NY_OPEN_UTC[0] * 60 + LONDON_NY_OPEN_UTC[1]
+                close_mins = LONDON_NY_CLOSE_UTC[0] * 60 + LONDON_NY_CLOSE_UTC[1]
+                in_london_ny = open_mins <= utc_mins < close_mins
+
+                for symbol in symbols[:2]:  # max 2 concurrent positions
                     if bot_stop_flags.get(bot_id, False):
                         break
                     
                     try:
+                        # Per-symbol market hours + session gate
+                        sym_open, sym_msg = is_market_open(symbol)
+                        if not sym_open:
+                            logger.debug(f"Bot {bot_id}: {symbol} closed ({sym_msg}) - skipping")
+                            continue
+                        sym_upper = symbol.upper()
+                        is_crypto_sym = any(c in sym_upper for c in ['BTC', 'ETH', 'XRP'])
+                        if not is_crypto_sym and not in_london_ny:
+                            logger.debug(f"Bot {bot_id}: {symbol} outside London/NY session - skipping")
+                            continue
+                        
                         # Evaluate signal
                         signal = evaluate_signal(symbol)
                         
@@ -552,7 +574,13 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
                                 logger.warning(f"Bot {bot_id}: Balance too low (R{balance:.2f}) to trade safely. Skipping.")
                                 continue
                             risk_amount = balance * (risk_per_trade / 100.0)
-                            volume = max(0.01, round(risk_amount / 100000, 2))
+                            cat = get_symbol_category(symbol)
+                            if cat == 'CRYPTO':
+                                # Crypto: larger lot so a single swing hits R200-R1000+
+                                # e.g. R757 risk → 0.76 → capped at 0.10 lot BTC
+                                volume = max(0.01, min(0.10, round(risk_amount / 1000, 2)))
+                            else:
+                                volume = max(0.01, round(risk_amount / 100000, 2))
                         
                         # Check for existing positions on this symbol
                         positions = mt5_get_positions()
@@ -667,8 +695,24 @@ def _calculate_sl_tp(symbol: str, direction: str) -> tuple:
         
         point = sym.point
         spread = tick.ask - tick.bid
-        sl_dist = max(50 * point, spread * 3)
-        tp_dist = max(100 * point, spread * 5)
+        s = symbol.upper()
+        # Symbol-aware SL/TP: commodities need wider stops; forex tighter
+        if any(c in s for c in ['XAG', 'XAU']):
+            sl_pips, tp_pips = 200, 350   # Silver/Gold: ~20/35 pips
+        elif 'BTC' in s:
+            # BTC (point≈$0.01 per unit): SL=$200, TP=$800 price move
+            # At 0.10 lot (0.1 BTC): SL≈R360, TP≈R1440
+            sl_pips, tp_pips = 20000, 80000
+        elif 'ETH' in s:
+            # ETH (point≈$0.01 per unit): SL=$100, TP=$400 price move
+            # At 0.10 lot (0.1 ETH): SL≈R180, TP≈R720
+            sl_pips, tp_pips = 10000, 40000
+        elif any(c in s for c in ['GBP', 'JPY']):
+            sl_pips, tp_pips = 150, 250   # Volatile pairs
+        else:
+            sl_pips, tp_pips = 100, 200   # EURUSD, AUDUSD etc
+        sl_dist = max(sl_pips * point, spread * 3)
+        tp_dist = max(tp_pips * point, spread * 5)
         
         if direction == 'BUY':
             sl = round(tick.ask - sl_dist, sym.digits)

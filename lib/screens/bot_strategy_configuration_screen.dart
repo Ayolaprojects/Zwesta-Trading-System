@@ -29,14 +29,29 @@ class _BotStrategyConfigurationScreenState extends State<BotStrategyConfiguratio
 
   final List<String> _riskLevels = ['LOW', 'MEDIUM', 'HIGH'];
 
-  final List<String> _commonSymbols = [
-    // Exness Standard account symbols (no 'm' suffix)
-    'BTCUSD',   // Bitcoin
-    'ETHUSD',   // Ethereum
-    'EURUSD',   // Euro
-    'USDJPY',   // Japanese Yen
-    'XAUUSD',   // Gold
+  // Optimised group — top performers from live trade history (London/NY session)
+  static const List<String> _optimisedSymbols = [
+    'XAGUSDm',  // Silver  — priority pair
+    'AUDUSDm',  // AUD/USD
+    'USDCHFm',  // USD/CHF
+    'GBPJPYm',  // GBP/JPY
   ];
+
+  // Weekend crypto — available 24/7 including when forex markets are closed
+  static const List<String> _weekendCryptoSymbols = [
+    'BTCUSDm',  // Bitcoin
+    'ETHUSDm',  // Ethereum
+  ];
+
+  // Standard symbols (other available instruments)
+  static const List<String> _otherSymbols = [
+    'EURUSD',
+    'USDJPY',
+    'XAUUSD',
+  ];
+
+  // Combined list for backward-compatible usages
+  List<String> get _commonSymbols => [..._optimisedSymbols, ..._weekendCryptoSymbols, ..._otherSymbols];
 
   @override
   void initState() {
@@ -126,11 +141,98 @@ class _BotStrategyConfigurationScreenState extends State<BotStrategyConfiguratio
                     validator: (value) => value == null ? 'Required' : null,
                   ),
                   const SizedBox(height: 15),
-                  // Multi-select for symbols
+                  // Multi-select for symbols — Optimised group shown first
                   const Text('Trading Symbols:', style: TextStyle(fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
+                  // ---- Optimised group ----
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.amber.withOpacity(0.6)),
+                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.amber.withOpacity(0.06),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, bottom: 2),
+                          child: Row(
+                            children: [
+                              Icon(Icons.bolt, size: 14, color: Colors.amber),
+                              SizedBox(width: 4),
+                              Text(
+                                'Optimised — London/NY Overlap',
+                                style: TextStyle(fontSize: 11, color: Colors.amber, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        ..._optimisedSymbols.map((symbol) => CheckboxListTile(
+                          title: Text(symbol),
+                          value: selectedSymbols.contains(symbol),
+                          onChanged: (value) {
+                            if (value ?? false) {
+                              selectedSymbols.add(symbol);
+                            } else {
+                              selectedSymbols.remove(symbol);
+                            }
+                          },
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: Colors.amber,
+                        )),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  // ---- Weekend Crypto group ----
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.deepOrange.withOpacity(0.6)),
+                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.deepOrange.withOpacity(0.06),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, bottom: 2),
+                          child: Row(
+                            children: [
+                              Icon(Icons.local_fire_department, size: 14, color: Colors.deepOrange),
+                              SizedBox(width: 4),
+                              Text(
+                                'Weekend Crypto — 24/7 incl. Sat & Sun',
+                                style: TextStyle(fontSize: 11, color: Colors.deepOrange, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        ..._weekendCryptoSymbols.map((symbol) => CheckboxListTile(
+                          title: Text(symbol),
+                          value: selectedSymbols.contains(symbol),
+                          onChanged: (value) {
+                            if (value ?? false) {
+                              selectedSymbols.add(symbol);
+                            } else {
+                              selectedSymbols.remove(symbol);
+                            }
+                          },
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: Colors.deepOrange,
+                        )),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  // ---- Other symbols ----
+                  const Text('Other Symbols:', style: TextStyle(fontSize: 12, color: Colors.white60)),
+                  const SizedBox(height: 4),
                   Column(
-                    children: _commonSymbols.map((symbol) => CheckboxListTile(
+                    children: _otherSymbols.map((symbol) => CheckboxListTile(
                         title: Text(symbol),
                         value: selectedSymbols.contains(symbol),
                         onChanged: (value) {
@@ -324,8 +426,94 @@ class _BotStrategyConfigurationScreenState extends State<BotStrategyConfiguratio
                   const SizedBox(height: 15),
                   const Text('Trading Symbols:', style: TextStyle(fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
+                  // Optimised group first
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.amber.withOpacity(0.6)),
+                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.amber.withOpacity(0.06),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, bottom: 2),
+                          child: Row(
+                            children: [
+                              Icon(Icons.bolt, size: 14, color: Colors.amber),
+                              SizedBox(width: 4),
+                              Text(
+                                'Optimised — London/NY Overlap',
+                                style: TextStyle(fontSize: 11, color: Colors.amber, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        ..._optimisedSymbols.map((symbol) => CheckboxListTile(
+                          title: Text(symbol),
+                          value: selectedSymbols.contains(symbol),
+                          onChanged: (value) {
+                            if (value ?? false) {
+                              selectedSymbols.add(symbol);
+                            } else {
+                              selectedSymbols.remove(symbol);
+                            }
+                          },
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: Colors.amber,
+                        )),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  // Weekend Crypto group
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.deepOrange.withOpacity(0.6)),
+                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.deepOrange.withOpacity(0.06),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, bottom: 2),
+                          child: Row(
+                            children: [
+                              Icon(Icons.local_fire_department, size: 14, color: Colors.deepOrange),
+                              SizedBox(width: 4),
+                              Text(
+                                'Weekend Crypto — 24/7 incl. Sat & Sun',
+                                style: TextStyle(fontSize: 11, color: Colors.deepOrange, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        ..._weekendCryptoSymbols.map((symbol) => CheckboxListTile(
+                          title: Text(symbol),
+                          value: selectedSymbols.contains(symbol),
+                          onChanged: (value) {
+                            if (value ?? false) {
+                              selectedSymbols.add(symbol);
+                            } else {
+                              selectedSymbols.remove(symbol);
+                            }
+                          },
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: Colors.deepOrange,
+                        )),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Other Symbols:', style: TextStyle(fontSize: 12, color: Colors.white60)),
+                  const SizedBox(height: 4),
                   Column(
-                    children: _commonSymbols.map((symbol) => CheckboxListTile(
+                    children: _otherSymbols.map((symbol) => CheckboxListTile(
                         title: Text(symbol),
                         value: selectedSymbols.contains(symbol),
                         onChanged: (value) {

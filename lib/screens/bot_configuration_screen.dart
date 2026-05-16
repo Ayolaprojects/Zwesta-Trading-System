@@ -824,6 +824,58 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         'Rebalance monthly based on performance',
       ],
     },
+    'optimised': {
+      'name': 'Optimised',
+      'icon': '⚡',
+      'description':
+          'Top pairs from live trade history — Silver, AUD/USD, USD/CHF, GBP/JPY during London/NY overlap.',
+      'recommendedMinUsd': 50.0,
+      'recommendedMaxUsd': 5000.0,
+      'accountLabel': 'Exness MT5 accounts',
+      'intelligentScanner': true,
+      'symbols': ['XAGUSDm', 'AUDUSDm', 'USDCHFm', 'GBPJPYm'],
+      'strategy': 'Trend Following',
+      'managementProfile': 'small_account',
+      'riskPercent': 3.0,
+      'maxDailyLoss': 30.0,
+      'maxOpenTrades': 2,
+      'maxDrawdownPercent': 12.0,
+      'signalThreshold': 65,
+      'allowedVolatility': ['Low', 'Medium'],
+      'tips': [
+        'Only trade 08:00–15:00 UTC (London/NY overlap)',
+        'XAG/USD is priority — wider stops (200 pts) needed',
+        'Max 2 open positions at any time',
+        'Signal strength ≥ 65 — filters out weak entries',
+        'TP:SL ratio minimum 1.75:1',
+      ],
+    },
+    'weekend_crypto': {
+      'name': 'Weekend',
+      'icon': '🔥',
+      'description':
+          'BTC & ETH swing trades — runs 24/7 including weekends when forex is closed.',
+      'recommendedMinUsd': 50.0,
+      'recommendedMaxUsd': 10000.0,
+      'accountLabel': 'Exness crypto accounts',
+      'intelligentScanner': false,
+      'symbols': ['BTCUSDm', 'ETHUSDm'],
+      'strategy': 'Trend Following',
+      'managementProfile': 'small_account',
+      'riskPercent': 3.0,
+      'maxDailyLoss': 50.0,
+      'maxOpenTrades': 1,
+      'maxDrawdownPercent': 15.0,
+      'signalThreshold': 65,
+      'allowedVolatility': ['Medium', 'High'],
+      'tips': [
+        'BTC target: R200–R1000+ per trade at 0.10 lot',
+        'ETH target: R200–R700+ per trade at 0.10 lot',
+        'Max 1 open position (crypto is volatile)',
+        'Signal ≥ 65 before entering — avoid choppy weekends',
+        'Bot auto-sizes to 0.10 lot for meaningful profit',
+      ],
+    },
   };
 
   void _applySmallAccountPreset(String presetKey) {
@@ -839,13 +891,22 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       _riskPercent = (preset['riskPercent'] as num).toDouble();
       _maxOpenTrades = preset['maxOpenTrades'] as int;
       _maxDrawdownPercent = (preset['maxDrawdownPercent'] as num).toDouble();
-      _manualSignalThreshold = null;
+      _manualSignalThreshold = preset.containsKey('signalThreshold')
+          ? preset['signalThreshold'] as int
+          : null;
       _allowedVolatility = List<String>.from(
         preset['allowedVolatility'] as List,
       );
 
-      // Apply symbols if not Binance broker (Binance uses its own symbol list)
-      if (!_isBinanceBroker) {
+      // Apply symbols:
+      // - Binance broker: only apply symbols for crypto presets (use USDT format)
+      // - MT5/Exness: apply preset symbols as-is
+      if (_isBinanceBroker) {
+        if (presetKey == 'weekend_crypto' || presetKey == 'crypto') {
+          _selectedSymbols = ['BTCUSDT', 'ETHUSDT'];
+        }
+        // Other presets don\'t apply symbols on Binance — use Quick Actions panel
+      } else {
         _selectedSymbols = List<String>.from(preset['symbols'] as List);
       }
     });
@@ -940,6 +1001,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             .take(6)
             .map((item) => item['symbol'] as String)
             .toList();
+        break;
+      case 'weekend_btc_eth':
+        symbols = ['BTCUSDT', 'ETHUSDT'];
         break;
       case 'defi':
         symbols = sourceSymbols
@@ -1721,6 +1785,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 icon: Icons.balance,
                 label: 'Balanced 6',
                 onTap: () => _applyBinancePreset('balanced'),
+              ),
+              _binanceQuickActionButton(
+                icon: Icons.weekend,
+                label: 'Weekend BTC+ETH',
+                onTap: () => _applyBinancePreset('weekend_btc_eth'),
+                color: Colors.deepOrange,
               ),
               _binanceQuickActionButton(
                 icon: Icons.auto_graph,
@@ -3555,6 +3625,30 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     },
                   ),
                   const SizedBox(height: 12),
+                  if (_isBinanceBroker) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0B90B).withOpacity(0.10),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFF0B90B).withOpacity(0.4)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.info_outline, size: 14, color: Color(0xFFF0B90B)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'These presets set strategy & risk settings. Use the Binance Quick Actions above to select pairs. '
+                              'Tapping 🔥 Weekend or ₿ Crypto will also set BTCUSDT + ETHUSDT.',
+                              style: TextStyle(fontSize: 11, color: Colors.grey[300]),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
