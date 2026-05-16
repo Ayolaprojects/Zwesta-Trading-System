@@ -50,6 +50,94 @@ LONDON_NY_OPEN_UTC  = (8, 0)   # London open
 LONDON_NY_CLOSE_UTC = (15, 0)  # NY midday — peak liquidity window
 SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', '60000')))
 
+# ── Tiered profit-scaling multipliers ──────────────────────────────────────
+# Tiers are PERCENTAGE OF BALANCE so they work identically for a R100 account
+# and a R1 000 000 investor account.  The moment a symbol's realized daily
+# P&L crosses a tier threshold the multiplier kicks in automatically.
+# Max lot multiplier: 10×  |  Max ATR multiplier: 25×
+#
+# Tier | Daily P&L vs balance | Lot mult | ATR mult | Example (R1 000 bal)
+# -----+----------------------+----------+----------+---------------------
+#   μ  |  0 % –  5 %         |  1.2 ×   |  1.2 ×   | first R50 profit
+#   1  |  5 % – 10 %         |  2.0 ×   |  2.0 ×   | R50 – R100
+#   2  | 10 % – 20 %         |  3.0 ×   |  4.0 ×   | R100 – R200
+#   3  | 20 % – 40 %         |  5.0 ×   |  8.0 ×   | R200 – R400
+#   4  | 40 % – 70 %         |  7.5 ×   | 15.0 ×   | R400 – R700
+#   5  | 70 %+               | 10.0 ×   | 25.0 ×   | R700+ (exceptional day)
+
+_PROFIT_TIERS_PCT = [
+    # (min_pnl_pct_of_balance, lot_mult, atr_mult)
+    (70.0, 10.0, 25.0),   # Tier 5: 70 %+ — exceptional day, max scale
+    (40.0,  7.5, 15.0),   # Tier 4: 40–70 %
+    (20.0,  5.0,  8.0),   # Tier 3: 20–40 %
+    (10.0,  3.0,  4.0),   # Tier 2: 10–20 %
+    ( 5.0,  2.0,  2.0),   # Tier 1:  5–10 %
+    ( 0.0,  1.2,  1.2),   # Tier μ:  0–5  % (first profit, any account size)
+]
+
+
+def _get_profit_multipliers(realized_pnl: float, balance: float = 10_000.0) -> tuple:
+    """
+    Return (lot_multiplier, atr_multiplier) based on today's realized P&L
+    as a percentage of account balance.  Works for R100 → R1 000 000 accounts.
+    Returns (1.0, 1.0) when the symbol is not yet in profit.
+    """
+    if realized_pnl <= 0 or balance <= 0:
+        return 1.0, 1.0
+    pct = (realized_pnl / balance) * 100.0
+    for min_pct, lot_m, atr_m in _PROFIT_TIERS_PCT:
+        if pct >= min_pct:
+            return lot_m, atr_m
+    return 1.0, 1.0
+
+
+def _effective_risk_pct(balance: float, configured_pct: float) -> float:
+    """
+    Cap risk-per-trade percentage for small accounts so the minimum 0.01 lot
+    does not over-risk the account on a single SL hit.
+
+    Account size  | Max risk %  | Rationale
+    --------------|-------------|-------------------------------------------
+    < R200        | 1.0 %       | R100 deposit — protect at all costs
+    < R500        | 1.5 %       | Starter account
+    < R2 000      | 2.0 %       | Growing micro account
+    ≥ R2 000      | configured  | User's own risk setting applies
+    """
+    if balance < 200:
+        return min(configured_pct, 1.0)
+    if balance < 500:
+        return min(configured_pct, 1.5)
+    if balance < 2_000:
+        return min(configured_pct, 2.0)
+    return configured_pct
+
+
+def _small_account_sl_scale(balance: float) -> float:
+    """
+    Scale SL/TP pip distances DOWN for small accounts so that even the minimum
+    0.01 lot does not lose more than ~5% of balance on a single SL hit.
+
+    For example: BTC base SL = 20 000 points × 0.01 lot ≈ $2 (≈R36).
+    On a R100 account that is 36% — too high.  Scaling to 0.15 brings it to ~R5.
+
+    Balance       | SL scale factor
+    --------------|----------------
+    < R200        |  0.10  (10% of base pips — very tight, min-noise stop)
+    < R500        |  0.20
+    < R2 000      |  0.40
+    < R5 000      |  0.70
+    ≥ R5 000      |  1.00  (full base pips; atr_multiplier then applies on top)
+    """
+    if balance < 200:
+        return 0.10
+    if balance < 500:
+        return 0.20
+    if balance < 2_000:
+        return 0.40
+    if balance < 5_000:
+        return 0.70
+    return 1.00
+
 # ==================== WORKER STATE ====================
 worker_id = None
 worker_running = True
@@ -529,6 +617,9 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
                             continue
                 
                 trades_placed = 0
+
+                # Query today's realized P&L per symbol — drives auto-scaling multipliers
+                sym_pnl = _get_realized_symbol_pnl(bot_id, symbols)
                 
                 # Pre-compute London/NY session window once per cycle
                 now_utc = datetime.utcnow()
@@ -563,24 +654,37 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
                         logger.info(f"Bot {bot_id}: {signal['direction']} signal on {symbol} "
                                     f"(strength: {signal['strength']:.0f}/100) | {signal['reason']}")
                         
+                        # Tiered auto-scale: lot size + SL/TP grow as realized P&L % climbs
+                        sym_realized = sym_pnl.get(symbol, 0.0)
+                        lot_mult, atr_mult = _get_profit_multipliers(sym_realized, balance)
+                        if sym_realized > 0:
+                            pct_of_bal = (sym_realized / balance * 100) if balance > 0 else 0
+                            logger.info(
+                                f"Bot {bot_id}: {symbol} realized R{sym_realized:.2f} "
+                                f"({pct_of_bal:.1f}% of balance) → lot {lot_mult}x | SL/TP {atr_mult}x"
+                            )
+
                         # Calculate position size
+                        acct_info = mt5_get_account_info()
+                        balance = acct_info['balance'] if acct_info else 10_000.0
+                        if balance < 50:
+                            logger.warning(f"Bot {bot_id}: Balance R{balance:.2f} too low — need at least R50. Skipping.")
+                            continue
+                        if balance < 200:
+                            logger.info(f"Bot {bot_id}: Micro account R{balance:.2f} — conservative 1% risk, tight SL active")
+
                         if trade_amount:
-                            volume = max(0.01, round(trade_amount / 100000, 2))
+                            volume = max(0.01, round(trade_amount / 100000 * lot_mult, 2))
                         else:
-                            # Risk-based sizing
-                            acct_info = mt5_get_account_info()
-                            balance = acct_info['balance'] if acct_info else 10000.0
-                            if balance < 5:
-                                logger.warning(f"Bot {bot_id}: Balance too low (R{balance:.2f}) to trade safely. Skipping.")
-                                continue
-                            risk_amount = balance * (risk_per_trade / 100.0)
+                            # Risk-based sizing — cap risk% for small accounts
+                            eff_risk = _effective_risk_pct(balance, risk_per_trade)
+                            risk_amount = balance * (eff_risk / 100.0)
                             cat = get_symbol_category(symbol)
                             if cat == 'CRYPTO':
-                                # Crypto: larger lot so a single swing hits R200-R1000+
-                                # e.g. R757 risk → 0.76 → capped at 0.10 lot BTC
-                                volume = max(0.01, min(0.10, round(risk_amount / 1000, 2)))
+                                # Crypto: base 0.10 lot, scaled by tier (e.g. 20× → 2.0 lot)
+                                volume = max(0.01, min(0.10 * lot_mult, round(risk_amount / 1000 * lot_mult, 2)))
                             else:
-                                volume = max(0.01, round(risk_amount / 100000, 2))
+                                volume = max(0.01, round(risk_amount / 100000 * lot_mult, 2))
                         
                         # Check for existing positions on this symbol
                         positions = mt5_get_positions()
@@ -593,8 +697,9 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
                             logger.info(f"Bot {bot_id}: Already has position on {symbol} - skipping")
                             continue
                         
-                        # Calculate SL/TP
-                        sl_price, tp_price = _calculate_sl_tp(symbol, signal['direction'])
+                        # Calculate SL/TP — wider when in profit, tighter for small accounts
+                        sl_price, tp_price = _calculate_sl_tp(symbol, signal['direction'],
+                                                               atr_multiplier=atr_mult, balance=balance)
                         
                         # Place order
                         result = mt5_place_order(
@@ -681,8 +786,40 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict):
         running_bots[bot_id] = False
 
 
-def _calculate_sl_tp(symbol: str, direction: str) -> tuple:
-    """Calculate stop loss and take profit prices"""
+def _get_realized_symbol_pnl(bot_id: str, symbols: list) -> dict:
+    """
+    Query MT5 deal history for today's REALIZED P&L per symbol for this bot.
+    Returns {symbol: float} — positive when the symbol is in profit today.
+    """
+    pnl = {s: 0.0 for s in symbols}
+    mt5 = mt5_module
+    if not mt5:
+        return pnl
+    try:
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        deals = mt5.history_deals_get(today_start, datetime.utcnow())
+        if not deals:
+            return pnl
+        bot_tag = f'ZBot{bot_id[-8:]}'
+        for deal in deals:
+            comment = getattr(deal, 'comment', '') or ''
+            if bot_tag in comment:
+                sym = getattr(deal, 'symbol', '')
+                if sym in pnl:
+                    pnl[sym] += getattr(deal, 'profit', 0.0)
+    except Exception as e:
+        logger.debug(f"Bot {bot_id}: realized P&L query: {e}")
+    return pnl
+
+
+def _calculate_sl_tp(symbol: str, direction: str, atr_multiplier: float = 1.0,
+                     balance: float = 10_000.0) -> tuple:
+    """
+    Calculate stop loss and take profit prices.
+    atr_multiplier > 1.0 widens distances (profit-scaling).
+    balance is used to scale pips DOWN for small accounts so that even
+    the minimum 0.01 lot does not over-risk a micro deposit.
+    """
     try:
         mt5 = mt5_module
         if not mt5:
@@ -711,8 +848,11 @@ def _calculate_sl_tp(symbol: str, direction: str) -> tuple:
             sl_pips, tp_pips = 150, 250   # Volatile pairs
         else:
             sl_pips, tp_pips = 100, 200   # EURUSD, AUDUSD etc
-        sl_dist = max(sl_pips * point, spread * 3)
-        tp_dist = max(tp_pips * point, spread * 5)
+        # Small-account protection: tighten pips so min-lot risk stays manageable
+        sa_scale = _small_account_sl_scale(balance)
+        effective_pips_scale = sa_scale * atr_multiplier
+        sl_dist = max(sl_pips * point * effective_pips_scale, spread * 3)
+        tp_dist = max(tp_pips * point * effective_pips_scale, spread * 5)
         
         if direction == 'BUY':
             sl = round(tick.ask - sl_dist, sym.digits)
