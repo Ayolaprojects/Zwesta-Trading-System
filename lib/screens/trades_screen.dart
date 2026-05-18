@@ -270,6 +270,16 @@ class _TradesScreenState extends State<TradesScreen> {
 
     final isBuy = position.type == TradeType.buy;
     final isProfitable = profit >= 0;
+    // Derive currency prefix from the trade's currency field
+    final currencyCode = position.currency.toUpperCase();
+    final currencyPrefix = currencyCode == 'ZAR' ? 'R'
+        : currencyCode == 'USD' ? r'$'
+        : currencyCode == 'EUR' ? '\u20AC'
+        : currencyCode == 'GBP' ? '\u00A3'
+        : '$currencyCode ';
+    // Prices for Binance USDT pairs are in USD; no R prefix needed
+    final pricePrefix = currencyCode == 'ZAR' ? 'R' : '';
+    final priceSuffix = currencyCode != 'ZAR' && currencyCode != 'USD' && currencyCode != 'EUR' && currencyCode != 'GBP' ? ' $currencyCode' : '';
 
     return Card(
       color: Colors.white.withOpacity(0.05),
@@ -363,7 +373,7 @@ class _TradesScreenState extends State<TradesScreen> {
                     Text('Open Price',
                         style: GoogleFonts.poppins(
                             color: Colors.white60, fontSize: 10)),
-                    Text('R${openPrice.toStringAsFixed(5)}',
+                    Text('$pricePrefix${openPrice.toStringAsFixed(5)}$priceSuffix',
                         style: GoogleFonts.poppins(
                             color: Colors.white,
                             fontSize: 13,
@@ -376,7 +386,7 @@ class _TradesScreenState extends State<TradesScreen> {
                     Text('Current Price',
                         style: GoogleFonts.poppins(
                             color: Colors.white60, fontSize: 10)),
-                    Text('R${currentPrice.toStringAsFixed(5)}',
+                    Text('$pricePrefix${currentPrice.toStringAsFixed(5)}$priceSuffix',
                         style: GoogleFonts.poppins(
                             color: const Color(0xFF00E5FF),
                             fontSize: 13,
@@ -419,7 +429,7 @@ class _TradesScreenState extends State<TradesScreen> {
                               style: GoogleFonts.poppins(
                                   color: Colors.white60, fontSize: 10)),
                           Text(
-                            '${isProfitable ? '+' : ''}R${profit.toStringAsFixed(2)}',
+                            '${isProfitable ? '+' : ''}$currencyPrefix${profit.toStringAsFixed(2)}',
                             style: GoogleFonts.poppins(
                               color: isProfitable
                                   ? const Color(0xFF69F0AE)
@@ -589,6 +599,12 @@ class _TradesScreenState extends State<TradesScreen> {
       itemCount: trades.length,
       itemBuilder: (context, index) {
         final trade = trades[index];
+        final tc = trade.currency.toUpperCase();
+        final tradeSymbol = tc == 'ZAR' ? 'R'
+            : tc == 'USD' ? r'$'
+            : tc == 'EUR' ? '\u20AC'
+            : tc == 'GBP' ? '\u00A3'
+            : '$tc ';
         return TradeCard(
           symbol: trade.symbol,
           type: trade.type.toString().split('.').last,
@@ -597,6 +613,7 @@ class _TradesScreenState extends State<TradesScreen> {
           currentPrice: trade.currentPrice ?? trade.entryPrice,
           profit: trade.profit ?? 0,
           profitPercentage: trade.profitPercentage ?? 0,
+          currencySymbol: tradeSymbol,
           openedAt: trade.openedAt,
           closedAt: trade.closedAt,
           onTap: () {

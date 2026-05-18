@@ -511,9 +511,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           final bTime = b['createdAt']?.toString() ?? b['created_at']?.toString() ?? '';
           return bTime.compareTo(aTime);
         });
-        final top5 = newestBots.take(5).toList();
-        final featuredBotIds = top5.map((bot) => (bot['botId'] ?? '').toString()).toSet();
-        final remainingBots = bots.where((bot) => !featuredBotIds.contains((bot['botId'] ?? '').toString())).toList();
 
         final activeBots = allBots.where((b) => b['enabled'] == true || b['status'] == 'Active').length;
         final totalProfit = allBots.fold<double>(
@@ -688,13 +685,13 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      // Top Newest Bots (full vertical cards - newest first)
-                      if (top5.isNotEmpty) ...[
-                        ...top5.map((bot) => _buildNewestBotCard(bot, currencyProvider)),
-                        const SizedBox(height: 16),
-                      ],
-
-                      // Create bot button
+                      // Bots grouped by broker (Binance / Exness / etc.)
+                      if (bots.isEmpty && !botService.isLoading)
+                        _emptyState()
+                      else if (botService.errorMessage != null && bots.isEmpty)
+                        _errorState(botService.errorMessage!)
+                      else
+                        ..._buildBrokerSections(bots, currencyProvider),
                       GestureDetector(
                         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BotConfigurationRoute())),
                         child: Container(
@@ -827,13 +824,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         ),
                       ),
                       const SizedBox(height: 20),
-
-                      if (bots.isEmpty && !botService.isLoading)
-                        _emptyState()
-                      else if (botService.errorMessage != null && bots.isEmpty)
-                        _errorState(botService.errorMessage!)
-                      else
-                        ..._buildBrokerSections(remainingBots, currencyProvider),
                     ],
                   ),
                 ),

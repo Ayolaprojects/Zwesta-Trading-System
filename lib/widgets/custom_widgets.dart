@@ -71,6 +71,7 @@ class TradeCard extends StatelessWidget {
     this.onTap,
     this.openedAt,
     this.closedAt,
+    this.currencySymbol,
   }) : super(key: key);
   final String symbol;
   final String type;
@@ -82,6 +83,9 @@ class TradeCard extends StatelessWidget {
   final Function? onTap;
   final DateTime? openedAt;
   final DateTime? closedAt;
+  /// Optional currency prefix for profit display (e.g. 'R', '$', 'USDT ').
+  /// Defaults to empty string if not provided.
+  final String? currencySymbol;
 
   Color get profitColor => profit >= 0 ? AppColors.successColor : AppColors.dangerColor;
 
@@ -154,7 +158,7 @@ class TradeCard extends StatelessWidget {
                     children: [
                       Text('Profit/Loss', style: Theme.of(context).textTheme.bodySmall),
                       Text(
-                        '${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)}',
+                        '${profit >= 0 ? '+' : ''}${currencySymbol ?? ''}${profit.toStringAsFixed(2)}',
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
                               color: profitColor,
                             ),
