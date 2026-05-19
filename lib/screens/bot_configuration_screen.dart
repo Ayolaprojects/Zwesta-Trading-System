@@ -1189,6 +1189,49 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     }
   }
 
+  /// Auto-selects the top recommended symbols for the active broker on new-bot
+  /// creation, so users start with a sensible safe default instead of nothing.
+  /// Only runs when [_selectedSymbols] is empty (i.e. no preset has been applied).
+  void _autoSelectDefaultSymbols() {
+    if (_isEditMode || _selectedSymbols.isNotEmpty) return;
+
+    final available = tradingSymbols
+        .map((item) => item['symbol'])
+        .whereType<String>()
+        .toList();
+    if (available.isEmpty) return;
+
+    if (_isBinanceBroker) {
+      // Binance: top 5 by edge/win-rate score, prefer Low-Medium risk
+      final ranked = _rankedBinancePairs;
+      final preferred = ranked
+          .where((p) => p['risk'] == 'Low' || p['risk'] == 'Medium')
+          .take(5)
+          .map((p) => p['symbol'] as String)
+          .toList();
+      _selectedSymbols = preferred.isNotEmpty
+          ? preferred
+          : ranked.take(5).map((p) => p['symbol'] as String).toList();
+    } else {
+      // Exness / MT5: pick top recommended symbols that are actually available
+      // Top picks: major forex + gold (proven high-performance pairs)
+      const topPicks = [
+        'GBPUSD', 'EURUSD', 'USDJPY', 'XAUUSD',
+        'AUDUSD', 'USDCAD', 'USDCHF', 'GBPJPY',
+      ];
+      final normalizedToAvailable = <String, String>{
+        for (final s in available) _normalizeSymbolBase(s): s,
+      };
+      final autoSelected = <String>[];
+      for (final pick in topPicks) {
+        final mapped = normalizedToAvailable[_normalizeSymbolBase(pick)];
+        if (mapped != null) autoSelected.add(mapped);
+        if (autoSelected.length >= 4) break;
+      }
+      _selectedSymbols = autoSelected;
+    }
+  }
+
   List<String> _remapSelectedSymbolsToAvailable(List<String> availableSymbols) {
     if (_selectedSymbols.isEmpty || availableSymbols.isEmpty) {
       return List<String>.from(_selectedSymbols);
@@ -2583,13 +2626,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                   .whereType<String>()
                   .toList(),
             );
-            if (normalizedBroker == 'binance' && _selectedSymbols.isEmpty) {
-              _selectedSymbols = _rankedBinancePairs
-                  .where((p) => p['risk'] == 'Low' || p['risk'] == 'Medium')
-                  .take(5)
-                  .map((p) => p['symbol'] as String)
-                  .toList();
-            }
+            // Auto-select top recommended pairs for new bots (no preset applied yet)
+            _autoSelectDefaultSymbols();
             _applyCryptoSelectionSafetyDefaults();
             _isLoadingData = false;
           });
@@ -2686,6 +2724,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             .whereType<String>()
             .toList(),
       );
+      // Auto-select top recommended pairs for new bots (no preset applied yet)
+      _autoSelectDefaultSymbols();
       _isLoadingData = false;
     });
   }
