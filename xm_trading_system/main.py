@@ -40,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-DB_PATH = "zwesta_trading.db"
+DB_PATH = os.path.join(os.path.dirname(__file__), "zwesta_trading.db")
 SCAN_INTERVAL = 5  # Scan for trades every 5 seconds
 SYMBOLS_TO_TRADE = ['GOLD', 'XAUUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD']
 

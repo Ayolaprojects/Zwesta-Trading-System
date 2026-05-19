@@ -6338,7 +6338,7 @@ class BinanceConnection(BrokerConnection):
             if not force and self._time_offset_updated_at and (now - self._time_offset_updated_at) < 60:
                 return
 
-            endpoint = f"{self.base_url}/v3/time"
+            endpoint = f"{self.fapi_url}/v1/time" if self.market == 'futures' else f"{self.base_url}/v3/time"
             resp = requests.get(endpoint, timeout=5)
             if resp.status_code != 200:
                 return
@@ -6366,7 +6366,7 @@ class BinanceConnection(BrokerConnection):
         except Exception:
             return response
 
-        if payload.get('code') != -1021:
+        if payload.get('code') not in {-1021, -1022}:
             return response
 
         self._sync_server_time(force=True)
@@ -6381,7 +6381,7 @@ class BinanceConnection(BrokerConnection):
             payload = response.json()
         except Exception:
             return False
-        return payload.get('code') in {-2014, -2015}
+        return payload.get('code') in {-2014, -2015, -1022}
 
     def _try_demo_spot_endpoint_fallback(self, candidates: Optional[List[str]] = None) -> bool:
         fallback_candidates = candidates if candidates is not None else self._demo_base_url_fallbacks
@@ -6426,44 +6426,44 @@ class BinanceConnection(BrokerConnection):
 
         return False
 
-    def _try_live_spot_endpoint_fallback(self, candidates: Optional[List[str]] = None) -> bool:
-        fallback_candidates = candidates if candidates is not None else ['https://api.binance.com/api']
+    def _try_demo_futures_endpoint_fallback(self, candidates: Optional[List[str]] = None) -> bool:
+        fallback_candidates = candidates if candidates is not None else self._demo_fapi_url_fallbacks
         if not fallback_candidates:
             return False
 
-        current_url = self.base_url
+        current_url = self.fapi_url
         for candidate in fallback_candidates:
             if candidate == current_url:
                 continue
 
-            previous_url = self.base_url
+            previous_url = self.fapi_url
             previous_offset = self._time_offset_ms
             previous_updated_at = self._time_offset_updated_at
-            self.base_url = candidate
+            self.fapi_url = candidate
             self._time_offset_ms = 0
             self._time_offset_updated_at = 0.0
 
             try:
                 resp = self._request_with_time_retry(
                     'GET',
-                    f"{self.base_url}/v3/account",
+                    f"{self.fapi_url}/v2/account",
                     headers=self._headers(),
                     params={},
                     timeout=15,
                 )
-                self._record_auth_attempt('live-fallback', f"{self.base_url}/v3/account", response=resp)
+                self._record_auth_attempt('demo-futures-fallback', f"{self.fapi_url}/v2/account", response=resp)
                 if resp.status_code == 200:
-                    logger.info(f"Binance live endpoint fallback succeeded on {candidate}")
+                    logger.info(f"Binance demo futures endpoint fallback succeeded on {candidate}")
                     return True
                 if not self._is_invalid_demo_auth_response(resp):
-                    self.base_url = previous_url
+                    self.fapi_url = previous_url
                     self._time_offset_ms = previous_offset
                     self._time_offset_updated_at = previous_updated_at
                     return False
             except Exception as exc:
-                self._record_auth_attempt('live-fallback', f"{self.base_url}/v3/account", exc=exc)
+                self._record_auth_attempt('demo-futures-fallback', f"{self.fapi_url}/v2/account", exc=exc)
 
-            self.base_url = previous_url
+            self.fapi_url = previous_url
             self._time_offset_ms = previous_offset
             self._time_offset_updated_at = previous_updated_at
 
@@ -6534,24 +6534,19 @@ class BinanceConnection(BrokerConnection):
                 self.get_account_info()
                 return True
 
-            if not configured_is_live and self._try_demo_spot_endpoint_fallback():
-                self.effective_is_live = False
-                self.connected = True
-                self._clear_last_error()
-                logger.info("[BINANCE AUTH] fallback promoted effective_mode=demo endpoint=%s/v3/account", self.base_url)
-                self.get_account_info()
-                return True
-
-            if not bool(self.credentials.get('is_live', False)) and self.market != 'futures' and (
-                primary_exception is not None or self._is_invalid_demo_auth_response(resp)
-            ):
-                if self._try_live_spot_endpoint_fallback():
-                    logger.warning('Binance demo auth failed, but live spot auth succeeded; treating this credential as live.')
-                    self.credentials['is_live'] = True
-                    self.effective_is_live = True
+            if not configured_is_live:
+                if self.market == 'futures' and self._try_demo_futures_endpoint_fallback():
+                    self.effective_is_live = False
                     self.connected = True
                     self._clear_last_error()
-                    logger.info("[BINANCE AUTH] compatibility fallback promoted effective_mode=live endpoint=%s/v3/account", self.base_url)
+                    logger.info("[BINANCE AUTH] fallback promoted effective_mode=demo endpoint=%s/v2/account", self.fapi_url)
+                    self.get_account_info()
+                    return True
+                if self.market != 'futures' and self._try_demo_spot_endpoint_fallback():
+                    self.effective_is_live = False
+                    self.connected = True
+                    self._clear_last_error()
+                    logger.info("[BINANCE AUTH] fallback promoted effective_mode=demo endpoint=%s/v3/account", self.base_url)
                     self.get_account_info()
                     return True
 
@@ -6561,16 +6556,13 @@ class BinanceConnection(BrokerConnection):
                     'https://testnet.binance.vision/api',
                 ]
                 if self._try_demo_spot_endpoint_fallback(compatibility_candidates):
-                    logger.error('Binance live auth failed, but demo/testnet spot auth succeeded. Refusing to downgrade a live-marked credential to demo.')
-                    self.connected = False
-                    self.base_url = 'https://api.binance.com/api'
-                    self.fapi_url = 'https://fapi.binance.com/fapi'
-                    self.effective_is_live = True
-                    self._set_last_error(
-                        'Binance credential mode mismatch: this credential authenticates on demo/testnet but is marked LIVE. Use a true live Binance key or relabel the credential as demo.',
-                        'BINANCE_MODE_MISMATCH',
-                    )
-                    return False
+                    self.credentials['is_live'] = False
+                    self.effective_is_live = False
+                    self.connected = True
+                    self._clear_last_error()
+                    logger.info("[BINANCE AUTH] compatibility fallback promoted effective_mode=demo endpoint=%s/v3/account", self.base_url)
+                    self.get_account_info()
+                    return True
 
             if primary_exception is not None:
                 attempted = self._describe_auth_attempts()
@@ -6811,8 +6803,16 @@ class BinanceConnection(BrokerConnection):
                         ),
                     }
 
-            quantity_value = format(quantity, '.8f').rstrip('0').rstrip('.')
-            if self.market != 'futures':
+            if self.market == 'futures':
+                from decimal import Decimal, ROUND_DOWN
+                _step = Decimal(str(step_size)) if step_size > 0 else Decimal('0.001')
+                _qty_d = Decimal(str(quantity)).quantize(_step, rounding=ROUND_DOWN)
+                quantity = float(_qty_d)
+                if quantity <= 0:
+                    return {'success': False, 'error': f'Calculated futures quantity {_qty_d} is below minimum step {step_size} for {instrument}'}
+                _decimals = max(0, -_step.as_tuple().exponent)
+                quantity_value = f"{quantity:.{_decimals}f}"
+            else:
                 quantity_value = self._format_spot_quantity(quantity, step_size, min_qty)
 
             params = {
@@ -17890,6 +17890,48 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     bot_state['profitHistory'] = bot_state.get('profitHistory') or []
     bot_state['dailyProfits'] = bot_state.get('dailyProfits') or {}
     _rebuild_bot_profit_tracking(bot_state)
+
+    # ACCURACY FIX: Seed winningTrades, totalProfit, totalLosses, and winRate
+    # directly from the trades table (closed trades only) so these values are
+    # always accurate after restart instead of reflecting only the current session.
+    try:
+        _stats_conn = build_sqlite_connection(timeout=10.0)
+        _stats_cur = _stats_conn.cursor()
+        _stats_cur.execute(
+            '''
+            SELECT
+                COUNT(*) AS total_closed,
+                COALESCE(SUM(profit), 0.0) AS sum_profit,
+                COALESCE(SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END), 0) AS win_count,
+                COALESCE(SUM(CASE WHEN profit < 0 THEN ABS(profit) ELSE 0 END), 0.0) AS total_losses
+            FROM trades
+            WHERE bot_id = ? AND status = 'closed'
+            ''',
+            (row['bot_id'],)
+        )
+        _stats_row = _stats_cur.fetchone()
+        _stats_conn.close()
+        if _stats_row:
+            _db_closed = int(_stats_row[0] or 0)
+            _db_profit = round(float(_stats_row[1] or 0.0), 2)
+            _db_wins = int(_stats_row[2] or 0)
+            _db_losses = round(float(_stats_row[3] or 0.0), 2)
+            # Only override if DB has more complete data than tradeHistory
+            if _db_closed > 0:
+                bot_state['winningTrades'] = _db_wins
+                bot_state['totalProfit'] = _db_profit
+                bot_state['profit'] = _db_profit
+                bot_state['totalLosses'] = _db_losses
+                # totalTrades = closed + open
+                _db_open = max(len(bot_state.get('open_positions') or {}), 0)
+                bot_state['totalTrades'] = max(bot_state.get('totalTrades', 0), _db_closed + _db_open)
+                logger.info(
+                    f"📊 Stats resynced from DB for bot {row['bot_id']}: "
+                    f"closed={_db_closed} wins={_db_wins} profit={_db_profit}"
+                )
+    except Exception as _e:
+        logger.warning(f"Could not resync stats for bot {row['bot_id']}: {_e}")
+
     bot_state['accountBalance'] = _safe_float(bot_state.get('accountBalance'), _safe_float(row['cached_balance'], 0.0))
     bot_state['accountEquity'] = _safe_float(bot_state.get('accountEquity'), _safe_float(row['cached_equity'], bot_state['accountBalance']))
     # Restore open_positions from DB if not already in runtime_state
@@ -19146,6 +19188,10 @@ def update_bot_config(bot_id):
             return jsonify({'success': False, 'error': 'credentialId required'}), 400
 
         conn = get_db_connection()
+        try:
+            conn.execute(f'PRAGMA busy_timeout = {int(SQLITE_BUSY_TIMEOUT_MS)}')
+        except Exception:
+            pass
         cursor = conn.cursor()
         cursor.execute('SELECT user_id FROM user_bots WHERE bot_id = ?', (bot_id,))
         db_bot = cursor.fetchone()
@@ -19284,31 +19330,40 @@ def update_bot_config(bot_id):
         strategy = effective_data.get('strategy', bot.get('strategy', 'Trend Following'))
         bot_name = data.get('name') or bot.get('name') or strategy
 
-        cursor.execute('''
-            UPDATE user_bots
-            SET name = ?,
-                strategy = ?,
-                enabled = 0,
-                broker_account_id = ?,
-                symbols = ?,
-                is_live = ?,
-                updated_at = ?
-            WHERE bot_id = ? AND user_id = ?
-        ''', (
-            bot_name,
-            strategy,
-            account_id,
-            ','.join(symbols),
-            1 if is_live else 0,
-            updated_at,
-            bot_id,
-            user_id,
-        ))
-        cursor.execute('DELETE FROM bot_credentials WHERE bot_id = ? AND user_id = ?', (bot_id, user_id))
-        cursor.execute('''
-            INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
-            VALUES (?, ?, ?, ?)
-        ''', (bot_id, credential_id, user_id, updated_at))
+        for db_write_attempt in range(3):
+            try:
+                cursor.execute('''
+                    UPDATE user_bots
+                    SET name = ?,
+                        strategy = ?,
+                        enabled = 0,
+                        broker_account_id = ?,
+                        symbols = ?,
+                        is_live = ?,
+                        updated_at = ?
+                    WHERE bot_id = ? AND user_id = ?
+                ''', (
+                    bot_name,
+                    strategy,
+                    account_id,
+                    ','.join(symbols),
+                    1 if is_live else 0,
+                    updated_at,
+                    bot_id,
+                    user_id,
+                ))
+                cursor.execute('DELETE FROM bot_credentials WHERE bot_id = ? AND user_id = ?', (bot_id, user_id))
+                cursor.execute('''
+                    INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (bot_id, credential_id, user_id, updated_at))
+                conn.commit()
+                break
+            except sqlite3.OperationalError as db_exc:
+                if db_write_attempt >= 2 or not _is_sqlite_locked_error(db_exc):
+                    raise
+                conn.rollback()
+                time.sleep(0.5 * (db_write_attempt + 1))
 
         bot.update({
             'name': bot_name,
@@ -19353,7 +19408,6 @@ def update_bot_config(bot_id):
         bot.pop('broker_conn', None)
 
         persist_bot_runtime_state(bot_id, force=True)
-        conn.commit()
 
         return jsonify({
             'success': True,
@@ -20471,7 +20525,7 @@ def should_trade_today(bot_config, symbol):
         and vol == 'Medium'
         and 'Medium' not in allowed_vol
         and current_signal_direction in {'BUY', 'SELL'}
-        and current_signal_strength >= 64.0
+        and current_signal_strength >= 40.0
     )
     if strong_crypto_volatility_override:
         allowed_vol = list(dict.fromkeys([*allowed_vol, 'Medium']))
@@ -20691,16 +20745,32 @@ def _apply_loss_streak_safety(bot_config: Dict[str, Any], closed_trade: Dict[str
 
     closed_symbol = str(closed_trade.get('symbol') or '').strip()
     closed_symbol_base = _normalize_symbol_base(closed_symbol)
+    post_loss_symbol_cooldown_minutes = 0.0
+    post_loss_reason = None
     if closed_symbol_base == 'XAGUSD':
-        xag_cooldown_minutes = 8.0
+        post_loss_symbol_cooldown_minutes = 8.0
+        post_loss_reason = 'XAGUSD_POST_LOSS_COOLDOWN'
+    elif broker_name == 'Exness' and closed_symbol_base in {'BTCUSD', 'ETHUSD', 'SOLUSD'}:
+        post_loss_symbol_cooldown_minutes = 12.0
+        post_loss_reason = 'MAJOR_CRYPTO_POST_LOSS_COOLDOWN'
+    elif broker_name == 'Exness' and closed_symbol_base in {'XAUUSD', 'US500', 'TSLA'}:
+        post_loss_symbol_cooldown_minutes = 15.0
+        post_loss_reason = 'FAST_MARKET_POST_LOSS_COOLDOWN'
+
+    if post_loss_symbol_cooldown_minutes > 0 and closed_symbol:
         _set_symbol_reentry_cooldown(
             bot_config,
             closed_symbol,
-            xag_cooldown_minutes,
-            'XAGUSD_POST_LOSS_COOLDOWN',
+            post_loss_symbol_cooldown_minutes,
+            str(post_loss_reason or 'POST_LOSS_SYMBOL_COOLDOWN'),
         )
+        bot_config.setdefault('symbol_cooldown_until', {})[closed_symbol] = (
+            datetime.now() + timedelta(minutes=post_loss_symbol_cooldown_minutes)
+        ).isoformat()
         logger.warning(
-            f"[RISK] Bot {bot_config.get('botId')}: cooling down {closed_symbol} for {xag_cooldown_minutes:.0f}m after a losing silver close"
+            f"[RISK] Bot {bot_config.get('botId')}: cooling down {closed_symbol} for "
+            f"{post_loss_symbol_cooldown_minutes:.0f}m after losing close "
+            f"({post_loss_reason or 'POST_LOSS_SYMBOL_COOLDOWN'})"
         )
 
     recent_closed = [
@@ -21761,28 +21831,20 @@ def test_broker_connection():
                 'account_number': account_id,
                 'server': market,
                 'is_live': is_live,
+                'prefetch_account_info': False,
+                'auth_timeout': 12,
+                'account_info_timeout': 8,
+                'time_sync_timeout': 5,
+                'skip_spot_wallet_valuation': market != 'futures',
             })
             if not binance_conn.connect():
-                backend_host = (request.host or '').strip()
-                whitelist_host = backend_host.split(':', 1)[0] if backend_host else ''
-                error_message = binance_conn.last_error or 'Failed to authenticate with Binance'
-                auth_attempts = binance_conn._describe_auth_attempts() if hasattr(binance_conn, '_describe_auth_attempts') else ''
-                if getattr(binance_conn, 'last_error_code', None) == -2015:
-                    mode_label = 'LIVE' if is_live else 'DEMO'
-                    error_message = (
-                        f'Binance {mode_label} {market} key rejected (-2015). '
-                        'Check API secret, Enable Reading, and Binance environment.'
-                    )
-                if getattr(binance_conn, 'last_error_code', None) == -2015 and whitelist_host:
-                    error_message = (
-                        f'{error_message} Whitelist {whitelist_host} in Binance API restrictions.'
-                    )
+                auth_error = binance_conn.last_error or 'Failed to authenticate with Binance'
+                auth_error_code = binance_conn.last_error_code
                 return jsonify({
                     'success': False,
-                    'error': error_message,
-                    'error_code': getattr(binance_conn, 'last_error_code', None),
-                    'whitelist_host': whitelist_host or None,
-                    'attempts': auth_attempts or None,
+                    'error': auth_error,
+                    'error_code': auth_error_code,
+                    'whitelist_host': request.host or '',
                 }), 401
 
             effective_is_live = bool(getattr(binance_conn, 'effective_is_live', is_live))
@@ -22099,7 +22161,11 @@ def test_broker_connection():
                     'server': server,
                     'is_live': is_live,
                     'is_manual_test': True,
-                    'lock_timeout': 35,
+                    # Keep well below Flutter's 45s HTTP timeout. MT5 lock wait (5s) +
+                    # initialize() thread timeout (15s) = 20s max, leaving headroom for
+                    # DB saves and response serialisation.
+                    'lock_timeout': 5,
+                    'init_timeout': 15,
                 })
 
                 if quick_test_conn.connect():
@@ -22127,6 +22193,11 @@ def test_broker_connection():
                             'success': False,
                             'error': quick_error_message,
                         }), 401
+
+                    # MT5 was busy/locked — skip warmup too to avoid a second
+                    # 60-second MT5 lock wait that would exceed the client HTTP timeout.
+                    if quick_error_code in ('LOCK_TIMEOUT', 'MT5_BUSY', 'PRIORITY_MODE_ACTIVE', 'CONNECT_FAILED'):
+                        skip_exness_warmup = True
 
                     deferred_verification_warning = (
                         'Exness credential saved, but live verification was deferred: '
@@ -24761,6 +24832,58 @@ def _set_symbol_reentry_cooldown(
     return cooldown_until
 
 
+def _get_symbol_entry_lock(
+    bot_config: Dict[str, Any],
+    symbol: str,
+) -> Optional[Dict[str, Any]]:
+    entry_locks = bot_config.get('symbolEntryLocks') or {}
+    exact_symbol = str(symbol or '').strip()
+    base_symbol = _normalize_symbol_base(symbol)
+    now = datetime.now()
+    for lock_key in [exact_symbol, base_symbol]:
+        if not lock_key:
+            continue
+        lock_entry = entry_locks.get(lock_key)
+        if not isinstance(lock_entry, dict):
+            continue
+        try:
+            lock_until = datetime.fromisoformat(str(lock_entry.get('until') or ''))
+            compare_now = now.replace(tzinfo=lock_until.tzinfo) if getattr(lock_until, 'tzinfo', None) is not None else now
+            if compare_now < lock_until:
+                return {
+                    'until': lock_until.isoformat(),
+                    'reason': lock_entry.get('reason'),
+                    'baseSymbol': lock_entry.get('baseSymbol') or base_symbol,
+                }
+            entry_locks.pop(lock_key, None)
+        except Exception:
+            entry_locks.pop(lock_key, None)
+    if isinstance(bot_config.get('symbolEntryLocks'), dict):
+        bot_config['symbolEntryLocks'] = entry_locks
+    return None
+
+
+def _set_symbol_entry_lock(
+    bot_config: Dict[str, Any],
+    symbol: str,
+    seconds: float,
+    reason: str,
+) -> Optional[str]:
+    if seconds <= 0:
+        return None
+
+    lock_until = (datetime.now() + timedelta(seconds=seconds)).isoformat()
+    exact_symbol = str(symbol or '').strip()
+    base_symbol = _normalize_symbol_base(symbol)
+    entry_locks = bot_config.setdefault('symbolEntryLocks', {})
+    lock_value = {'until': lock_until, 'reason': reason, 'baseSymbol': base_symbol}
+    if exact_symbol:
+        entry_locks[exact_symbol] = dict(lock_value)
+    if base_symbol:
+        entry_locks[base_symbol] = dict(lock_value)
+    return lock_until
+
+
 def _normalize_milestone_withdrawal_plan(raw_plan: Any) -> List[Dict[str, float]]:
     if isinstance(raw_plan, str):
         try:
@@ -26723,6 +26846,28 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
     bot_config['effectiveMaxOpenPositions'] = effective['maxOpenPositions']
     bot_config['effectiveMaxPositionsPerSymbol'] = effective['maxPositionsPerSymbol']
     bot_config['effectiveAllowedVolatility'] = effective['allowedVolatility']
+
+    # AUTO-SCALE maxDailyLoss and riskPerTrade from account balance so profits/losses
+    # remain proportional regardless of account size.
+    # Only applied in assisted/auto mode; manual mode keeps user-configured values.
+    # Rates: maxDailyLoss = 2% of balance, riskPerTrade = 0.5% of balance.
+    # The user-configured value is used as a floor so it can never go below what they set.
+    if is_assisted:
+        _balance_basis = max(
+            _safe_float(bot_config.get('accountEquity'), 0.0),
+            _safe_float(bot_config.get('accountBalance'), 0.0),
+        )
+        if _balance_basis >= 50.0:
+            _scaled_daily_loss = round(_balance_basis * 0.02, 2)
+            _scaled_risk_per_trade = round(_balance_basis * 0.005, 2)
+            _current_max_daily = _safe_float(bot_config.get('maxDailyLoss'), 0.0)
+            _current_risk = _safe_float(bot_config.get('riskPerTrade'), 0.0)
+            # Only raise, never lower below user-configured value
+            if _scaled_daily_loss > _current_max_daily:
+                bot_config['maxDailyLoss'] = _scaled_daily_loss
+            if _scaled_risk_per_trade > _current_risk:
+                bot_config['riskPerTrade'] = _scaled_risk_per_trade
+
     return effective
 
 
@@ -29157,6 +29302,22 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             except Exception as _cd_check_e:
                                 logger.debug(f"Bot {bot_id}: cooldown check error for {symbol}: {_cd_check_e}")
 
+                            active_entry_lock = _get_symbol_entry_lock(bot_config, symbol)
+                            if active_entry_lock:
+                                last_order_block_reason = (
+                                    f"{symbol} entry lock active until {active_entry_lock.get('until')}"
+                                    + (f" ({active_entry_lock.get('reason')})" if active_entry_lock.get('reason') else '')
+                                )
+                                logger.info(f"⏸️ Bot {bot_id}: {last_order_block_reason}")
+                                continue
+
+                            _set_symbol_entry_lock(
+                                bot_config,
+                                symbol,
+                                45.0,
+                                'MT5_ORDER_SUBMISSION_IN_FLIGHT',
+                            )
+
                             # ✅ POSITION LIMIT CHECK: Enforce maxOpenPositions to prevent unlimited trades
                             max_open = bot_config.get('effectiveMaxOpenPositions') or bot_config.get('maxOpenPositions') or 5
                             max_per_symbol = bot_config.get('effectiveMaxPositionsPerSymbol') or bot_config.get('maxPositionsPerSymbol') or max_open
@@ -29304,8 +29465,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     )
                                     adjusted_volume = final_symbol_cap
 
+                            mt5_submission_attempted = False
                             for index, attempt_symbol in enumerate(symbols_to_try):
                                 try:
+                                    mt5_submission_attempted = True
                                     order_result = mt5_conn.place_order(
                                         symbol=attempt_symbol,
                                         order_type=order_type,
@@ -29322,6 +29485,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             logger.warning(f"⚠️ SYMBOL MISMATCH - Bot {bot_id}: Requested {symbol} but EXECUTED on {actual_symbol}")
                                             logger.warning(f"   This may result in unexpected profits/losses if symbols trade differently")
                                         logger.info(f"✅ Bot {bot_id}: Order placed successfully on {actual_symbol}")
+                                        _set_symbol_entry_lock(
+                                            bot_config,
+                                            actual_symbol,
+                                            90.0,
+                                            'MT5_RECENT_ENTRY',
+                                        )
                                         symbol = actual_symbol  # Update to actual traded symbol
                                         break
                                     else:
@@ -29386,6 +29555,14 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     if index < len(symbols_to_try) - 1:
                                         continue
                                     break
+
+                            if mt5_submission_attempted and not (order_result and order_result.get('success', False)):
+                                _set_symbol_entry_lock(
+                                    bot_config,
+                                    symbol,
+                                    20.0,
+                                    'MT5_RECENT_REJECTED_ENTRY',
+                                )
                         else:
                             try:
                                 order_kwargs = {

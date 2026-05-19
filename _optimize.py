@@ -78,6 +78,10 @@ PATCH = {
     'effectiveMaxOpenPositions': 3,
     'maxPositionsPerSymbol': 1,
     'effectiveMaxPositionsPerSymbol': 1,
+    # Auto-close BUY positions held for more than this many hours so the bot
+    # can free spot inventory and re-trade. Prevents "1 trade then stale forever".
+    'maxPositionAgeHours': 4.0,
+    'agedClosePnlFloor': -2.0,
 }
 
 for r in cur.execute("SELECT bot_id, runtime_state FROM user_bots WHERE broker_account_id LIKE 'Binance_%' AND user_id=?", (USER,)).fetchall():

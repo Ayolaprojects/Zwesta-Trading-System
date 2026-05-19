@@ -6,3 +6,21 @@ worker_*.log
 flask*.log
 multi_broker_backend.log
 backups/
+# node_modules and build artifacts
+node_modules/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+.help
+
+*.log
+local_test*.log
+local_test*.err
+_local_backend*.log
+_local_backend*.err.log
+trading_bot.log
+_push_result.txt
+_tmp_*.txt
+

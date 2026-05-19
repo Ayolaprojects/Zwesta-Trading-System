@@ -4,8 +4,34 @@ import sqlite3
 import sys
 from datetime import datetime
 
+
+_PRESERVED_BINANCE_ENV = {
+    name: os.environ.get(name)
+    for name in [
+        "ZWESTA_SKIP_STARTUP_DB_RECOVERY",
+        "BINANCE_MARKET",
+        "BINANCE_IS_LIVE",
+        "BINANCE_ACCOUNT_NUMBER",
+        "BINANCE_API_KEY",
+        "BINANCE_API_SECRET",
+        "BINANCE_SPOT_API_KEY",
+        "BINANCE_SPOT_API_SECRET",
+        "BINANCE_FUTURES_API_KEY",
+        "BINANCE_FUTURES_API_SECRET",
+        "BINANCE_CREDENTIAL_ID",
+    ]
+}
+
+if not os.environ.get("ZWESTA_SKIP_STARTUP_DB_RECOVERY"):
+    os.environ["ZWESTA_SKIP_STARTUP_DB_RECOVERY"] = "true"
+
 sys.path.insert(0, r"c:\backend")
 import multi_broker_backend_updated as backend
+
+for _env_name, _env_value in _PRESERVED_BINANCE_ENV.items():
+    if _env_value is None:
+        continue
+    os.environ[_env_name] = _env_value
 
 DB_PATH = r"c:\backend\zwesta_trading.db"
 BINANCE_CRED_ID = "e568ec38-cfc7-4b05-8033-b56ecdf304e4"
@@ -103,36 +129,57 @@ def test_binance() -> dict:
             return result
 
         print("BINANCE step=buy:start", flush=True)
-        buy = conn.place_order("BTCUSDT", "BUY", 0.0, quote_amount=12.0)
+        market_name = str(cred.get("market") or cred.get("server") or "spot").strip().lower()
+        if market_name == "futures":
+            buy = conn.place_order("BTCUSDT", "BUY", 0.001, exchange_leverage=10, margin_type="ISOLATED")
+        else:
+            buy = conn.place_order("BTCUSDT", "BUY", 0.0, quote_amount=12.0)
         print(f"BINANCE step=buy:done {buy}", flush=True)
         result["buy"] = buy
         if not buy.get("success"):
             return result
 
         print("BINANCE step=close:start", flush=True)
-        sell_qty = float(buy.get("executedQty") or 0.0)
-        result["sell_quantity"] = sell_qty
-        if sell_qty <= 0:
-            result["close"] = {"success": False, "error": "Buy succeeded but executedQty was zero"}
+        if market_name == "futures":
+            positions = conn.get_positions() or []
+            result["positions_after_buy"] = positions
+            matching = next(
+                (
+                    position
+                    for position in positions
+                    if str(position.get("symbol") or "").upper() == "BTCUSDT"
+                    and float(position.get("size") or 0.0) > 0.0
+                ),
+                None,
+            )
+            if matching:
+                result["close"] = conn.close_position(str(matching.get("deal_id")))
+            else:
+                result["close"] = {"success": False, "error": "No open BTCUSDT futures position found after buy"}
         else:
-            quantity_value = format(sell_qty, ".8f").rstrip("0").rstrip(".")
-            sell_resp = conn._request_with_time_retry(
-                "POST",
-                f"{conn.base_url}/v3/order",
-                headers=conn._headers(),
-                params={
-                    "symbol": "BTCUSDT",
-                    "side": "SELL",
-                    "type": "MARKET",
-                    "quantity": quantity_value,
-                },
-                timeout=15,
-            )
-            result["close"] = (
-                {"success": True, "status_code": sell_resp.status_code, "body": sell_resp.json() if sell_resp.content else {}}
-                if sell_resp.status_code == 200
-                else {"success": False, "status_code": sell_resp.status_code, "body": sell_resp.text}
-            )
+            sell_qty = float(buy.get("executedQty") or 0.0)
+            result["sell_quantity"] = sell_qty
+            if sell_qty <= 0:
+                result["close"] = {"success": False, "error": "Buy succeeded but executedQty was zero"}
+            else:
+                quantity_value = format(sell_qty, ".8f").rstrip("0").rstrip(".")
+                sell_resp = conn._request_with_time_retry(
+                    "POST",
+                    f"{conn.base_url}/v3/order",
+                    headers=conn._headers(),
+                    params={
+                        "symbol": "BTCUSDT",
+                        "side": "SELL",
+                        "type": "MARKET",
+                        "quantity": quantity_value,
+                    },
+                    timeout=15,
+                )
+                result["close"] = (
+                    {"success": True, "status_code": sell_resp.status_code, "body": sell_resp.json() if sell_resp.content else {}}
+                    if sell_resp.status_code == 200
+                    else {"success": False, "status_code": sell_resp.status_code, "body": sell_resp.text}
+                )
         print(f"BINANCE step=close:done {result['close']}", flush=True)
         return result
     finally:
@@ -166,6 +213,7 @@ def test_exness() -> dict:
         "is_live": False,
         "is_manual_test": True,
         "lock_timeout": 8,
+        "init_timeout": 45,
     })
     try:
         print("EXNESS step=connect:start", flush=True)
