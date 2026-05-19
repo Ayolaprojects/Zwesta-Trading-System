@@ -7453,8 +7453,16 @@ class BinanceConnection(BrokerConnection):
                         'error': f'Binance futures exchange controls rejected for {instrument}: {controls_error}',
                     }
 
-            quantity_value = format(quantity, '.8f').rstrip('0').rstrip('.')
-            if self.market != 'futures':
+            if self.market == 'futures':
+                from decimal import Decimal, ROUND_DOWN
+                _step = Decimal(str(step_size)) if step_size > 0 else Decimal('0.001')
+                _qty_d = Decimal(str(quantity)).quantize(_step, rounding=ROUND_DOWN)
+                quantity = float(_qty_d)
+                if quantity <= 0:
+                    return {'success': False, 'error': f'Calculated futures quantity {_qty_d} is below minimum step {step_size} for {instrument}'}
+                _decimals = max(0, -_step.as_tuple().exponent)
+                quantity_value = f"{quantity:.{_decimals}f}"
+            else:
                 quantity_value = self._format_spot_quantity(quantity, step_size, min_qty)
 
             params = {
@@ -18554,6 +18562,7 @@ PERSISTED_BOT_STATE_FIELDS = {
     'selectedPreset', 'presetName',
     'autoAdaptationEnabled', 'lastAdaptationAt', 'lastAdaptationReason',
     'effectivePositionSizeMultiplier', 'effectiveScannerCapitalMultiplier', 'lastSizingAdjustment',
+    'effectiveTradeAmount', 'tradeAmountAdaptation', 'dailyProfitPeaks',
     'promotionReadyAt', 'promotionExpiredAt',
     'open_positions', 'lastPauseEvent', 'intelligentScanner', 'allowAdaptiveRawFallback', 'lastScanResults', 'mode',
     'profitProtection', 'symbolReentryCooldowns',
@@ -21545,6 +21554,11 @@ def _resolve_adaptive_trade_amount(
     bot_config['effectiveTradeAmount'] = adjusted_amount
     bot_config['effectivePositionSizeMultiplier'] = round(multiplier, 3)
     bot_config['effectiveScannerCapitalMultiplier'] = round(_safe_float(performance_state.get('scannerCapitalMultiplier'), 1.0), 3)
+    # Update performance_state to reflect the final adapted multiplier so lastSizingAdjustment is consistent
+    performance_state['multiplier'] = round(multiplier, 3)
+    performance_state['state'] = state
+    if reasons:
+        performance_state['reason'] = '; '.join(reasons)
     bot_config['lastSizingAdjustment'] = performance_state
     bot_config['tradeAmountAdaptation'] = {
         'timestamp': datetime.now().isoformat(),
@@ -22140,7 +22154,7 @@ def should_trade_today(bot_config, symbol):
         and vol == 'Medium'
         and 'Medium' not in allowed_vol
         and current_signal_direction in {'BUY', 'SELL'}
-        and current_signal_strength >= 64.0
+        and current_signal_strength >= 40.0
     )
     if strong_crypto_volatility_override:
         allowed_vol = list(dict.fromkeys([*allowed_vol, 'Medium']))
@@ -22369,11 +22383,11 @@ def _update_equity_trend(bot_config: Dict[str, Any], live_equity: float) -> None
     loss_streak_hard_pause_minutes = LOSS_STREAK_HARD_PAUSE_MINUTES
     loss_streak_symbol_cooldown_minutes = LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES
     if broker_name == 'Exness':
-        loss_streak_pause_after = min(loss_streak_pause_after, 2)
-        loss_streak_pause_minutes = max(loss_streak_pause_minutes, 30)
-        loss_streak_hard_pause_after = min(loss_streak_hard_pause_after, 4)
-        loss_streak_hard_pause_minutes = max(loss_streak_hard_pause_minutes, 90)
-        loss_streak_symbol_cooldown_minutes = max(loss_streak_symbol_cooldown_minutes, 30)
+        loss_streak_pause_after = min(loss_streak_pause_after, 3)
+        loss_streak_pause_minutes = max(loss_streak_pause_minutes, 15)
+        loss_streak_hard_pause_after = min(loss_streak_hard_pause_after, 5)
+        loss_streak_hard_pause_minutes = max(loss_streak_hard_pause_minutes, 60)
+        loss_streak_symbol_cooldown_minutes = max(loss_streak_symbol_cooldown_minutes, 15)
 
     closed_symbol = str(closed_trade.get('symbol') or '').strip()
     closed_symbol_base = _normalize_symbol_base(closed_symbol)
@@ -26533,6 +26547,7 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'breakEvenActivationShare': 0.5,
     'protectedSymbolCooldownMinutes': 5.0,
     'zeroLossLockEnabled': True,   # Enabled: close immediately when a previously-profitable trade returns to 0
+    'minimumHoldMinutes': 20.0,    # Hold trades for at least 20 min before profit protection can close (allows trends to develop)
 }
 
 PROFIT_PROTECTION_VOLATILITY_PROFILES = {
@@ -31645,10 +31660,15 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         _ta_scale_mult, _atr_scale_mult = _get_profit_scale_multipliers(_today_realized, _acct_balance_for_scale)
                         # Small-account safety gate: scale DOWN base for very small deposits so
                         # min broker lot/qty does not over-expose the account.
+                        # NOTE: skip for Binance futures — the capital-safety-net already caps
+                        # tradeAmount to 8% of balance (margin), so applying a 10× spot-scale
+                        # on top makes futures trading impossible on small accounts.
                         _sa_scale = _small_account_trade_amount_scale(_acct_balance_for_scale)
+                        _is_binance_futures_bot = (canonicalize_broker_name(broker_type) == 'Binance' and binance_market_name == 'futures')
                         if fixed_trade_amount and _acct_balance_for_scale > 0:
                             # Apply small-account scale only when below R5000 equiv (scale < 1.0)
-                            if _sa_scale < 1.0:
+                            # and NOT for Binance futures (already margin-capped by safety net)
+                            if _sa_scale < 1.0 and not _is_binance_futures_bot:
                                 fixed_trade_amount = round(float(fixed_trade_amount) * _sa_scale, 2)
                             # Then layer on profit-tier boost (only when actually in profit)
                             if _ta_scale_mult > 1.0:
