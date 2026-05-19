@@ -1213,22 +1213,56 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           ? preferred
           : ranked.take(5).map((p) => p['symbol'] as String).toList();
     } else {
-      // Exness / MT5: pick top recommended symbols that are actually available
-      // Top picks: major forex + gold (proven high-performance pairs)
-      const topPicks = [
+      // Exness / MT5: rank available symbols by live signal strength from
+      // commodityMarketData, falling back to a static preferred order.
+      // Exclude high-volatility single-asset crypto (BTCUSD, ETHUSD) from
+      // the default selection so beginners start with forex/gold.
+      const excludeByDefault = {'BTCUSD', 'ETHUSD', 'BTCUSDM', 'ETHUSDM'};
+      const staticTopPicks = [
         'GBPUSD', 'EURUSD', 'USDJPY', 'XAUUSD',
         'AUDUSD', 'USDCAD', 'USDCHF', 'GBPJPY',
       ];
-      final normalizedToAvailable = <String, String>{
-        for (final s in available) _normalizeSymbolBase(s): s,
-      };
-      final autoSelected = <String>[];
-      for (final pick in topPicks) {
-        final mapped = normalizedToAvailable[_normalizeSymbolBase(pick)];
-        if (mapped != null) autoSelected.add(mapped);
-        if (autoSelected.length >= 4) break;
+
+      // Score each available symbol by signal strength
+      final scored = <Map<String, dynamic>>[];
+      for (final sym in available) {
+        final normalizedSym = _normalizeSymbolBase(sym);
+        if (excludeByDefault.contains(normalizedSym)) continue;
+        final marketData = _normalizeMarketDataEntry(
+          commodityMarketData[sym] ??
+              commodityMarketData[normalizedSym],
+        );
+        final signal = _marketSignalStrength(marketData);
+        // Static rank from preferred list gives a tiebreaker bonus
+        final staticRank = staticTopPicks.indexWhere(
+          (pick) => _normalizeSymbolBase(pick) == normalizedSym,
+        );
+        final bonus = staticRank >= 0 ? (8 - staticRank) * 2.0 : 0.0;
+        scored.add({'symbol': sym, 'score': signal + bonus});
       }
-      _selectedSymbols = autoSelected;
+
+      scored.sort(
+        (a, b) => (b['score'] as double).compareTo(a['score'] as double),
+      );
+
+      if (scored.isNotEmpty) {
+        _selectedSymbols = scored
+            .take(4)
+            .map((e) => e['symbol'] as String)
+            .toList();
+      } else {
+        // No market data at all — fall back to static preferred list
+        final normalizedToAvailable = <String, String>{
+          for (final s in available) _normalizeSymbolBase(s): s,
+        };
+        final autoSelected = <String>[];
+        for (final pick in staticTopPicks) {
+          final mapped = normalizedToAvailable[_normalizeSymbolBase(pick)];
+          if (mapped != null) autoSelected.add(mapped);
+          if (autoSelected.length >= 4) break;
+        }
+        _selectedSymbols = autoSelected;
+      }
     }
   }
 
@@ -2654,6 +2688,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             .whereType<String>()
             .toList(),
       );
+      // Auto-select top recommended pairs for new bots
+      _autoSelectDefaultSymbols();
       _isLoadingData = false;
     });
   }
