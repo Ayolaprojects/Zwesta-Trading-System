@@ -21940,6 +21940,16 @@ def should_trade_today(bot_config, symbol):
     drawdown_pause_hours = bot_config.get('drawdownPauseHours', 6.0) or 6.0
     today = datetime.now().strftime('%Y-%m-%d')
     now = datetime.now()
+
+    def _persist_pause_state() -> None:
+        bot_runtime_id = str(bot_config.get('botId') or bot_config.get('bot_id') or '').strip()
+        if not bot_runtime_id:
+            return
+        try:
+            persist_bot_runtime_state(bot_runtime_id, force=True)
+        except Exception as persist_error:
+            logger.debug(f"[RISK] Bot {bot_runtime_id} runtime-state persist skipped: {persist_error}")
+
     live_equity = max(
         _safe_float(bot_config.get('accountEquity'), 0.0),
         _safe_float(bot_config.get('accountBalance'), 0.0),
@@ -22220,6 +22230,7 @@ def should_trade_today(bot_config, symbol):
                     pause_reason = str(bot_config.get('pauseReason') or '')
                     if 'daily profit lock' in pause_reason.lower():
                         bot_config['pauseReason'] = None
+                    _persist_pause_state()
                     released_profit_lock_cooldown_early = True
                     logger.info(
                         f"[RISK] Bot {bot_config.get('botId')} released profit-lock cooldown early on {symbol}; "
@@ -22241,6 +22252,7 @@ def should_trade_today(bot_config, symbol):
                 pause_reason = str(bot_config.get('pauseReason') or '')
                 if 'daily profit lock' in pause_reason.lower():
                     bot_config['pauseReason'] = None
+                _persist_pause_state()
                 logger.info(
                     f"[RISK] Bot {bot_config.get('botId')} profit-lock cooldown expired; "
                     f"resuming from baseline daily profit ${_safe_float(bot_config.get('profitLockBaselineProfit'), 0.0):.2f}."
@@ -22249,6 +22261,7 @@ def should_trade_today(bot_config, symbol):
             logger.warning(f"[RISK] Bot {bot_config.get('botId')} had invalid profitLockCooldownUntil value: {e}")
             bot_config['profitLockCooldownUntil'] = None
             bot_config['profitLockCooldownSetAt'] = None
+            _persist_pause_state()
 
     effective_profit_lock = _effective_daily_profit_lock(
         bot_config,
@@ -22290,6 +22303,7 @@ def should_trade_today(bot_config, symbol):
         pause_until = now + timedelta(minutes=profit_lock_cooldown_minutes)
         bot_config['profitLockCooldownUntil'] = pause_until.isoformat()
         bot_config['profitLockCooldownSetAt'] = now.isoformat()
+        _persist_pause_state()
         return _record_trade_risk_block(
             bot_config,
             symbol,
@@ -28112,9 +28126,17 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             )
         _catastrophic_loss_limit = max(_hard_loss_limit * 1.5, _hard_loss_limit + 1.0)
         _currency_label = str(bot_config.get('displayCurrency') or 'USD').upper()
+        _locked_profit_floor = _safe_float(tracked.get('lockedProfitFloor'), 0.0)
+        _profit_retrace_guard_armed = (
+            bool(tracked.get('profitProtectionArmed'))
+            and protection_hold_satisfied
+            and peak_profit > 0
+            and _locked_profit_floor > 0
+        )
         if (
             not close_reason
             and current_profit < -_hard_loss_limit
+            and not _profit_retrace_guard_armed
             and (protection_hold_satisfied or current_profit < -_catastrophic_loss_limit)
             and not _recent_close_request(tracked)
         ):
