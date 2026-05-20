@@ -28330,6 +28330,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         if not close_reason:
             if (
                 not allow_wider_trend_exits
+                and early_profit_exit_allowed
                 and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
                 and peak_profit >= UPSWING_RETRACE_MIN_PEAK_PROFIT
                 and current_profit > 0
@@ -28341,6 +28342,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         if not close_reason:
             if (
                 not allow_wider_trend_exits
+                and early_profit_exit_allowed
                 and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
                 and peak_profit >= UPSWING_RETRACE_MIN_PEAK_PROFIT
                 and current_profit > 0
