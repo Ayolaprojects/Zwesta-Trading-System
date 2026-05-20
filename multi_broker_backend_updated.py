@@ -6640,6 +6640,27 @@ class BinanceConnection(BrokerConnection):
         self.last_error_code = None
         self._auth_attempt_summaries = []
 
+    def _auth_account_key(self) -> str:
+        return str(self.credentials.get('account_number') or 'BINANCE').strip() or 'BINANCE'
+
+    def _get_failed_auth_cooldown(self):
+        return get_failed_auth_status(self._auth_account_key())
+
+    def _clear_failed_auth_cooldown(self) -> None:
+        with _failed_auth_lock:
+            _failed_auth_accounts.pop(self._auth_account_key(), None)
+
+    def _record_failed_auth_cooldown(self, message: str) -> None:
+        with _failed_auth_lock:
+            _failed_auth_accounts[self._auth_account_key()] = {
+                'timestamp': time.time(),
+                'error': str(message or '').strip(),
+            }
+
+    @staticmethod
+    def _is_invalid_auth_code(code: Optional[Any]) -> bool:
+        return code in {-2014, -2015, -1022}
+
     def _record_auth_attempt(self, label: str, url: str, response=None, exc: Optional[Exception] = None) -> None:
         target = str(url or '').replace('https://', '').replace('http://', '')
         if exc is not None:
@@ -7219,6 +7240,17 @@ class BinanceConnection(BrokerConnection):
                 logger.error('Binance: Missing API key or API secret')
                 return False
 
+            failed_auth_status = self._get_failed_auth_cooldown()
+            if failed_auth_status:
+                cooldown_message = (
+                    f"Binance authentication cooldown active for {failed_auth_status['remaining']:.0f}s: "
+                    f"{failed_auth_status.get('error') or 'recent invalid API credentials'}"
+                )
+                self._set_last_error(cooldown_message, 'AUTH_COOLDOWN')
+                if should_log_session_event(f"binance-auth-cooldown:{self._auth_account_key()}", 60):
+                    logger.warning(cooldown_message)
+                return False
+
             configured_is_live = bool(self.credentials.get('is_live', False))
             account_endpoint = self._account_endpoint()
             logger.info(
@@ -7247,6 +7279,7 @@ class BinanceConnection(BrokerConnection):
 
             if resp is not None and resp.status_code == 200:
                 self.connected = True
+                self._clear_failed_auth_cooldown()
                 self._remember_working_auth_route()
                 if self._prefetch_account_info:
                     self.get_account_info()
@@ -7299,7 +7332,10 @@ class BinanceConnection(BrokerConnection):
 
             error_message, error_code = self._format_auth_error(resp)
             self._set_last_error(error_message, error_code)
-            logger.error(f"Binance authentication failed: {resp.status_code} - {resp.text} | attempts={self._describe_auth_attempts()}")
+            if self._is_invalid_auth_code(error_code):
+                self._record_failed_auth_cooldown(error_message)
+            if should_log_session_event(f"binance-auth-failed:{self._auth_account_key()}", 60):
+                logger.error(f"Binance authentication failed: {resp.status_code} - {resp.text} | attempts={self._describe_auth_attempts()}")
             return False
         except Exception as e:
             self._set_last_error(f'Error connecting to Binance: {e}', 'EXCEPTION')
@@ -10521,6 +10557,8 @@ DEFAULT_BOT_SETTINGS = {
     'signalThreshold': 0.5,  # Default signal threshold
     'maxOpenPositions': 8,  # Default max open positions
     'symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'],  # Default Binance-safe spot symbols
+    'assistedCycleSymbolCap': 8,
+    'allowCrossMarketReallocation': True,
     'managementProfile': 'fast_growth'  # Default management profile
 }
 
@@ -10535,8 +10573,8 @@ def create_new_bot(bot_id):
 SMALL_ACCOUNT_PRESETS = {
     'crypto': {
         'name': 'Crypto Small Account (DCA + Swing)',
-        'description': 'DCA into BTC/ETH with swing trend entries. Best for $10-$1000 crypto accounts.',
-        'symbols': ['BTCUSD', 'ETHUSD'],
+        'description': 'DCA into BTC/ETH plus liquid alts with swing trend entries. Best for $10-$1000 crypto accounts.',
+        'symbols': ['BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD'],
         'strategy': 'Swing Trend DCA',
         'managementProfile': 'small_account',
         'riskPerTrade': 5.0,
@@ -10550,13 +10588,15 @@ SMALL_ACCOUNT_PRESETS = {
         'allowedVolatility': ['Very Low', 'Low', 'Medium'],
         'autoSwitch': False,
         'intelligentScanner': True,
+        'assistedCycleSymbolCap': 8,
+        'allowCrossMarketReallocation': True,
         'dynamicSizing': True,
         'basePositionSize': 0.01,
         'tradeAmount': None,
         'tips': [
             'DCA weekly: buy fixed R amount regardless of price',
             'Only spot or max 2-5x leverage',
-            'Stick to BTC + ETH (majors only)',
+            'Stick to BTC/ETH plus liquid alts like SOL, BNB, XRP and DOGE only when the scanner confirms them',
             'Expect 5-8% monthly net on a good run',
         ],
     },
@@ -15386,7 +15426,7 @@ def validate_and_correct_symbols(symbols, broker_name=None):
 
     if broker_name == 'Binance':
         if not symbols:
-            return ['BTCUSDT']
+            return list(BINANCE_CURATED_SCANNER_SYMBOLS)
 
         corrected = []
         binance_symbol_map = {
@@ -15479,7 +15519,7 @@ def validate_and_correct_symbols(symbols, broker_name=None):
 
     if broker_name in ('Exness', 'XM', 'XM Global'):
         if not symbols:
-            return ['EURUSDm']
+            return list(EXNESS_CURATED_SCANNER_SYMBOLS)
         blocked_crosses = {'GBPJPY', 'EURJPY', 'AUDJPY', 'CHFJPY', 'CADJPY', 'ZARJPY', 'USDCHF', 'GBPZAR'}
         corrected = []
         for symbol in symbols:
@@ -15711,6 +15751,7 @@ SYMBOL_PARAMETERS = {
         'take_profit_pips': 30,
         'max_slippage': 0.001,
         'min_signal_strength': 65,
+        'volatility_high': 2.0,
         'volatility_low': 0.5,
     },
     # INDICES
@@ -17001,6 +17042,20 @@ def attach_execution_direction(signal_eval: Dict[str, Any], order_type: str, str
     return enriched_signal
 
 
+def _filter_scanner_symbols_for_weekend(symbols: List[str], broker_name: str) -> List[str]:
+    normalized_broker = canonicalize_broker_name(broker_name or '')
+    if not symbols or normalized_broker not in {'Exness', 'XM', 'XM Global'}:
+        return list(symbols or [])
+
+    if datetime.utcnow().weekday() < 5:
+        return list(symbols)
+
+    return [
+        symbol for symbol in symbols
+        if _normalize_symbol_base(symbol) in SMALL_LIVE_ACCOUNT_WEEKEND_BASE_SYMBOLS
+    ]
+
+
 def build_scanner_symbol_universe(
     bot_config: Dict[str, Any],
     fxcm_tradable_symbol_keys: Optional[Set[str]] = None,
@@ -17013,6 +17068,14 @@ def build_scanner_symbol_universe(
     normalized_configured = validate_and_correct_symbols(configured_symbols, normalized_broker) if configured_symbols else []
     profile = _normalize_management_profile(bot_config.get('managementProfile'))
     broker_symbol_universe = get_mt5_ready_symbols_for_broker(normalized_broker)
+    curated_scanner_symbols = _get_curated_scanner_symbols_for_broker(normalized_broker)
+    if normalized_broker == 'Binance' and curated_scanner_symbols:
+        broker_symbol_universe = list(curated_scanner_symbols)
+    elif curated_scanner_symbols:
+        broker_symbol_universe = curated_scanner_symbols + [
+            symbol for symbol in broker_symbol_universe
+            if symbol not in curated_scanner_symbols
+        ]
     blocked_symbol_bases = _get_blocked_symbol_bases(bot_config)
     if blocked_symbol_bases:
         normalized_configured = [
@@ -17028,6 +17091,15 @@ def build_scanner_symbol_universe(
         filtered_broker_symbol_universe = _filter_fxcm_symbols_for_tradability(broker_symbol_universe, fxcm_tradable_symbol_keys)
         normalized_configured = filtered_configured or normalized_configured
         broker_symbol_universe = filtered_broker_symbol_universe or broker_symbol_universe
+    weekend_configured = _filter_scanner_symbols_for_weekend(normalized_configured, normalized_broker)
+    weekend_broker_symbol_universe = _filter_scanner_symbols_for_weekend(broker_symbol_universe, normalized_broker)
+    if weekend_configured != normalized_configured or weekend_broker_symbol_universe != broker_symbol_universe:
+        logger.info(
+            f"[Scanner] Weekend policy narrowed {normalized_broker} universe: configured={len(normalized_configured)}->{len(weekend_configured)} "
+            f"broker={len(broker_symbol_universe)}->{len(weekend_broker_symbol_universe)}"
+        )
+    normalized_configured = weekend_configured
+    broker_symbol_universe = weekend_broker_symbol_universe
     idle_cycles = int(bot_config.get('adaptiveSignalMissCount') or 0)
     expand_small_account_universe = idle_cycles >= ADAPTIVE_SCANNER_TRIGGER_MISSES
 
@@ -18275,7 +18347,7 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
     except Exception:
         cycle_symbol_cap = 2
     if bot_config.get('managementMode', 'assisted') != 'manual':
-        cycle_symbol_cap = min(cycle_symbol_cap, MAX_ASSISTED_SYMBOLS_PER_CYCLE)
+        cycle_symbol_cap = min(cycle_symbol_cap, _resolve_assisted_cycle_symbol_cap(bot_config))
     symbol_universe = []
     profile = _normalize_management_profile(bot_config.get('managementProfile'))
     adaptive_offset = int(bot_config.get('adaptiveSignalThresholdOffset') or 0)
@@ -18562,12 +18634,13 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
             dedup_symbols.add(s)
             new_trade_slots_used += 1
 
-    if bot_config.get('managementMode', 'assisted') != 'manual' and len(cycle_symbols) > MAX_ASSISTED_SYMBOLS_PER_CYCLE:
+    assisted_cycle_symbol_cap = _resolve_assisted_cycle_symbol_cap(bot_config)
+    if bot_config.get('managementMode', 'assisted') != 'manual' and len(cycle_symbols) > assisted_cycle_symbol_cap:
         uncapped_count = len(cycle_symbols)
-        cycle_symbols = list(cycle_symbols[:MAX_ASSISTED_SYMBOLS_PER_CYCLE])
+        cycle_symbols = list(cycle_symbols[:assisted_cycle_symbol_cap])
         logger.info(
             f"🧭 Bot {bot_id}: Reallocation capped cycle symbols to top "
-            f"{MAX_ASSISTED_SYMBOLS_PER_CYCLE} for risk control: {cycle_symbols} "
+            f"{assisted_cycle_symbol_cap} for risk control: {cycle_symbols} "
             f"(from {uncapped_count})"
         )
 
@@ -25984,7 +26057,8 @@ LOSS_STREAK_PAUSE_MINUTES = 15
 LOSS_STREAK_HARD_PAUSE_AFTER = 5
 LOSS_STREAK_HARD_PAUSE_MINUTES = 45
 LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES = 10
-MAX_ASSISTED_SYMBOLS_PER_CYCLE = 4
+DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE = 8
+MAX_ASSISTED_SYMBOLS_PER_CYCLE = 40
 MIN_RISK_REWARD_RATIO = 0.5
 FXCM_MIN_RISK_REWARD_RATIO = float(os.getenv('FXCM_MIN_RISK_REWARD_RATIO', '0.5'))
 PERFORMANCE_SIZING_WINDOW = 6
@@ -26963,15 +27037,17 @@ SMALL_LIVE_ACCOUNT_BALANCE_TIERS = {
 SMALL_LIVE_ACCOUNT_SAFE_BASE_SYMBOLS = {
     'AUDUSD', 'GBPUSD', 'USDJPY'
 }
-SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS = {'BTCUSD', 'ETHUSD'}
+SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS = {'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD'}
 SMALL_LIVE_ACCOUNT_CRYPTO_MIN_BALANCES = {
     'USD': 25.0,
     'ZAR': 300.0,
     'GBP': 20.0,
 }
-SMALL_LIVE_ACCOUNT_PREFERRED_BASE_SYMBOLS = ['AUDUSD', 'BTCUSD', 'ETHUSD', 'GBPUSD', 'USDJPY']
-SMALL_LIVE_ACCOUNT_WEEKEND_BASE_SYMBOLS = {'BTCUSD', 'ETHUSD'}
+SMALL_LIVE_ACCOUNT_PREFERRED_BASE_SYMBOLS = ['AUDUSD', 'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD', 'GBPUSD', 'USDJPY']
+SMALL_LIVE_ACCOUNT_WEEKEND_BASE_SYMBOLS = {'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD'}
 SMALL_LIVE_ACCOUNT_DEFAULT_SYMBOLS = ['AUDUSDm', 'GBPUSDm', 'USDJPYm']
+EXNESS_CURATED_SCANNER_SYMBOLS = ['AUDUSDm', 'GBPUSDm', 'USDJPYm', 'XAUUSDm', 'BTCUSDm', 'ETHUSDm', 'SOLUSDm', 'BNBUSDm', 'XRPUSDm', 'DOGEUSDm', 'TSMm', 'JPMm']
+BINANCE_CURATED_SCANNER_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT']
 
 DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'enabled': True,
@@ -26993,6 +27069,17 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'zeroLossLockEnabled': True,      # Close immediately when a previously-profitable trade returns to 0
     'minimumHoldMinutes': 20.0,       # Hold trades for at least 20 min before profit protection can close (allows trends to develop)
 }
+
+
+def _get_curated_scanner_symbols_for_broker(broker_name: str) -> List[str]:
+    normalized_broker = canonicalize_broker_name(broker_name or '')
+    if normalized_broker in {'Exness', 'XM', 'XM Global'}:
+        return validate_and_correct_symbols(EXNESS_CURATED_SCANNER_SYMBOLS, normalized_broker)
+    if normalized_broker == 'Binance':
+        return validate_and_correct_symbols(BINANCE_CURATED_SCANNER_SYMBOLS, normalized_broker)
+    if normalized_broker == 'FXCM':
+        return validate_and_correct_symbols(['EUR/USD', 'GBP/USD', 'USD/JPY', 'XAU/USD'], normalized_broker)
+    return []
 
 PROFIT_PROTECTION_VOLATILITY_PROFILES = {
     'very_low': {
@@ -28491,6 +28578,15 @@ def _clamp_int_value(field_name: str, raw_value, minimum: int, maximum: int, def
         warnings.append(f'{field_name} reduced to maximum {maximum}')
         return maximum
     return parsed_value
+
+
+def _resolve_assisted_cycle_symbol_cap(bot_config: Dict[str, Any]) -> int:
+    configured_cap = bot_config.get('assistedCycleSymbolCap', DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE)
+    try:
+        cycle_cap = int(round(float(configured_cap)))
+    except (TypeError, ValueError):
+        cycle_cap = DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE
+    return max(1, min(MAX_ASSISTED_SYMBOLS_PER_CYCLE, cycle_cap))
 
 
 def _coerce_bool(raw_value, default_value: bool = False) -> bool:
@@ -30358,6 +30454,14 @@ def sanitize_bot_risk_config(
         SCANNER_CAPITAL_LIVE_MAX_BOOST,
         warnings,
     )
+    assisted_cycle_symbol_cap = _clamp_int_value(
+        'assistedCycleSymbolCap',
+        data.get('assistedCycleSymbolCap', DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE),
+        1,
+        MAX_ASSISTED_SYMBOLS_PER_CYCLE,
+        DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE,
+        warnings,
+    )
     binance_futures_auto_leverage = _coerce_bool(
         data.get('binanceFuturesAutoLeverage', True),
         True,
@@ -30412,6 +30516,7 @@ def sanitize_bot_risk_config(
         'pollInterval': poll_interval,
         'managementMode': management_mode,
         'managementProfile': management_profile,
+        'assistedCycleSymbolCap': assisted_cycle_symbol_cap,
         'allowCrossMarketReallocation': _coerce_bool(
             data.get('allowCrossMarketReallocation', intelligent_settings.get('allowCrossMarketReallocation', True)),
             True,
@@ -31932,10 +32037,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             f"keeping the configured symbols for direct broker validation this cycle"
                         )
 
-                if bot_config.get('managementMode', 'assisted') != 'manual' and len(symbols) > MAX_ASSISTED_SYMBOLS_PER_CYCLE:
-                    symbols = list(symbols[:MAX_ASSISTED_SYMBOLS_PER_CYCLE])
+                assisted_cycle_symbol_cap = _resolve_assisted_cycle_symbol_cap(bot_config)
+                if bot_config.get('managementMode', 'assisted') != 'manual' and len(symbols) > assisted_cycle_symbol_cap:
+                    symbols = list(symbols[:assisted_cycle_symbol_cap])
                     logger.info(
-                        f"🧭 Bot {bot_id}: Limiting cycle to top {MAX_ASSISTED_SYMBOLS_PER_CYCLE} symbols for risk control: {symbols}"
+                        f"🧭 Bot {bot_id}: Limiting cycle to top {assisted_cycle_symbol_cap} symbols for risk control: {symbols}"
                     )
 
                 runtime_safety_changes = enforce_runtime_capital_safety(bot_config)
@@ -32133,11 +32239,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         strategy_func, scanner_threshold, broker_type, strategy_cache,
                         force_scan=not bot_config.get('intelligentScanner', False),
                     )
-                    if bot_config.get('managementMode', 'assisted') != 'manual' and len(symbols) > MAX_ASSISTED_SYMBOLS_PER_CYCLE:
-                        symbols = list(symbols[:MAX_ASSISTED_SYMBOLS_PER_CYCLE])
+                    if bot_config.get('managementMode', 'assisted') != 'manual' and len(symbols) > assisted_cycle_symbol_cap:
+                        symbols = list(symbols[:assisted_cycle_symbol_cap])
                         logger.info(
                             f"🧭 Bot {bot_id}: Capped scanner cycle symbols to top "
-                            f"{MAX_ASSISTED_SYMBOLS_PER_CYCLE} for risk control: {symbols}"
+                            f"{assisted_cycle_symbol_cap} for risk control: {symbols}"
                         )
                 scanner_signal_hits = 0
                 if adaptive_scanner_active:
@@ -34817,7 +34923,13 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         poll_visibility_symbol = None
                         poll_strategy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
-                        for symbol in bot_config.get('symbols', ['EURUSDm'])[:3]:
+                        poll_symbol_universe = build_scanner_symbol_universe(bot_config, tradable_symbol_keys)
+                        if not poll_symbol_universe:
+                            poll_symbol_universe = validate_and_correct_symbols(bot_config.get('symbols', ['EURUSDm']), broker_type)
+                        if bot_config.get('managementMode', 'assisted') != 'manual':
+                            poll_symbol_universe = list(poll_symbol_universe[:assisted_cycle_symbol_cap])
+
+                        for symbol in poll_symbol_universe:
                             poll_market_data = _enrich_market_data_with_bot_context(bot_config, symbol)
                             raw_signal = evaluate_real_trade_signal(symbol, poll_market_data)
                             raw_strength = float(raw_signal.get('strength') or 0.0)
@@ -34843,9 +34955,9 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 best_signal_symbol = symbol
 
                         if best_signal_strength >= signal_threshold and best_signal_symbol:
-                            logger.info(f"🔥 Bot {bot_id}: STRONG SIGNAL DETECTED on {best_signal_symbol}!")
+                            logger.info(f"🔥 Bot {bot_id}: Qualified signal detected on {best_signal_symbol} - triggering immediate trade cycle")
                             logger.info(f"   Signal Strength: {best_signal_strength:.0f}/100 (threshold: {signal_threshold})")
-                            logger.info(f"   Executing trade IMMEDIATELY (no waiting)...")
+                            logger.info("   Immediate cycle will still pass full risk and position checks before any order")
                             break  # Break inner loop, execute trade next cycle
                         elif poll_visibility_signal_strength > 0 and poll_visibility_symbol:
                             logger.debug(
@@ -41110,7 +41222,7 @@ def list_user_brokers():
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT credential_id, broker_name, account_number, server, is_live, is_active, created_at
+            SELECT credential_id, broker_name, account_number, server, is_live, is_active, created_at, mt5_terminal_path
             FROM broker_credentials
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -41126,6 +41238,7 @@ def list_user_brokers():
                 'is_live': row[4],
                 'is_active': row[5],
                 'created_at': row[6],
+                'mt5_terminal_path': row[7],
             })
         
         conn.close()
@@ -41155,6 +41268,11 @@ def add_user_broker():
         password = data.get('password', '').strip()
         server = data.get('server', 'MetaQuotes-Demo').strip()
         is_live = data.get('is_live', False)
+        mt5_terminal_path = data.get('mt5_terminal_path') or data.get('mt5_path')
+        if mt5_terminal_path:
+            mt5_terminal_path = resolve_mt5_terminal_executable_path(mt5_terminal_path) or str(mt5_terminal_path).strip()
+        else:
+            mt5_terminal_path = None
         
         if not broker_name or not account_number or not password:
             return jsonify({'success': False, 'error': 'Broker name, account number, and password required'}), 400
@@ -41179,16 +41297,16 @@ def add_user_broker():
                 cursor.execute('''
                     UPDATE broker_credentials
                     SET broker_name = ?, account_number = ?, password = ?, server = ?,
-                        is_live = ?, is_active = 1, updated_at = ?
+                        is_live = ?, is_active = 1, mt5_terminal_path = ?, updated_at = ?
                     WHERE credential_id = ?
-                ''', (broker_name, account_number, password, server, normalized_is_live, now_iso, credential_id))
+                ''', (broker_name, account_number, password, server, normalized_is_live, mt5_terminal_path, now_iso, credential_id))
             else:
                 credential_id = str(uuid.uuid4())
                 cursor.execute('''
                     INSERT INTO broker_credentials 
-                    (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, now_iso, now_iso))
+                    (credential_id, user_id, broker_name, account_number, password, server, is_live, mt5_terminal_path, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, mt5_terminal_path, now_iso, now_iso))
         else:
             # Check if already exists
             cursor.execute('''
@@ -41204,9 +41322,9 @@ def add_user_broker():
             
             cursor.execute('''
                 INSERT INTO broker_credentials 
-                (credential_id, user_id, broker_name, account_number, password, server, is_live, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, datetime.now().isoformat(), datetime.now().isoformat()))
+                (credential_id, user_id, broker_name, account_number, password, server, is_live, mt5_terminal_path, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ''', (credential_id, user_id, broker_name, account_number, password, server, normalized_is_live, mt5_terminal_path, datetime.now().isoformat(), datetime.now().isoformat()))
         
         encrypt_credential_at_rest(cursor, credential_id)
         conn.commit()
@@ -41219,6 +41337,7 @@ def add_user_broker():
             'credential_id': credential_id,
             'broker_name': broker_name,
             'account_number': account_number,
+            'mt5_terminal_path': mt5_terminal_path,
             'message': 'Broker credential added successfully'
         }), 201
     
@@ -42168,6 +42287,7 @@ def exness_onboard_wizard():
             password = str(data.get('password') or '').strip()
             is_live = bool(data.get('is_live', False))
             label = str(data.get('label') or '').strip() or None
+            mt5_terminal_path = data.get('mt5_terminal_path') or data.get('mt5_path')
 
             if not account_number or not account_number.isdigit() or len(account_number) != 9:
                 return jsonify({'success': False, 'step': 2, 'error': 'Invalid account number.'}), 400
@@ -42205,7 +42325,9 @@ def exness_onboard_wizard():
                 }), 429
 
             server = normalize_mt5_server_name('Exness', is_live, None)
-            terminal_path = EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH
+            terminal_path = mt5_terminal_path or (EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH)
+            if terminal_path:
+                terminal_path = resolve_mt5_terminal_executable_path(terminal_path) or str(terminal_path).strip()
             terminal_path_str = str(terminal_path) if terminal_path else None
 
             # Quick MT5 test

@@ -10,6 +10,7 @@ import '../utils/constants.dart';
 import '../utils/environment_config.dart';
 import '../widgets/logo_widget.dart';
 import 'consolidated_reports_screen.dart';
+import 'exness_setup_wizard_screen.dart';
 
 class MultiBrokerManagementScreen extends StatefulWidget {
   const MultiBrokerManagementScreen({Key? key}) : super(key: key);
@@ -31,6 +32,7 @@ class _MultiBrokerManagementScreenState
   late TextEditingController _accountNumberController;
   late TextEditingController _passwordController;
   late TextEditingController _serverController;
+  late TextEditingController _mt5TerminalPathController;
   bool _isLiveBroker = false;
 
   @override
@@ -40,6 +42,7 @@ class _MultiBrokerManagementScreenState
     _accountNumberController = TextEditingController();
     _passwordController = TextEditingController();
     _serverController = TextEditingController(text: 'MetaQuotes-Demo');
+    _mt5TerminalPathController = TextEditingController();
     _loadBrokers();
   }
 
@@ -49,6 +52,7 @@ class _MultiBrokerManagementScreenState
     _accountNumberController.dispose();
     _passwordController.dispose();
     _serverController.dispose();
+    _mt5TerminalPathController.dispose();
     super.dispose();
   }
 
@@ -84,6 +88,24 @@ class _MultiBrokerManagementScreenState
     }
   }
 
+  Future<void> _openExnessWizard() async {
+    final result = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(builder: (_) => const ExnessSetupWizardScreen()),
+    );
+    // Refresh broker list after wizard completes
+    if (mounted) {
+      await _loadBrokers();
+      if (result != null && result['botStarted'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Exness bot started! Check your dashboard.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _addBroker() async {
     final authService = context.read<AuthService>();
     if (authService.token == null) return;
@@ -110,6 +132,9 @@ class _MultiBrokerManagementScreenState
           'password': _passwordController.text,
           'server': _serverController.text,
           'is_live': _isLiveBroker,
+          'mt5_terminal_path': _mt5TerminalPathController.text.trim().isEmpty
+              ? null
+              : _mt5TerminalPathController.text.trim(),
         }),
       );
 
@@ -118,6 +143,7 @@ class _MultiBrokerManagementScreenState
         _accountNumberController.clear();
         _passwordController.clear();
         _serverController.text = 'MetaQuotes-Demo';
+        _mt5TerminalPathController.clear();
         _isLiveBroker = false;
         await _loadBrokers();
         setState(() => _isAddingBroker = false);
@@ -243,6 +269,61 @@ class _MultiBrokerManagementScreenState
 
                   const SizedBox(height: AppSpacing.lg),
 
+                  // ── Exness Quick Connect Wizard ──────────────────────────────
+                  GestureDetector(
+                    onTap: _openExnessWizard,
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF1A237E), Color(0xFF1565C0)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.blue.withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Icon(Icons.auto_fix_high, color: Colors.white, size: 28),
+                          ),
+                          const SizedBox(width: 14),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Connect Exness (Wizard)',
+                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Step-by-step MT5 setup — demo or live, auto-creates your bot',
+                                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Icon(Icons.arrow_forward_ios, color: Colors.white54, size: 16),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: AppSpacing.lg),
+
                   // Add Broker Form
                   Container(
                     padding: const EdgeInsets.all(AppSpacing.md),
@@ -297,6 +378,23 @@ class _MultiBrokerManagementScreenState
                             labelText: 'Server',
                             hintText: 'e.g., MetaQuotes-Demo',
                             prefixIcon: Icon(Icons.dns),
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        TextField(
+                          controller: _mt5TerminalPathController,
+                          decoration: const InputDecoration(
+                            labelText: 'MT5 Terminal Path',
+                            hintText: 'Optional: C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe',
+                            prefixIcon: Icon(Icons.folder_open),
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        Text(
+                          'Optional. Use this when each Exness user needs a dedicated MT5 terminal installation.',
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            color: Colors.blueGrey[700],
                           ),
                         ),
                         const SizedBox(height: AppSpacing.md),
@@ -379,9 +477,11 @@ class _MultiBrokerManagementScreenState
                       itemCount: _brokers.length,
                       itemBuilder: (context, index) {
                         final broker = _brokers[index];
+                        final terminalPath = (broker['mt5_terminal_path'] ?? '').toString();
                         return Card(
                           margin: const EdgeInsets.only(bottom: AppSpacing.md),
                           child: ListTile(
+                            isThreeLine: terminalPath.isNotEmpty,
                             leading: CircleAvatar(
                               backgroundColor: Colors.blue[700],
                               child: Icon(
@@ -393,7 +493,9 @@ class _MultiBrokerManagementScreenState
                             ),
                             title: Text(broker['broker_name'] ?? 'Unknown'),
                             subtitle: Text(
-                              'Account: ${broker['account_number']} | ${broker['is_live'] ?? false ? '🔴 LIVE' : '🔵 DEMO'}',
+                              terminalPath.isNotEmpty
+                                  ? 'Account: ${broker['account_number']} | ${broker['is_live'] ?? false ? '🔴 LIVE' : '🔵 DEMO'}\nMT5: $terminalPath'
+                                  : 'Account: ${broker['account_number']} | ${broker['is_live'] ?? false ? '🔴 LIVE' : '🔵 DEMO'}',
                             ),
                             trailing: IconButton(
                               icon: const Icon(Icons.delete,
