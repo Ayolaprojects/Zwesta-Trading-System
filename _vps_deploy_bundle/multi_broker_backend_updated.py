@@ -24538,17 +24538,21 @@ def test_broker_connection():
                             'error': quick_error_message,
                         }), 401
 
-                    # MT5 was busy/locked during quick test — skip warmup too to avoid a second
-                    # 60-second MT5 lock wait that would exceed the client HTTP timeout.
-                    if quick_error_code in ('LOCK_TIMEOUT', 'MT5_BUSY', 'PRIORITY_MODE_ACTIVE', 'CONNECT_FAILED'):
-                        skip_exness_warmup = True
+                    # Any non-auth quick test failure → skip the warmup path entirely.
+                    # The warm connection uses the same MT5 terminal; if the quick test
+                    # (5s lock, 15s init) already failed for a non-auth reason, the warm
+                    # path (60s lock) will usually also fail — and worse, it runs
+                    # mt5.initialize() without is_manual_test=True, which can add the
+                    # account to _failed_auth_accounts and poison future retries.
+                    skip_exness_warmup = True
 
                     deferred_verification_warning = (
                         'Exness credential saved, but live verification was deferred: '
                         f'{quick_error_message}'
                     )
                     logger.warning(
-                        f"⚠️ Fast Exness credential test could not verify account {account}: {quick_error_message}"
+                        f"⚠️ Fast Exness credential test could not verify account {account} "
+                        f"(error_code={quick_error_code}): {quick_error_message}"
                     )
             
             # Try to get real balance - first from global cache, then from cached MT5 connection, then via quick MT5 login
