@@ -2046,10 +2046,18 @@ def resolve_mt5_terminal_executable_path(path: str) -> Optional[str]:
     if os.path.isdir(normalized_path):
         candidate_64 = os.path.join(normalized_path, 'terminal64.exe')
         candidate_32 = os.path.join(normalized_path, 'terminal.exe')
-        if os.path.isfile(candidate_64):
-            return candidate_64
-        if os.path.isfile(candidate_32):
-            return candidate_32
+        for candidate_path in (candidate_64, candidate_32):
+            if os.path.isfile(candidate_path):
+                return candidate_path
+            # Some VPS installs unpack into a directory literally named
+            # terminal64.exe/terminal.exe which contains the real executable.
+            if os.path.isdir(candidate_path):
+                nested_candidate_64 = os.path.join(candidate_path, 'terminal64.exe')
+                nested_candidate_32 = os.path.join(candidate_path, 'terminal.exe')
+                if os.path.isfile(nested_candidate_64):
+                    return nested_candidate_64
+                if os.path.isfile(nested_candidate_32):
+                    return nested_candidate_32
 
     return None
 
@@ -5316,7 +5324,18 @@ class MT5Connection(BrokerConnection):
                         if use_explicit_path:
                             logger.info(f"  🔑 Calling mt5.initialize(path='{normalized_path}', login={account}, server='{server}')")
                         else:
-                            logger.info(f"  🔑 Calling mt5.initialize(login={account}, server='{server}') in VPS mode without a local path")
+                            # VPS mode without a valid executable path.
+                            # The IPC fast-path above already tried mt5.login() if the terminal
+                            # was running. Calling mt5.initialize() without a path would attach
+                            # to ANY running MT5 terminal and force a login change — this logs
+                            # out the active MT5 session (the user complaint: "logs out my MT5").
+                            # Fail gracefully here; the terminal simply isn't available right now.
+                            logger.warning(
+                                f"  ✗ VPS mode: {broker_name} terminal path not found on this VPS "
+                                f"— skipping bare mt5.initialize() to protect running terminal sessions"
+                            )
+                            init_ok = False
+                            break  # No path and no IPC — retrying won't help
                         # mt5.initialize() can block for 60s+ when the terminal is busy.
                         # Run it in a daemon thread with a hard timeout so the caller
                         # (e.g. test-connection endpoint) is never stuck indefinitely.
@@ -5441,9 +5460,22 @@ class MT5Connection(BrokerConnection):
                             self._format_mt5_error(init_error),
                             init_error[0] if isinstance(init_error, tuple) and len(init_error) > 0 else 'INIT_FAILED'
                         )
-                        if is_manual_test and self._is_auth_error(init_error):
+                        if self._is_auth_error(init_error):
+                            # Auth failure (-6) means the terminal connected but rejected credentials.
+                            # Retrying will call mt5.initialize() again and further disrupt the
+                            # running terminal session. Break immediately and add to cooldown.
                             self._set_last_error('Invalid Exness account number, password, or server.', 'AUTH_FAILED')
-                            return False
+                            if not is_manual_test:
+                                with _failed_auth_lock:
+                                    _failed_auth_accounts[account] = {
+                                        'timestamp': time.time(),
+                                        'error': str(init_error)
+                                    }
+                                logger.warning(
+                                    f"🚫 Account {account} added to auth cooldown ({_FAILED_AUTH_COOLDOWN}s) "
+                                    f"— auth failed on mt5.initialize(), stopping retries to protect terminal"
+                                )
+                            break  # Stop retrying immediately on auth failure
                         # Check for IPC timeout during initialization
                         error_code = init_error[0] if isinstance(init_error, tuple) else -1
                         if error_code in [-10005, -10004]:  # IPC timeout or No IPC connection
@@ -13450,17 +13482,28 @@ def get_account_detailed():
         desired_live = 1 if preferred_mode == 'LIVE' else 0
         
         # Query all active credentials, optionally filtered by broker
-        broker_clause = f"AND broker_name = '{broker_filter}'" if broker_filter else ""
-        cursor.execute(f'''
-            SELECT credential_id, broker_name, account_number, password, server, is_live, username,
-                   cached_balance, cached_equity, cached_margin_free, cached_margin,
-                   cached_margin_level, cached_profit, account_currency, last_update, updated_at, api_key
-            FROM broker_credentials 
-            WHERE user_id = ? AND is_active = 1 {broker_clause}
-            ORDER BY broker_name, COALESCE(updated_at, last_update, '') DESC,
-                     credential_id DESC
-            LIMIT 10
-        ''', (user_id,))
+        if broker_filter:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, username,
+                       cached_balance, cached_equity, cached_margin_free, cached_margin,
+                       cached_margin_level, cached_profit, account_currency, last_update, updated_at, api_key
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1 AND broker_name = ?
+                ORDER BY broker_name, COALESCE(updated_at, last_update, '') DESC,
+                         credential_id DESC
+                LIMIT 10
+            ''', (user_id, broker_filter))
+        else:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, username,
+                       cached_balance, cached_equity, cached_margin_free, cached_margin,
+                       cached_margin_level, cached_profit, account_currency, last_update, updated_at, api_key
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY broker_name, COALESCE(updated_at, last_update, '') DESC,
+                         credential_id DESC
+                LIMIT 10
+            ''', (user_id,))
         
         creds = [dict(row) for row in cursor.fetchall()]
         creds, duplicate_credential_ids = dedupe_active_broker_credentials(creds)
@@ -14103,21 +14146,29 @@ def get_trades_history():
     user_id = request.user_id
     days = request.args.get('days', default=30, type=int)
     broker_filter = request.args.get('broker', default='', type=str).strip()  # Optional: filter by broker
+    requested_mode = str(request.args.get('mode') or '').strip().upper()
     
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        preferred_mode = get_user_trading_mode_value(user_id)
+        preferred_mode = requested_mode if requested_mode in ['LIVE', 'DEMO'] else get_user_trading_mode_value(user_id)
         desired_live = 1 if preferred_mode == 'LIVE' else 0
         
         # Query all active credentials for user, optionally filtered by broker
-        broker_clause = f"AND broker_name = '{broker_filter}'" if broker_filter else ""
-        cursor.execute(f'''
-            SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
-            FROM broker_credentials 
-            WHERE user_id = ? AND is_active = 1 {broker_clause}
-            ORDER BY broker_name, credential_id DESC
-        ''', (user_id,))
+        if broker_filter:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1 AND broker_name = ?
+                ORDER BY broker_name, credential_id DESC
+            ''', (user_id, broker_filter))
+        else:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY broker_name, credential_id DESC
+            ''', (user_id,))
         
         creds = [dict(row) for row in cursor.fetchall()]
         creds, duplicate_credential_ids = dedupe_active_broker_credentials(creds)
@@ -32022,6 +32073,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 
                 trades_placed = 0
                 symbols = bot_config.get('symbols', ['EURUSDm'])
+                tradable_symbol_keys = None
 
                 if canonicalize_broker_name(broker_type) == 'FXCM':
                     tradable_symbol_keys = _get_fxcm_tradable_symbol_keys(broker_conn=active_conn)

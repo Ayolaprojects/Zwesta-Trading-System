@@ -138,7 +138,7 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
           },
         ),
         http.get(
-          Uri.parse('$_apiUrl/api/trades/history?days=30'),
+          Uri.parse('$_apiUrl/api/trades/history?days=30&mode=$_selectedMode'),
           headers: {
             'Content-Type': 'application/json',
             'X-Session-Token': sessionToken,
