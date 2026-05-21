@@ -13482,17 +13482,28 @@ def get_account_detailed():
         desired_live = 1 if preferred_mode == 'LIVE' else 0
         
         # Query all active credentials, optionally filtered by broker
-        broker_clause = f"AND broker_name = '{broker_filter}'" if broker_filter else ""
-        cursor.execute(f'''
-            SELECT credential_id, broker_name, account_number, password, server, is_live, username,
-                   cached_balance, cached_equity, cached_margin_free, cached_margin,
-                   cached_margin_level, cached_profit, account_currency, last_update, updated_at, api_key
-            FROM broker_credentials 
-            WHERE user_id = ? AND is_active = 1 {broker_clause}
-            ORDER BY broker_name, COALESCE(updated_at, last_update, '') DESC,
-                     credential_id DESC
-            LIMIT 10
-        ''', (user_id,))
+        if broker_filter:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, username,
+                       cached_balance, cached_equity, cached_margin_free, cached_margin,
+                       cached_margin_level, cached_profit, account_currency, last_update, updated_at, api_key
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1 AND broker_name = ?
+                ORDER BY broker_name, COALESCE(updated_at, last_update, '') DESC,
+                         credential_id DESC
+                LIMIT 10
+            ''', (user_id, broker_filter))
+        else:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, username,
+                       cached_balance, cached_equity, cached_margin_free, cached_margin,
+                       cached_margin_level, cached_profit, account_currency, last_update, updated_at, api_key
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY broker_name, COALESCE(updated_at, last_update, '') DESC,
+                         credential_id DESC
+                LIMIT 10
+            ''', (user_id,))
         
         creds = [dict(row) for row in cursor.fetchall()]
         creds, duplicate_credential_ids = dedupe_active_broker_credentials(creds)
@@ -14135,21 +14146,29 @@ def get_trades_history():
     user_id = request.user_id
     days = request.args.get('days', default=30, type=int)
     broker_filter = request.args.get('broker', default='', type=str).strip()  # Optional: filter by broker
+    requested_mode = str(request.args.get('mode') or '').strip().upper()
     
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        preferred_mode = get_user_trading_mode_value(user_id)
+        preferred_mode = requested_mode if requested_mode in ['LIVE', 'DEMO'] else get_user_trading_mode_value(user_id)
         desired_live = 1 if preferred_mode == 'LIVE' else 0
         
         # Query all active credentials for user, optionally filtered by broker
-        broker_clause = f"AND broker_name = '{broker_filter}'" if broker_filter else ""
-        cursor.execute(f'''
-            SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
-            FROM broker_credentials 
-            WHERE user_id = ? AND is_active = 1 {broker_clause}
-            ORDER BY broker_name, credential_id DESC
-        ''', (user_id,))
+        if broker_filter:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1 AND broker_name = ?
+                ORDER BY broker_name, credential_id DESC
+            ''', (user_id, broker_filter))
+        else:
+            cursor.execute('''
+                SELECT credential_id, broker_name, account_number, password, server, is_live, api_key, username
+                FROM broker_credentials
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY broker_name, credential_id DESC
+            ''', (user_id,))
         
         creds = [dict(row) for row in cursor.fetchall()]
         creds, duplicate_credential_ids = dedupe_active_broker_credentials(creds)
