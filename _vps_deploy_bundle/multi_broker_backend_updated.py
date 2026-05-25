@@ -40230,16 +40230,12 @@ def get_bot_analytics_snapshot(bot_id: str):
                 fxcm_account_info = fxcm_snapshot.get('accountInfo') or {}
                 account_balance = round(_safe_float(fxcm_account_info.get('balance'), account_balance), 2)
                 account_equity = round(_safe_float(fxcm_account_info.get('equity'), account_equity), 2)
-        elif is_mt5_broker_name(broker_name):
-            mt5_snapshot = _build_mt5_bot_broker_snapshot(user_id, bot)
-            broker_snapshot_source = mt5_snapshot.get('dataSource')
-            if mt5_snapshot.get('fetched'):
-                broker_confirmed_positions = list(mt5_snapshot.get('positions') or [])
-                broker_recent_trades = list(mt5_snapshot.get('recentTrades') or [])
-                open_positions = broker_confirmed_positions
-                mt5_account_info = mt5_snapshot.get('accountInfo') or {}
-                account_balance = round(_safe_float(mt5_account_info.get('balance'), account_balance), 2)
-                account_equity = round(_safe_float(mt5_account_info.get('equity'), account_equity), 2)
+        # MT5 brokers: do NOT call _build_mt5_bot_broker_snapshot here.
+        # That function creates a blocking MT5Connection which acquires mt5_connection_lock.
+        # analytics-snapshot can be called while the user is creating a bot — the lock contention
+        # causes test_broker_connection's quick_test_conn.connect() (lock_timeout=5s) to time out.
+        # V1 (the reference that worked) used only in-memory active_bots data here.
+        # The trading loop already keeps open_positions / accountBalance / accountEquity current.
         floating_profit = sum(float(position.get('profit') or 0) for position in open_positions)
         current_profit = total_profit + floating_profit
 
