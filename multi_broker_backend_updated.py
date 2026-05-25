@@ -4800,6 +4800,24 @@ def init_database():
         except Exception as e:
             logger.debug(f"timestamp column might already exist: {e}")
 
+    # Runtime hot paths rely on point lookups and open-trade counts; keep them indexed.
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_trades_ticket_bot_status_created_at '
+        'ON trades(ticket, bot_id, status, created_at DESC)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_trades_bot_status_created_at '
+        'ON trades(bot_id, status, created_at DESC)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_user_bots_user_created_at '
+        'ON user_bots(user_id, created_at DESC)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_bot_credentials_user_bot '
+        'ON bot_credentials(user_id, bot_id)'
+    )
+
     # Migration: Add cached balance columns to broker_credentials if missing
     cursor.execute("PRAGMA table_info(broker_credentials)")
     broker_cred_columns = [col[1] for col in cursor.fetchall()]
@@ -39794,7 +39812,7 @@ def bot_summary():
                 'symbol': primary_symbol,
                 'symbols': symbols,
                 'strategy': bot.get('strategy', 'Unknown'),
-                'profit': session_profit,
+                'profit': round(total_profit, 2),
                 'totalProfit': round(total_profit, 2),
                 'allTimeProfit': round(total_profit, 2),
                 'floatingProfit': round(floating_profit, 2),
@@ -40132,11 +40150,16 @@ def get_bot_analytics_snapshot(bot_id: str):
 
         total_profit = float(bot.get('totalProfit', 0) or 0)
         runtime_open_positions = list(bot.get('open_positions', {}).values())
-        open_positions = list(runtime_open_positions)
+        open_positions = [
+            {**position, 'profit': _resolve_open_position_profit(position)}
+            for position in runtime_open_positions
+        ]
         broker_confirmed_positions = []
         broker_recent_trades = []
         broker_snapshot_source = None
         broker_name = canonicalize_broker_name(bot.get('brokerName') or bot.get('broker_type') or bot.get('broker') or 'MT5')
+        account_balance = round(_safe_float(bot.get('accountBalance'), 0.0), 2)
+        account_equity = round(_safe_float(bot.get('accountEquity'), account_balance), 2)
         if broker_name == 'FXCM':
             fxcm_snapshot = _build_fxcm_bot_broker_snapshot(user_id, bot)
             if fxcm_snapshot.get('fetched'):
@@ -40144,6 +40167,19 @@ def get_bot_analytics_snapshot(bot_id: str):
                 broker_recent_trades = list(fxcm_snapshot.get('recentTrades') or [])
                 broker_snapshot_source = fxcm_snapshot.get('dataSource')
                 open_positions = broker_confirmed_positions
+                fxcm_account_info = fxcm_snapshot.get('accountInfo') or {}
+                account_balance = round(_safe_float(fxcm_account_info.get('balance'), account_balance), 2)
+                account_equity = round(_safe_float(fxcm_account_info.get('equity'), account_equity), 2)
+        elif is_mt5_broker_name(broker_name):
+            mt5_snapshot = _build_mt5_bot_broker_snapshot(user_id, bot)
+            broker_snapshot_source = mt5_snapshot.get('dataSource')
+            if mt5_snapshot.get('fetched'):
+                broker_confirmed_positions = list(mt5_snapshot.get('positions') or [])
+                broker_recent_trades = list(mt5_snapshot.get('recentTrades') or [])
+                open_positions = broker_confirmed_positions
+                mt5_account_info = mt5_snapshot.get('accountInfo') or {}
+                account_balance = round(_safe_float(mt5_account_info.get('balance'), account_balance), 2)
+                account_equity = round(_safe_float(mt5_account_info.get('equity'), account_equity), 2)
         floating_profit = sum(float(position.get('profit') or 0) for position in open_positions)
         current_profit = total_profit + floating_profit
 
@@ -40308,8 +40344,8 @@ def get_bot_analytics_snapshot(bot_id: str):
                 'brokerRecentTrades': broker_recent_trades,
                 'brokerSnapshotDataSource': broker_snapshot_source,
                 'pyramidOpenCount': pyramid_open_count,
-                'accountBalance': round(bot.get('accountBalance', 0), 2),
-                'accountEquity': round(bot.get('accountEquity', 0), 2),
+                'accountBalance': account_balance,
+                'accountEquity': account_equity,
                 'activeSymbolCooldowns': active_symbol_cooldowns,
                 'temporalGuardStatus': temporal_guard.get('status'),
                 'temporalGuardHeadline': temporal_guard.get('headline'),

@@ -1600,7 +1600,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ...activeBots.take(5).map((bot) {
             final botId = bot['botId']?.toString() ?? 'Unknown Bot';
             final strategy = bot['strategy']?.toString() ?? 'Unknown';
-            final profit = double.tryParse(bot['currentProfit']?.toString() ?? bot['totalProfit']?.toString() ?? '0') ?? 0;
+            final profit = double.tryParse(
+                  bot['allTimeProfit']?.toString() ??
+                  bot['totalProfit']?.toString() ??
+                  bot['profit']?.toString() ??
+                  bot['currentProfit']?.toString() ??
+                  '0',
+                ) ??
+                0;
             final isProfitable = profit > 0;
             final botMode = _botMode(bot);
             final botCurrency = _botCurrency(bot);
@@ -1988,7 +1995,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ...finishedBots.map((bot) {
                 final fBotId = bot['botId']?.toString() ?? 'Unknown';
                 final fProfit = double.tryParse(
-                    bot['currentProfit']?.toString() ?? bot['totalProfit']?.toString() ?? '0') ?? 0;
+                      bot['allTimeProfit']?.toString() ??
+                      bot['totalProfit']?.toString() ??
+                      bot['profit']?.toString() ??
+                      bot['currentProfit']?.toString() ??
+                      '0',
+                    ) ??
+                    0;
                 final fTrades = bot['totalTrades']?.toString() ?? '0';
                 final fStrategy = bot['strategy']?.toString() ?? 'Unknown';
                 final stopReason = bot['stopReason']?.toString();
