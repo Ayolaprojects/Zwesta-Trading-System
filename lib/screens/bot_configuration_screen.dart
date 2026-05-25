@@ -1,5 +1,6 @@
 // ignore_for_file: unused_element, unused_field, unnecessary_cast, unused_local_variable
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -691,6 +692,13 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   double _profitProtectionRetracePercent = 35;
   bool _profitProtectionSwitchOnReversal = true;
   bool _profitProtectionAdaptiveByVolatility = true;
+  bool _copyTradingEnabled = false;
+  String _copyTradingSourceMode = 'auto_success';
+  String? _copyTradingSourceBotId;
+  String? _copyTradingResolvedSourceBotId;
+  String? _copyTradingSourceFeedback;
+  List<Map<String, dynamic>> _copyTradingSources = [];
+  bool _isLoadingCopyTradingSources = false;
 
   // Milestone Auto-Withdrawal Settings
   double _milestoneOneProfitPercent = 20;
@@ -926,6 +934,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   Map<String, dynamic> commodityMarketData = {};
   List<Map<String, String>> tradingSymbols = []; // Will be populated from API
+  Set<String> _blacklistedSymbols = {}; // Symbols blacklisted by performance guard in this bot
 
   String get _activeBrokerName =>
       _brokerService.activeCredential?.broker.toLowerCase().trim() ?? '';
@@ -1466,7 +1475,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   }
 
   List<Map<String, String>> get _filteredTradingSymbols {
-    final visibleSymbols = List<Map<String, String>>.from(tradingSymbols);
+    final visibleSymbols = List<Map<String, String>>.from(tradingSymbols)
+        .where((symbol) {
+      final code = (symbol['symbol'] ?? '').toUpperCase();
+      return !_blacklistedSymbols.contains(code);
+    }).toList();
 
     if (_isBinanceBroker) {
       visibleSymbols.sort((left, right) {
@@ -2267,6 +2280,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       final profitProtection = Map<String, dynamic>.from(
         config['profitProtection'] as Map? ?? const {},
       );
+      final status = Map<String, dynamic>.from(data['status'] as Map? ?? const {});
       final tradeAmount = config['tradeAmount'];
       final riskPercent =
           (config['riskPercent'] as num?)?.toDouble() ??
@@ -2279,6 +2293,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           );
       final signalThresholdMode =
           (config['signalThresholdMode'] ?? 'auto').toString().toLowerCase();
+        final copyTradingEnabled = config['copyTradingEnabled'] == true;
+        final copyTradingSourceMode =
+          (config['copyTradingSourceMode'] ??
+              (copyTradingEnabled ? 'auto_success' : 'manual'))
+            .toString()
+            .trim();
+        final copyTradingSourceBotId =
+          (config['copyTradingSourceBotId'] ?? '').toString().trim();
+      final copyTradingResolvedSourceBotId =
+          (config['copyTradingResolvedSourceBotId'] ?? '').toString().trim();
+      final copyTradingLastError =
+          (status['copyTradingLastError'] ?? '').toString().trim();
 
       setState(() {
         _botIdController.text = preserveBotId
@@ -2333,6 +2359,18 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           (profitProtection['adaptiveByVolatility'] ??
             _profitProtectionAdaptiveByVolatility) ==
           true;
+        _copyTradingEnabled = copyTradingEnabled;
+        _copyTradingSourceMode = copyTradingSourceMode.isEmpty
+            ? 'auto_success'
+            : copyTradingSourceMode;
+        _copyTradingSourceBotId =
+            copyTradingSourceBotId.isEmpty ? null : copyTradingSourceBotId;
+        _copyTradingResolvedSourceBotId = copyTradingResolvedSourceBotId.isEmpty
+          ? null
+          : copyTradingResolvedSourceBotId;
+        _copyTradingSourceFeedback = copyTradingLastError.isEmpty
+          ? null
+          : copyTradingLastError;
         _investmentAmountController.text = tradeAmount == null
             ? ''
             : ((tradeAmount as num).toDouble() ==
@@ -2340,7 +2378,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             ? (tradeAmount as num).toDouble().toStringAsFixed(0)
             : (tradeAmount as num).toDouble().toStringAsFixed(2);
           _applyCryptoSelectionSafetyDefaults();
+        _blacklistedSymbols = ((data['blacklistedSymbols'] as List?)
+                ?.map((e) => e.toString().trim().toUpperCase())
+                .where((e) => e.isNotEmpty)
+                .toSet()) ??
+            {};
       });
+      if (copyTradingEnabled) {
+        await _loadCopyTradingSources();
+      }
     } catch (e) {
       setState(() {
         _errorMessage = _isCloneMode
@@ -2376,7 +2422,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     if (!mounted) {
       return;
     }
-    if (_isEditMode || _isCloneMode || !_isBinanceBroker) {
+    final activeBroker = (_brokerService.activeCredential?.broker ?? '').trim();
+    if (_isCloneMode || activeBroker.isEmpty) {
       setState(() {
         _testedBotTemplates = [];
         _isLoadingTestedBotTemplates = false;
@@ -2402,7 +2449,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
       final response = await http
           .get(
-            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/templates?broker=Binance'),
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/templates').replace(
+              queryParameters: {'broker': activeBroker},
+            ),
             headers: {'X-Session-Token': sessionToken},
           )
           .timeout(const Duration(seconds: 20));
@@ -2439,27 +2488,166 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     }
   }
 
+  String _copyTradingMarketName() {
+    if (!_isBinanceBroker) {
+      return '';
+    }
+    final marketName = (_brokerService.activeCredential?.server ?? 'spot')
+        .toString()
+        .trim()
+        .toLowerCase();
+    return marketName.isEmpty ? 'spot' : marketName;
+  }
+
+  Future<void> _loadCopyTradingSources() async {
+    if (!mounted) {
+      return;
+    }
+    final activeCredential = _brokerService.activeCredential;
+    if (activeCredential == null || !_copyTradingEnabled) {
+      setState(() {
+        _copyTradingSources = [];
+        _copyTradingSourceFeedback = null;
+        _isLoadingCopyTradingSources = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoadingCopyTradingSources = true;
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sessionToken = prefs.getString('auth_token') ?? '';
+      if (sessionToken.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _copyTradingSources = [];
+          _copyTradingSourceFeedback = 'Session expired. Please login again.';
+          _isLoadingCopyTradingSources = false;
+        });
+        return;
+      }
+
+      final queryParameters = <String, String>{
+        'broker': activeCredential.broker.trim(),
+        'mode': activeCredential.isLive ? 'live' : 'demo',
+      };
+      if (_isBinanceBroker) {
+        queryParameters['market'] = _copyTradingMarketName();
+      }
+      if (_isEditMode && widget.botId != null && widget.botId!.trim().isNotEmpty) {
+        queryParameters['followerBotId'] = widget.botId!.trim();
+      }
+      final selectedSourceBotId = (_copyTradingSourceBotId ?? '').trim();
+      if (selectedSourceBotId.isNotEmpty) {
+        queryParameters['sourceBotId'] = selectedSourceBotId;
+      }
+
+      final response = await http
+          .get(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/copy-trading-sources')
+                .replace(queryParameters: queryParameters),
+            headers: {'X-Session-Token': sessionToken},
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (!mounted) {
+        return;
+      }
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final sources = List<Map<String, dynamic>>.from(
+          data['sources'] ?? const <Map<String, dynamic>>[],
+        );
+        final selectedSource = Map<String, dynamic>.from(
+          data['selectedSource'] as Map? ?? const {},
+        );
+        String? feedback;
+        if (_copyTradingSourceMode == 'manual') {
+          feedback = (selectedSource['eligibilityReason'] ?? '').toString().trim();
+          if (feedback.isEmpty && sources.isEmpty) {
+            feedback = (data['message'] ?? '').toString().trim();
+          }
+        } else {
+          feedback = (data['message'] ?? '').toString().trim();
+        }
+        setState(() {
+          _copyTradingSources = sources;
+          _copyTradingSourceFeedback = feedback?.isEmpty ?? true ? null : feedback;
+          _isLoadingCopyTradingSources = false;
+        });
+        return;
+      }
+
+      final data = jsonDecode(response.body);
+      setState(() {
+        _copyTradingSources = [];
+        _copyTradingSourceFeedback =
+            (data['error'] ?? 'Failed to load copy-trading sources').toString();
+        _isLoadingCopyTradingSources = false;
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _copyTradingSources = [];
+        _copyTradingSourceFeedback = 'Failed to load copy-trading sources: $e';
+        _isLoadingCopyTradingSources = false;
+      });
+    }
+  }
+
+  String _copyTradingSourceTemplateLabel(Map<String, dynamic> template) {
+    final name = (template['name'] ?? template['botName'] ?? template['sourceBotId'])
+        .toString()
+        .trim();
+    final sourceBotId = (template['sourceBotId'] ?? '').toString().trim();
+    final symbolsPreview = List<String>.from(
+      (template['symbolsPreview'] as List?) ??
+          (template['symbols'] as List?) ??
+          const <String>[],
+    );
+    final symbolsText = symbolsPreview.take(2).join(', ');
+
+    if (symbolsText.isNotEmpty && sourceBotId.isNotEmpty && sourceBotId != name) {
+      return '$name • $symbolsText • $sourceBotId';
+    }
+    if (symbolsText.isNotEmpty) {
+      return '$name • $symbolsText';
+    }
+    return name;
+  }
+
   String _defaultBotIdFromTemplate(Map<String, dynamic> template) {
-    final base = (template['name'] ?? template['botName'] ?? template['sourceBotId'] ?? 'binance_template')
+    final base = (template['name'] ?? template['botName'] ?? template['sourceBotId'] ?? 'copied_bot')
         .toString()
         .trim()
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9_\-]+'), '_')
         .replaceAll(RegExp(r'_+'), '_')
         .replaceAll(RegExp(r'^_|_$'), '');
-    final prefix = base.isEmpty ? 'binance_template' : base;
+    final prefix = base.isEmpty ? 'copied_bot' : base;
     return '${prefix}_${DateTime.now().millisecondsSinceEpoch}';
   }
 
   Future<void> _createBotFromTemplate(Map<String, dynamic> template) async {
     if (!_brokerService.hasCredentials || _brokerService.activeCredential == null) {
-      _showError('Please connect a Binance broker account first.');
+      _showError('Please connect a broker account first.');
       return;
     }
 
     final credential = _brokerService.activeCredential!;
-    if (credential.broker.toLowerCase().trim() != 'binance') {
-      _showError('Tested templates are currently available for Binance only.');
+    final templateBroker = (template['brokerName'] ?? '').toString().trim();
+    final normalizedCredentialBroker = credential.broker.toLowerCase().trim();
+    final normalizedTemplateBroker = templateBroker.toLowerCase().trim();
+    if (normalizedTemplateBroker.isNotEmpty && normalizedTemplateBroker != normalizedCredentialBroker) {
+      _showError(
+        'Switch the active credential to $templateBroker before creating a copied bot from this template.',
+      );
       return;
     }
 
@@ -3085,6 +3273,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'enabled': !_isEditMode,
       'volatilityFilterEnabled': _volatilityFilterEnabled,
       'intelligentScanner': autoScanner,
+      'copyTradingEnabled': _copyTradingEnabled,
+      'copyTradingSourceMode': _copyTradingEnabled
+          ? _copyTradingSourceMode
+          : 'manual',
+      if ((_copyTradingSourceBotId ?? '').trim().isNotEmpty)
+        'copyTradingSourceBotId': _copyTradingSourceBotId!.trim(),
       'profitProtection': {
         'enabled': _enableProfitProtection,
         'activationPercent': _profitProtectionActivationPercent,
@@ -3143,9 +3337,17 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       return;
     }
 
-    if (_selectedSymbols.isEmpty) {
+    if (_selectedSymbols.isEmpty && !_copyTradingEnabled) {
       _showError(_symbolSelectionError);
       return;
+    }
+
+    if (_copyTradingEnabled && _copyTradingSourceMode == 'manual') {
+      final selectedSourceBotId = (_copyTradingSourceBotId ?? '').trim();
+      if (selectedSourceBotId.isEmpty) {
+        _showError('Choose a source bot for manual copy trading.');
+        return;
+      }
     }
 
     setState(() {
@@ -4106,7 +4308,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    if (!_isEditMode && !_isCloneMode && _isBinanceBroker) ...[
+                    if (!_isEditMode && !_isCloneMode && _brokerService.activeCredential != null) ...[
                       Container(
                         key: _testedTemplatesSectionKey,
                         padding: const EdgeInsets.all(12),
@@ -4126,15 +4328,15 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      const Text(
-                                        'Tested Binance Templates',
+                                      Text(
+                                        'Reusable ${_brokerService.activeCredential!.broker} Templates',
                                         style: TextStyle(
                                           fontSize: 16,
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
                                       Text(
-                                        'Create a new bot from one of your tested Binance bots. The app will create it, copy the exact config and adaptive state, then start it.',
+                                        'Create a new ${_brokerService.activeCredential!.broker} bot from one of your existing bots. The app will create it, copy the config and adaptive state, then start it.',
                                         style: TextStyle(
                                           fontSize: 12,
                                           color: Colors.grey[300],
@@ -4157,7 +4359,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               const Center(child: CircularProgressIndicator())
                             else if (_testedBotTemplates.isEmpty)
                               Text(
-                                'No Binance source bots are available yet. Create or run at least one Binance bot first, then it will appear here as a reusable template.',
+                                'No ${_brokerService.activeCredential!.broker} source bots are available yet. Create or run at least one ${_brokerService.activeCredential!.broker} bot first, then it will appear here as a reusable template.',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: Colors.grey[400],
@@ -4172,6 +4374,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                       (template['symbolsPreview'] as List?) ?? const <String>[],
                                     );
                                     final isTested = template['isTested'] == true;
+                                    final templateBroker = (template['brokerName'] ?? _brokerService.activeCredential!.broker)
+                                        .toString();
+                                    final normalizedTemplateBroker = templateBroker.toLowerCase().trim();
                                     return Container(
                                       width: 300,
                                       margin: const EdgeInsets.only(right: 12),
@@ -4224,7 +4429,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'Market: ${template['binanceMarket'] ?? 'spot'} • Effective trade amount: ${template['effectiveTradeAmount'] ?? 0}',
+                                            normalizedTemplateBroker == 'binance'
+                                                ? 'Market: ${template['binanceMarket'] ?? 'spot'} • Effective trade amount: ${template['effectiveTradeAmount'] ?? 0}'
+                                                : 'Broker: $templateBroker • Effective trade amount: ${template['effectiveTradeAmount'] ?? 0}',
                                             style: TextStyle(fontSize: 12, color: Colors.grey[300]),
                                           ),
                                           const SizedBox(height: 8),
@@ -4242,7 +4449,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                                   ? null
                                                   : () => _createBotFromTemplate(template),
                                               icon: const Icon(Icons.flash_on, size: 18),
-                                              label: const Text('Create From Tested Bot'),
+                                                label: const Text('Create From Template'),
                                             ),
                                           ),
                                         ],
@@ -5470,6 +5677,191 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                               ],
                             ),
                           ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.orange.withOpacity(0.5)),
+                        borderRadius: BorderRadius.circular(8),
+                        color: Colors.orange.withOpacity(0.05),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.copy_all_outlined,
+                                color: Colors.orange,
+                                size: 24,
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                'Copy Trading',
+                                style: Theme.of(context).textTheme.titleMedium
+                                    ?.copyWith(color: Colors.orange),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          SwitchListTile(
+                            value: _copyTradingEnabled,
+                            onChanged: (value) {
+                              setState(() {
+                                _copyTradingEnabled = value;
+                                if (value) {
+                                  _copyTradingSourceMode = 'auto_success';
+                                  _copyTradingSourceBotId = null;
+                                  _copyTradingSourceFeedback = null;
+                                } else {
+                                  _copyTradingSources = [];
+                                  _copyTradingResolvedSourceBotId = null;
+                                  _copyTradingSourceFeedback = null;
+                                }
+                              });
+                              if (value) {
+                                unawaited(_loadCopyTradingSources());
+                              }
+                            },
+                            title: const Text('Mirror Successful Traders Automatically'),
+                            subtitle: Text(
+                              _copyTradingEnabled
+                                  ? 'This bot will stop placing its own entries and will follow the highest-performing active ${_brokerService.activeCredential?.broker ?? 'broker'} bot on the same broker and mode.'
+                                  : 'Enable follower mode so this bot mirrors real fills from the best-performing active bot on the same broker and mode.',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                          if (_copyTradingEnabled)
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                DropdownButtonFormField<String>(
+                                  value: _copyTradingSourceMode,
+                                  decoration: InputDecoration(
+                                    labelText: 'Source Mode',
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                  ),
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'auto_success',
+                                      child: Text('Auto select best successful bot'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'manual',
+                                      child: Text('Choose source bot manually'),
+                                    ),
+                                  ],
+                                  onChanged: (value) {
+                                    if (value == null) {
+                                      return;
+                                    }
+                                    setState(() {
+                                      _copyTradingSourceMode = value;
+                                      if (value != 'manual') {
+                                        _copyTradingSourceBotId = null;
+                                      }
+                                      _copyTradingSourceFeedback = null;
+                                    });
+                                    unawaited(_loadCopyTradingSources());
+                                  },
+                                ),
+                                const SizedBox(height: 12),
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange.withOpacity(0.08),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    _copyTradingSourceMode == 'manual'
+                                        ? 'Choose exactly which active ${_brokerService.activeCredential?.broker ?? 'broker'} bot this follower should mirror. Only same-broker, same-mode leaders qualify.'
+                                        : 'Auto mode picks the top profitable active bot with at least 3 trades and 1 win. Your follower bot still uses its own broker credentials and risk sizing.',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                                if (_copyTradingSourceMode == 'manual') ...[
+                                  const SizedBox(height: 12),
+                                  if (_isLoadingCopyTradingSources)
+                                    const Center(child: CircularProgressIndicator())
+                                  else if (_copyTradingSources.isEmpty)
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            'No eligible ${_brokerService.activeCredential?.broker ?? 'broker'} source bots are available yet. Refresh after running at least one bot.',
+                                            style: const TextStyle(fontSize: 12),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        OutlinedButton.icon(
+                                          onPressed: _loadCopyTradingSources,
+                                          icon: const Icon(Icons.refresh, size: 18),
+                                          label: const Text('Refresh'),
+                                        ),
+                                      ],
+                                    )
+                                  else
+                                    DropdownButtonFormField<String>(
+                                      value: (_copyTradingSourceBotId ?? '').trim().isEmpty
+                                          ? null
+                                          : _copyTradingSourceBotId,
+                                      decoration: InputDecoration(
+                                        labelText: 'Source Bot',
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                      ),
+                                        items: _copyTradingSources
+                                          .map(
+                                            (template) => DropdownMenuItem<String>(
+                                              value: (template['sourceBotId'] ?? '').toString().trim(),
+                                              child: Text(
+                                                _copyTradingSourceTemplateLabel(template),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          )
+                                          .toList(),
+                                      onChanged: (value) {
+                                        setState(() {
+                                          _copyTradingSourceBotId = value?.trim().isEmpty ?? true
+                                              ? null
+                                              : value!.trim();
+                                        });
+                                        unawaited(_loadCopyTradingSources());
+                                      },
+                                    ),
+                                  if ((_copyTradingSourceFeedback ?? '').trim().isNotEmpty) ...[
+                                    const SizedBox(height: 10),
+                                    Text(
+                                      _copyTradingSourceFeedback!,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.orange[200],
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                                if (_copyTradingSourceMode != 'manual' && (_copyTradingSourceFeedback ?? '').trim().isNotEmpty) ...[
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    _copyTradingSourceFeedback!,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.orange[200],
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
                         ],
                       ),
                     ),
