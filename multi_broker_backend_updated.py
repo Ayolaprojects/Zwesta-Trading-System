@@ -39577,6 +39577,55 @@ def _build_mt5_bot_broker_snapshot(user_id: str, bot: Dict[str, Any]) -> Dict[st
     }
 
 
+def _get_trades_table_stats_by_bot(bot_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    normalized_bot_ids = [str(bot_id).strip() for bot_id in (bot_ids or []) if str(bot_id).strip()]
+    if not normalized_bot_ids:
+        return {}
+
+    stats_by_bot: Dict[str, Dict[str, Any]] = {}
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        placeholders = ','.join(['?'] * len(normalized_bot_ids))
+        today_iso = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute(
+            f'''
+            SELECT
+                bot_id,
+                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed_trades,
+                SUM(CASE WHEN status = 'closed' AND profit > 0 THEN 1 ELSE 0 END) AS winning_trades,
+                ROUND(SUM(CASE WHEN status = 'closed' THEN profit ELSE 0 END), 2) AS net_profit,
+                ROUND(SUM(CASE WHEN status = 'closed' AND profit < 0 THEN ABS(profit) ELSE 0 END), 2) AS total_losses,
+                ROUND(SUM(CASE WHEN status = 'closed' AND DATE(COALESCE(time_close, updated_at, created_at)) = ? THEN profit ELSE 0 END), 2) AS daily_profit_today,
+                SUM(CASE WHEN status = 'closed' AND DATE(COALESCE(time_close, updated_at, created_at)) = ? THEN 1 ELSE 0 END) AS closed_trades_today
+            FROM trades
+            WHERE bot_id IN ({placeholders})
+            GROUP BY bot_id
+            ''',
+            [today_iso, today_iso, *normalized_bot_ids],
+        )
+        for row in cursor.fetchall():
+            stats_by_bot[str(row['bot_id'])] = {
+                'closed_trades': int(row['closed_trades'] or 0),
+                'winning_trades': int(row['winning_trades'] or 0),
+                'net_profit': float(row['net_profit'] or 0.0),
+                'total_losses': float(row['total_losses'] or 0.0),
+                'daily_profit_today': float(row['daily_profit_today'] or 0.0),
+                'closed_trades_today': int(row['closed_trades_today'] or 0),
+            }
+    except Exception as exc:
+        logger.warning(f"Could not load trades-table stats for dashboard payloads: {exc}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return stats_by_bot
+
+
 @app.route('/api/bot/summary', methods=['GET'])
 @require_session
 def bot_summary():
@@ -39662,7 +39711,11 @@ def bot_summary():
             runtime_minutes = (runtime_seconds % 3600) / 60
 
             today = datetime.now().strftime('%Y-%m-%d')
-            daily_profit = float((bot.get('dailyProfits') or {}).get(today, bot.get('dailyProfit', 0)) or 0)
+            daily_profit = float(
+                trade_stats['daily_profit_today']
+                if trade_stats and 'daily_profit_today' in trade_stats
+                else ((bot.get('dailyProfits') or {}).get(today, bot.get('dailyProfit', 0)) or 0)
+            )
             total_profit = float(trade_stats['net_profit'] if trade_stats else (bot.get('totalProfit', 0) or 0))
             runtime_open_positions = list(bot.get('open_positions', {}).values())
             open_positions = [
@@ -39787,7 +39840,7 @@ def bot_summary():
             # Calculate cumulative profit protection floor (30% max loss)
             cumulative_profit = float(total_profit or 0)
             cumulative_loss_allowance = (cumulative_profit * 0.30) if cumulative_profit > 0 else 0
-            current_day_profit = (bot.get('dailyProfits') or {}).get(today, 0.0)
+            current_day_profit = daily_profit
             open_position_pnl = sum([float(pos.get('profit', 0)) for pos in open_positions])
             current_session_pnl = current_day_profit + open_position_pnl
             current_session_loss = abs(current_session_pnl) if current_session_pnl < 0 else 0
@@ -39812,11 +39865,11 @@ def bot_summary():
                 'symbol': primary_symbol,
                 'symbols': symbols,
                 'strategy': bot.get('strategy', 'Unknown'),
-                'profit': round(total_profit, 2),
+                'profit': round(current_profit, 2),
                 'totalProfit': round(total_profit, 2),
                 'allTimeProfit': round(total_profit, 2),
                 'floatingProfit': round(floating_profit, 2),
-                'currentProfit': session_profit,
+                'currentProfit': round(current_profit, 2),
                 'sessionProfit': session_profit,
                 'lifetimeCurrentProfit': round(current_profit, 2),
                 'dailyProfit': round(daily_profit, 2),
@@ -40003,7 +40056,14 @@ def bot_summary():
                     row['account_currency'] or ('USDT' if broker_name == 'Binance' else 'USD'),
                 )
                 total_profit = round(float(trade_stats['net_profit'] if trade_stats else (row['total_profit'] or 0)) or 0, 2)
-                daily_profit = round(float(row['daily_profit'] or 0) or 0, 2)
+                daily_profit = round(
+                    float(
+                        trade_stats['daily_profit_today']
+                        if trade_stats and 'daily_profit_today' in trade_stats
+                        else (row['daily_profit'] or 0)
+                    ) or 0,
+                    2,
+                )
                 cached_balance = round(float(row['cached_balance'] or 0) or 0, 2)
                 cached_equity = round(float(row['cached_equity'] or cached_balance) or 0, 2)
                 enabled = bool(row['enabled'])
