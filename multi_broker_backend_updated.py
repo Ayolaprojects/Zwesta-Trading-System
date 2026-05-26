@@ -30263,10 +30263,15 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
                 margin_take_profit_amount,
                 break_even_activation_amount if is_exness_forex_position else 0.0,
             )
+            # Allow MARGIN_TAKE_PROFIT to fire under the high-watermark bypass (same condition
+            # as HARD_PEAK_PROFIT_LOCK) so that trades peaking at 30+ ZAR close promptly
+            # at the target even when the minimum hold time has not yet elapsed.
+            _mtp_exit_allowed = early_profit_exit_allowed or (
+                '_high_watermark_bypass' in dir() and _high_watermark_bypass
+            )
             if (
-                early_profit_exit_allowed
-                and
-                current_profit > 0
+                _mtp_exit_allowed
+                and current_profit > 0
                 and margin_take_profit_target > 0
                 and current_profit >= margin_take_profit_target
                 and not _recent_close_request(tracked)
@@ -36966,16 +36971,33 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             # trades or positions from other sessions, falsely attributing their P&L
                             # (often large losses) to this bot. Comment-tag matching is the ONLY
                             # reliable way to identify positions that belong to this bot.
-                            if comment_tag not in dp_comment:
-                                if dp_symbol in bot_symbols:
-                                    logger.debug(
-                                        f"Bot {bot_id}: Skipping untagged position {dp_symbol} "
-                                        f"ticket={dp_ticket} (no '{comment_tag}' comment) — "
-                                        f"may be a pre-existing or external position"
-                                    )
-                                continue
+                            _comment_match = comment_tag in dp_comment
+                            if not _comment_match:
+                                if dp_symbol not in bot_symbols:
+                                    continue
+                                # FALLBACK: symbol is in this bot's list but comment tag doesn't match.
+                                # This happens when the backend restarts and the DB snapshot was taken
+                                # before the position was persisted, or when a bot was recreated with a
+                                # new ID (and new tag) while a trade was open.
+                                # Check that no other currently-running bot is already tracking this ticket.
+                                _already_claimed = any(
+                                    dp_ticket in (other.get('open_positions') or {})
+                                    for other_id, other in active_bots.items()
+                                    if isinstance(other, dict)
+                                    and other.get('user_id') == user_id
+                                    and other_id != bot_id
+                                    and (running_bots.get(other_id) or (other_id in bot_threads and bot_threads[other_id].is_alive()))
+                                )
+                                if _already_claimed:
+                                    continue
+                                # Safe to adopt: our symbol, nobody else owns it.
+                                logger.warning(
+                                    f"Bot {bot_id}: Adopting orphaned position {dp_symbol} "
+                                    f"ticket={dp_ticket} (comment='{dp_comment}' — tag mismatch, "
+                                    f"no other running bot tracks it). Will be profit-protected."
+                                )
 
-                            if True:  # position confirmed as bot-owned via comment tag
+                            if True:  # position confirmed as bot-owned (tag match or orphan fallback)
                                 dp_type = dp.get('type', 'BUY')
                                 dp_volume = dp.get('volume', 0)
                                 dp_entry_price = dp.get('openPrice') or dp.get('price_open') or dp.get('level', 0)
