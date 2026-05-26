@@ -301,6 +301,7 @@ class BotService extends ChangeNotifier {
         'autoSwitch': true,
         'dynamicSizing': true,
         'basePositionSize': 1.0,
+        'autoStart': true,  // Always auto-start from this service path
       };
 
       debugPrint('📤 Sending bot creation request to $_apiUrl/api/bot/create');
@@ -312,7 +313,7 @@ class BotService extends ChangeNotifier {
             headers: headers,
             body: jsonEncode(requestBody),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 45));
 
       debugPrint('📥 Response: ${response.statusCode}');
       debugPrint('  Body: ${response.body}');
@@ -619,7 +620,7 @@ class BotService extends ChangeNotifier {
         body: jsonEncode({
           if (userId != null && userId.isNotEmpty) 'user_id': userId,
         }),
-      ).timeout(const Duration(seconds: 15));
+      ).timeout(const Duration(seconds: 60));
 
       // Add null safety for response body
       if (response.body.isEmpty) {

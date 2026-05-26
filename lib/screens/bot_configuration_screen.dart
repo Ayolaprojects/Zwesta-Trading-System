@@ -2702,7 +2702,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             },
             body: jsonEncode(botPayload),
           )
-          .timeout(const Duration(seconds: 30));
+          .timeout(const Duration(seconds: 90));
 
       final createData = jsonDecode(createResponse.body);
       if (createResponse.statusCode != 200 && createResponse.statusCode != 201) {
@@ -2728,7 +2728,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
               'includeAdaptiveState': true,
             }),
           )
-          .timeout(const Duration(seconds: 30));
+          .timeout(const Duration(seconds: 90));
 
       final syncData = jsonDecode(syncResponse.body);
       if (syncResponse.statusCode != 200 || syncData['success'] != true) {
@@ -2746,7 +2746,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             },
             body: jsonEncode({'botId': createdBotId, 'user_id': null}),
           )
-          .timeout(const Duration(seconds: 30));
+          .timeout(const Duration(seconds: 90));
 
       final startSucceeded = startResponse.statusCode == 200;
       String message;
@@ -3279,6 +3279,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           : 'manual',
       if ((_copyTradingSourceBotId ?? '').trim().isNotEmpty)
         'copyTradingSourceBotId': _copyTradingSourceBotId!.trim(),
+      // This screen calls /api/bot/start separately after creation,
+      // so tell the backend NOT to auto-start to avoid a double-start race.
+      'autoStart': false,
       'profitProtection': {
         'enabled': _enableProfitProtection,
         'activationPercent': _profitProtectionActivationPercent,
@@ -3412,7 +3415,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
               },
               body: jsonEncode(botPayload),
             )
-            .timeout(const Duration(seconds: 30));
+            .timeout(const Duration(seconds: 90));
 
         final updateData = jsonDecode(updateResponse.body);
         if (updateResponse.statusCode != 200 || updateData['success'] != true) {
@@ -3432,7 +3435,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                 },
                 body: jsonEncode({'botId': widget.botId, 'user_id': null}),
               )
-              .timeout(const Duration(seconds: 30));
+              .timeout(const Duration(seconds: 90));
 
           final restartData = jsonDecode(restartResponse.body);
           if (restartResponse.statusCode != 200 ||
@@ -3479,7 +3482,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             },
             body: jsonEncode(botPayload),
           )
-          .timeout(const Duration(seconds: 30));
+          .timeout(const Duration(seconds: 90));
 
       if (createResponse.statusCode != 200 &&
           createResponse.statusCode != 201) {
@@ -3518,7 +3521,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
               'user_id': null, // Will be extracted from session
             }),
           )
-          .timeout(const Duration(seconds: 30));
+          .timeout(const Duration(seconds: 90));
 
       final startSucceeded = startResponse.statusCode == 200;
       if (!startSucceeded) {
