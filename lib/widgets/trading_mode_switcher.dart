@@ -33,7 +33,13 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
   Future<void> _switchMode(String newMode) async {
     if (_isLoading || newMode == _selectedMode) return;
 
-    setState(() => _isLoading = true);
+    // Optimistic update: switch the button state immediately so the UI feels instant.
+    // The API call confirms/persists in the background; revert only on error.
+    final previousMode = _selectedMode;
+    setState(() {
+      _selectedMode = newMode;
+      _isLoading = true;
+    });
 
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -42,9 +48,14 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
 
       if (sessionToken == null || userId == null) {
         _showError('Not authenticated. Please login again.');
-        setState(() => _isLoading = false);
+        setState(() { _selectedMode = previousMode; _isLoading = false; });
         return;
       }
+
+      // Persist locally immediately so the rest of the app sees the change at once.
+      await prefs.setString('trading_mode', newMode);
+      await prefs.setBool('is_live_mode', newMode == 'LIVE');
+      widget.onModeChanged(newMode);
 
       final response = await http.post(
         Uri.parse('${EnvironmentConfig.apiUrl}/api/user/switch-mode'),
@@ -54,7 +65,7 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
           'X-User-ID': userId,
         },
         body: jsonEncode({'mode': newMode}),
-      ).timeout(const Duration(seconds: 60));
+      ).timeout(const Duration(seconds: 8));
 
       final Map<String, dynamic> payload = response.body.isNotEmpty
           ? jsonDecode(response.body) as Map<String, dynamic>
@@ -64,41 +75,36 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
         final confirmedMode = (payload['mode'] as String?) ?? newMode;
         final activeCredential = payload['active_credential'];
 
-        setState(() => _selectedMode = confirmedMode);
-        await prefs.setString('trading_mode', confirmedMode);
-        await prefs.setBool('is_live_mode', confirmedMode == 'LIVE');
-
+        // Update credential info if provided
         if (activeCredential is Map<String, dynamic>) {
           final credentialId = activeCredential['credential_id']?.toString();
           final brokerName = activeCredential['broker_name']?.toString();
           final accountNumber = activeCredential['account_number']?.toString();
+          if (credentialId != null && credentialId.isNotEmpty) await prefs.setString('credential_id', credentialId);
+          if (brokerName != null && brokerName.isNotEmpty) await prefs.setString('broker_name', brokerName);
+          if (accountNumber != null && accountNumber.isNotEmpty) await prefs.setString('account_number', accountNumber);
+        }
 
-          if (credentialId != null && credentialId.isNotEmpty) {
-            await prefs.setString('credential_id', credentialId);
-          }
-          if (brokerName != null && brokerName.isNotEmpty) {
-            await prefs.setString('broker_name', brokerName);
-          }
-          if (accountNumber != null && accountNumber.isNotEmpty) {
-            await prefs.setString('account_number', accountNumber);
-          }
-        }
-        
-        widget.onModeChanged(confirmedMode);
-        
-        final warning = payload['warning']?.toString();
-        _showSuccess(payload['message']?.toString() ?? 'Switched to $confirmedMode trading mode');
-        if (warning != null && warning.isNotEmpty) {
-          _showError(warning);
-        }
-        print('✅ Trading mode switched to: $confirmedMode');
+        // Silent success — UI already switched optimistically, no snackbar needed.
+        print('✅ Trading mode confirmed by server: $confirmedMode');
       } else {
-        _showError(payload['error']?.toString() ?? 'Failed to switch mode: ${response.statusCode}');
-        print('❌ Error switching mode: ${response.body}');
+        // Server rejected — revert the optimistic change.
+        final error = payload['error']?.toString() ?? 'Failed to switch mode: ${response.statusCode}';
+        await prefs.setString('trading_mode', previousMode);
+        await prefs.setBool('is_live_mode', previousMode == 'LIVE');
+        setState(() => _selectedMode = previousMode);
+        widget.onModeChanged(previousMode);
+        _showError(error);
+        print('❌ Mode switch rejected by server: ${response.body}');
       }
     } catch (e) {
-      _showError('Error: $e');
-      print('❌ Error: $e');
+      // Timeout or network error — revert optimistic change.
+      await prefs.setString('trading_mode', previousMode);
+      await prefs.setBool('is_live_mode', previousMode == 'LIVE');
+      setState(() => _selectedMode = previousMode);
+      widget.onModeChanged(previousMode);
+      _showError('Could not reach server. Please try again.');
+      print('❌ Mode switch error: $e');
     } finally {
       setState(() => _isLoading = false);
     }

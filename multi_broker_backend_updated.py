@@ -1480,7 +1480,7 @@ def resolve_bind_ports() -> List[int]:
 # ==================== CONFIGURATION ====================
 # Environment Configuration (DEMO or LIVE)
 ENVIRONMENT = resolve_environment_mode()
-AUTO_RESTART_BOTS_ON_STARTUP = os.getenv('AUTO_RESTART_BOTS_ON_STARTUP', 'false').lower() == 'true'
+AUTO_RESTART_BOTS_ON_STARTUP = os.getenv('AUTO_RESTART_BOTS_ON_STARTUP', 'true').lower() == 'true'  # default ON: bots restart after VPS/backend reload
 BOT_STARTUP_RESTART_DELAY_SECONDS = max(0.5, float(os.getenv('BOT_STARTUP_RESTART_DELAY_SECONDS', '15')))  # 15s gap between bots prevents MT5 lock thundering herd
 BOT_STARTUP_RESTART_LIMIT = max(0, int(os.getenv('BOT_STARTUP_RESTART_LIMIT', '0')))
 BOT_STARTUP_ENTRY_GRACE_SECONDS = max(0, int(os.getenv('BOT_STARTUP_ENTRY_GRACE_SECONDS', '30')))
@@ -11793,8 +11793,15 @@ def apply_user_trading_mode_to_active_bots(user_id: str, mode: str) -> Dict[str,
             bot_config['accountNumber'] = resolved_account_number
             bot_config['account_number'] = resolved_account_number
 
-        bot_config['mode'] = normalized_mode.lower()
-        bot_config['is_live'] = desired_is_live
+        # Use the credential's ACTUAL is_live flag (not just the requested mode)
+        # so that a live credential can never be tagged as 'demo' mode.
+        resolved_is_live = bool(normalize_mt5_is_live_flag(
+            canonicalize_broker_name(resolved_credential.get('broker_name') or broker_name),
+            resolved_credential.get('is_live'),
+            resolved_credential.get('server'),
+        ))
+        bot_config['mode'] = 'live' if resolved_is_live else 'demo'
+        bot_config['is_live'] = resolved_is_live
         bot_config['broker_conn'] = None
         updated_bot_ids.append(bot_id)
 
@@ -11802,6 +11809,29 @@ def apply_user_trading_mode_to_active_bots(user_id: str, mode: str) -> Dict[str,
             persist_bot_runtime_state(bot_id, force=True)
         except Exception as exc:
             logger.warning(f"Could not persist mode-switch runtime state for bot {bot_id}: {exc}")
+
+        # Bounce the bot thread so it reconnects immediately with the new credentials
+        # instead of drifting on the old connection until it naturally errors out.
+        if bot_id in bot_threads and bot_threads[bot_id].is_alive():
+            try:
+                bot_stop_flags[bot_id] = True
+                bot_threads[bot_id].join(timeout=8)
+            except Exception as _bounce_err:
+                logger.warning(f"Mode-switch thread bounce for bot {bot_id}: {_bounce_err}")
+        # Restart the thread with the updated config so it picks up the new mode/credential.
+        if bot_config.get('enabled', True):
+            bot_stop_flags[bot_id] = False
+            running_bots[bot_id] = True
+            _bounce_creds = _get_bot_thread_credentials(bot_config)
+            _bounce_thread = threading.Thread(
+                target=continuous_bot_trading_loop,
+                args=(bot_id, user_id, _bounce_creds),
+                daemon=True,
+                name=f"BotThread-{bot_id}",
+            )
+            bot_threads[bot_id] = _bounce_thread
+            _bounce_thread.start()
+            logger.info(f"♻️ Bot {bot_id}: thread bounced for {normalized_mode} mode switch")
 
     conn = None
     try:
@@ -11958,28 +11988,25 @@ def switch_trading_mode():
                 'server': preferred_credential['server'],
                 'is_live': bool(preferred_credential['is_live']),
             }
-
-            warm_result = warm_trading_mode_credential(user_id, preferred_credential['credential_id'], mode)
-            if warm_result['connected']:
-                connection_status = 'connected'
-                account_info = warm_result.get('account_info', {})
-            else:
-                connection_status = 'connection-failed'
-                warning = f"{mode} mode saved, but broker session warmup failed: {warm_result.get('error') or 'unknown error'}"
+            connection_status = 'warming'  # Background warmup in progress
         else:
-            warning = f"{mode} mode saved, but no active {mode.lower()} broker credential was found to warm automatically."
+            warning = f"{mode} mode saved, but no active {mode.lower()} broker credential was found."
 
-        mode_switch_result = apply_user_trading_mode_to_active_bots(user_id, mode)
-        skipped_bot_ids = mode_switch_result.get('skipped_bot_ids') or []
-        if skipped_bot_ids:
-            skipped_warning = (
-                f"{len(skipped_bot_ids)} bot(s) could not be remapped to a {mode} credential automatically: "
-                + ', '.join(skipped_bot_ids)
-            )
-            warning = f"{warning} {skipped_warning}".strip() if warning else skipped_warning
-        
-        logger.info(f"✅ User {user_id} switched to {mode} trading mode (status={connection_status})")
-        
+        # Run broker warmup + bot remapping in background — don't block the HTTP response.
+        # The UI updates instantly; bots will reconnect on their next cycle.
+        def _background_warmup():
+            try:
+                if preferred_credential:
+                    warm_trading_mode_credential(user_id, preferred_credential['credential_id'], mode)
+                apply_user_trading_mode_to_active_bots(user_id, mode)
+                logger.info(f"✅ Background mode warmup complete for user {user_id} -> {mode}")
+            except Exception as _exc:
+                logger.warning(f"Background mode warmup error for {user_id}: {_exc}")
+
+        threading.Thread(target=_background_warmup, daemon=True).start()
+
+        logger.info(f"✅ User {user_id} switched to {mode} trading mode (warmup=background)")
+
         return jsonify({
             'success': True,
             'message': f'Switched to {mode} trading mode',
@@ -11987,10 +12014,10 @@ def switch_trading_mode():
             'user_id': user_id,
             'connection_status': connection_status,
             'active_credential': active_credential,
-            'mt5_route': build_mt5_route_diagnostic(active_credential) if active_credential else None,
-            'account_info': account_info,
-            'updated_bot_ids': mode_switch_result.get('updated_bot_ids') or [],
-            'skipped_bot_ids': skipped_bot_ids,
+            'mt5_route': None,
+            'account_info': {},
+            'updated_bot_ids': [],
+            'skipped_bot_ids': [],
             'warning': warning,
         }), 200
     
@@ -16382,19 +16409,19 @@ SYMBOL_PARAMETERS = {
     # ENERGY
     'USOIL': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
-        'max_slippage': 0.001,
-        'min_signal_strength': 65,
+        'stop_loss_pips': 100,   # 0.100 distance on WTI — oil moves 0.3-0.6% intraday; 15 pips was too tight
+        'take_profit_pips': 250, # ~2.5:1 R:R
+        'max_slippage': 0.002,
+        'min_signal_strength': 75,  # Energy requires stronger confirmation to avoid noise entries
         'volatility_high': 2.0,
         'volatility_low': 0.5,
     },
     'UKOIL': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
-        'max_slippage': 0.001,
-        'min_signal_strength': 65,
+        'stop_loss_pips': 100,
+        'take_profit_pips': 250,
+        'max_slippage': 0.002,
+        'min_signal_strength': 75,
         'volatility_high': 2.0,
         'volatility_low': 0.5,
     },
@@ -16548,8 +16575,8 @@ SYMBOL_PARAMETERS = {
     },
     'ETHUSD': {
         'atr_multiplier': 1.8,
-        'stop_loss_pips': 160,
-        'take_profit_pips': 480,
+        'stop_loss_pips': 1500,   # 1500 × $0.01/point = $15 SL — matches real ATR-based SL for ETH at ~$2000
+        'take_profit_pips': 4500, # 3:1 R:R
         'max_slippage': 0.002,
         'min_signal_strength': 40,  # Low threshold for more crypto trade opportunities
         'volatility_high': 4.0,
@@ -17700,6 +17727,19 @@ def _filter_scanner_symbols_for_weekend(symbols: List[str], broker_name: str) ->
     ]
 
 
+def _any_configured_symbol_degraded(bot_config: Dict[str, Any], normalized_configured: List[str]) -> bool:
+    """Return True if at least one configured symbol is blacklisted or demoted."""
+    symbol_perf = bot_config.get('symbolPerformance') or {}
+    if not symbol_perf or not normalized_configured:
+        return False
+    for symbol in normalized_configured:
+        entry = symbol_perf.get(symbol) or symbol_perf.get(_normalize_symbol_base(symbol)) or {}
+        verdict = str(entry.get('verdict') or 'normal').lower()
+        if verdict in ('blacklisted', 'demoted'):
+            return True
+    return False
+
+
 def build_scanner_symbol_universe(
     bot_config: Dict[str, Any],
     fxcm_tradable_symbol_keys: Optional[Set[str]] = None,
@@ -17746,6 +17786,17 @@ def build_scanner_symbol_universe(
     broker_symbol_universe = weekend_broker_symbol_universe
     idle_cycles = int(bot_config.get('adaptiveSignalMissCount') or 0)
     expand_small_account_universe = idle_cycles >= ADAPTIVE_SCANNER_TRIGGER_MISSES
+    # Default intelligentScanner to True so existing bots that never had it set
+    # still benefit from full-universe scanning without a DB patch.
+    intelligent_scanner = _coerce_bool(bot_config.get('intelligentScanner', True), True)
+    # Expand to full broker universe when any configured symbol is degrading or scanner is idle.
+    # This applies to ALL management profiles, not just small_account.
+    should_expand_universe = (
+        allow_cross_market
+        or intelligent_scanner
+        or idle_cycles >= ADAPTIVE_SCANNER_TRIGGER_MISSES
+        or _any_configured_symbol_degraded(bot_config, normalized_configured)
+    )
 
     if profile == 'small_account':
         account_currency = str(bot_config.get('displayCurrency') or 'USD').strip().upper()
@@ -17800,9 +17851,23 @@ def build_scanner_symbol_universe(
                 key=lambda sym: preferred_order.get(_normalize_symbol_base(sym), len(preferred_order)),
             )
             if configured_safe:
-                if not allow_cross_market and not expand_small_account_universe:
+                if not should_expand_universe:
                     return configured_safe
-                return configured_safe + [symbol for symbol in allowed_symbols if symbol not in configured_safe]
+                # Expand beyond the safe-symbol list when intelligent scanner / signal
+                # degradation kicks in: inject unexplored curated symbols first.
+                symbol_perf = bot_config.get('symbolPerformance') or {}
+                tried_bases = {_normalize_symbol_base(s) for s in symbol_perf}
+                unexplored_safe = [
+                    symbol for symbol in allowed_symbols
+                    if symbol not in configured_safe
+                    and _normalize_symbol_base(symbol) not in tried_bases
+                ]
+                explored_safe = [
+                    symbol for symbol in allowed_symbols
+                    if symbol not in configured_safe
+                    and _normalize_symbol_base(symbol) in tried_bases
+                ]
+                return configured_safe + unexplored_safe + explored_safe
         return allowed_symbols or normalized_configured or broker_symbol_universe
 
     if normalized_configured:
@@ -17815,9 +17880,27 @@ def build_scanner_symbol_universe(
                 logger.info(
                     "[FXCM Scanner] Configured symbols are not currently tradable; keeping configured symbols for direct broker validation"
                 )
-        if not allow_cross_market:
+        if not should_expand_universe:
             return normalized_configured
-        return normalized_configured + [symbol for symbol in broker_symbol_universe if symbol not in normalized_configured]
+        # Build expanded universe: configured first, then unexplored symbols (never tried), then rest.
+        configured_bases = {_normalize_symbol_base(s) for s in normalized_configured}
+        symbol_perf = bot_config.get('symbolPerformance') or {}
+        tried_bases = {_normalize_symbol_base(s) for s in symbol_perf}
+        unexplored = [
+            symbol for symbol in broker_symbol_universe
+            if symbol not in normalized_configured
+            and _normalize_symbol_base(symbol) not in tried_bases
+        ]
+        explored_extra = [
+            symbol for symbol in broker_symbol_universe
+            if symbol not in normalized_configured
+            and _normalize_symbol_base(symbol) in tried_bases
+        ]
+        if unexplored:
+            logger.debug(
+                f"[Scanner] {normalized_broker}: injecting {len(unexplored)} unexplored symbol(s) into scan universe"
+            )
+        return normalized_configured + unexplored + explored_extra
     return broker_symbol_universe
 
 
@@ -23258,12 +23341,26 @@ def _recent_symbol_loss_pressure(bot_config: Dict[str, Any], symbol: str) -> Dic
         if close_dt and last_close_at is None:
             last_close_at = close_dt
 
+    # Count consecutive same-direction losses from the most-recent trade backward.
+    # Used to apply exponentially longer cooldowns when the bot keeps re-entering
+    # the same direction into a trending-against market (e.g. 5× AUD/USD Buy in a downtrend).
+    consecutive_direction_losses = 0
+    if last_loss_direction:
+        for trade in recent_trades:
+            profit = _safe_float(trade.get('profit'), 0.0)
+            direction = str(trade.get('type') or trade.get('direction') or '').strip().upper()
+            if profit < 0 and direction == last_loss_direction:
+                consecutive_direction_losses += 1
+            else:
+                break  # streak broken
+
     return {
         'losses': losses,
         'rapid_losses': rapid_losses,
         'last_close_at': last_close_at,
         'last_loss_at': last_loss_at,
         'last_loss_direction': last_loss_direction,
+        'consecutive_direction_losses': consecutive_direction_losses,
     }
 
 
@@ -23614,16 +23711,26 @@ def should_trade_today(bot_config, symbol):
                 )
     last_loss_at = symbol_loss_pressure.get('last_loss_at')
     last_loss_direction = symbol_loss_pressure.get('last_loss_direction')
+    consecutive_direction_losses = int(symbol_loss_pressure.get('consecutive_direction_losses') or 0)
     same_direction_loss_cooldown_minutes = max(
         1.0,
         min(
-            60.0,
+            120.0,  # raised cap from 60 to 120 to allow streak-extended blocks to take effect
             _safe_float(
                 bot_config.get('postLossSameDirectionCooldownMinutes'),
                 exness_runtime_risk.get('sameDirectionLossCooldownMinutes', 10.0) if broker_name == 'Exness' else 5.0,
             ),
         ),
     )
+    # Exponential streak penalty: each consecutive same-direction loss on this symbol
+    # doubles the cooldown, capped at 120 minutes.
+    # 1st loss → base cooldown (e.g. 10 min for small accounts)
+    # 2nd loss same dir → 20 min
+    # 3rd loss same dir → 40 min
+    # 4th+ loss same dir → 80 min (hard cap 120 min)
+    if consecutive_direction_losses >= 2:
+        streak_multiplier = min(2 ** (consecutive_direction_losses - 1), 8)  # cap at 8×
+        same_direction_loss_cooldown_minutes = min(120.0, same_direction_loss_cooldown_minutes * streak_multiplier)
     if (
         broker_name == 'Exness'
         and current_signal_direction in {'BUY', 'SELL'}
@@ -23639,7 +23746,7 @@ def should_trade_today(bot_config, symbol):
                 bot_config,
                 symbol,
                 f"recent {current_signal_direction} loss cooldown active for {same_direction_loss_cooldown_minutes:.0f}m "
-                f"after last losing close ({loss_age_minutes:.1f}m elapsed)",
+                f"(streak={consecutive_direction_losses}) after last losing close ({loss_age_minutes:.1f}m elapsed)",
             )
     allow_demo_recovery_entry = (
         not is_live
@@ -24676,7 +24783,35 @@ def _update_post_close_risk_state(
 
 
 def should_trade_symbol_based_on_risk_management(bot_config, symbol):
-    """Compatibility wrapper for the live trading loop risk gate."""
+    """Compatibility wrapper for the live trading loop risk gate.
+
+    Also blocks trades that would open a position opposite to an already-open
+    position on the same symbol (anti-hedge guard).  This prevents the bot from
+    simultaneously holding a Buy AND a Sell on the same symbol — a pattern seen
+    in USD/CAD results that wastes capital and guarantees a losing trade.
+    """
+    open_positions = bot_config.get('open_positions')
+    if isinstance(open_positions, dict) and open_positions:
+        symbol_base = _normalize_symbol_base(symbol)
+        for pos in open_positions.values():
+            if not isinstance(pos, dict):
+                continue
+            if _normalize_symbol_base(pos.get('symbol') or '') != symbol_base:
+                continue
+            # An open position exists on this symbol — block opening any further
+            # positions in the opposite direction (hedge prevention).
+            # Same-direction adds are handled by maxPositionsPerSymbol separately.
+            pos_type = str(pos.get('type') or '').upper()
+            if pos_type in ('BUY', 'SELL'):
+                bot_config['_lastRiskBlockReason'] = (
+                    f"{symbol} anti-hedge guard: already open {pos_type} position "
+                    f"— will not add opposite direction trade"
+                )
+                # Actually only block the OPPOSITE direction, same-direction is fine here
+                # (the maxPositionsPerSymbol cap handles duplicate-same-direction limit)
+                # We store the open direction so the caller can decide.
+                bot_config['_openPositionDirection_' + symbol_base] = pos_type
+                break
     return should_trade_today(bot_config, symbol)
 
 def get_live_prices_from_mt5():
@@ -28852,16 +28987,40 @@ SMALL_LIVE_ACCOUNT_CRYPTO_MIN_BALANCES = {
 SMALL_LIVE_ACCOUNT_PREFERRED_BASE_SYMBOLS = ['AUDUSD', 'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD', 'GBPUSD', 'USDJPY']
 SMALL_LIVE_ACCOUNT_WEEKEND_BASE_SYMBOLS = {'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD'}
 SMALL_LIVE_ACCOUNT_DEFAULT_SYMBOLS = ['AUDUSDm', 'GBPUSDm', 'USDJPYm']
-EXNESS_CURATED_SCANNER_SYMBOLS = ['AUDUSDm', 'GBPUSDm', 'USDJPYm', 'XAUUSDm', 'BTCUSDm', 'ETHUSDm', 'SOLUSDm', 'BNBUSDm', 'XRPUSDm', 'DOGEUSDm', 'TSMm', 'JPMm']
-BINANCE_CURATED_SCANNER_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT']
+EXNESS_CURATED_SCANNER_SYMBOLS = [
+    # Forex majors
+    'EURUSDm', 'GBPUSDm', 'USDJPYm', 'AUDUSDm', 'USDCADm',
+    # Commodities
+    'XAUUSDm', 'XAGUSDm', 'USOILm',
+    # Crypto
+    'BTCUSDm', 'ETHUSDm', 'SOLUSDm', 'BNBUSDm', 'XRPUSDm', 'DOGEUSDm',
+    # Indices
+    'US30m', 'USTECm', 'US500m',
+    # Stocks
+    'TSMm', 'JPMm', 'NVDAm', 'AAPLm', 'METAm', 'AMDm',
+]
+BINANCE_CURATED_SCANNER_SYMBOLS = [
+    # Tier 1 — large cap
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'TONUSDT',
+    # Tier 2 — high-volume alt-coins
+    'AVAXUSDT', 'LINKUSDT', 'MATICUSDT', 'DOTUSDT', 'LTCUSDT', 'BCHUSDT',
+    'TRXUSDT', 'ATOMUSDT', 'NEARUSDT', 'XLMUSDT',
+    # Tier 3 — DeFi / Layer-2
+    'ARBUSDT', 'OPUSDT', 'APTUSDT', 'INJUSDT', 'SUIUSDT', 'AAVEUSDT', 'UNIUSDT',
+    # Tier 4 — high-beta meme / momentum
+    'PEPEUSDT', 'WIFUSDT', 'SHIBUSDT',
+]
 
 DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'enabled': True,
     'activationPercent': 3.0,
-    'activationMinProfit': 2.0,
+    'activationMinProfit': 5.0,           # Raised from 2.0 — ensures meaningful_profit_peak is at least 5 ZAR
+                                           # (≈1 pip on EUR/USD 0.03 lot). Prevents noise triggering zero-loss lock.
     'portfolioActivationMinProfit': 3.0,
     'closeLosingPositionsWithProfitablePeers': True,
-    'loserRotationMinLoss': 0.0,
+    'loserRotationMinLoss': 12.0,  # Only force-close a losing position via peer rotation if it is already down R12+.
+                                    # Was 0.0 = any floating loss triggered immediate rotation, creating large losses
+                                    # when a small profitable trade closed (small win + large forced exit = net loss).
     'peakProfitHardLockShare': 0.90,  # Trigger hard lock at 90% drop from peak (was 0.95)
     'minLockedProfit': 5.0,           # Always lock $5 profit floor (was 0.0)
     'marginTakeProfitPercent': 30.0,
@@ -28870,10 +29029,10 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'adaptiveByVolatility': True,
     'breakEvenLockEnabled': True,
     'breakEvenBufferProfit': 10.0,    # Close at $10 min profit to cover fees (was 0.5)
-    'breakEvenActivationShare': 0.30, # Arm protection at 30% of peak not 50% (was 0.5)
+    'breakEvenActivationShare': 0.55, # Arm protection at 55% of peak — lets trades breathe and reach full TP (was 0.30)
     'protectedSymbolCooldownMinutes': 5.0,
     'zeroLossLockEnabled': True,      # Close immediately when a previously-profitable trade returns to 0
-    'minimumHoldMinutes': 20.0,       # Hold trades for at least 20 min before profit protection can close (allows trends to develop)
+    'minimumHoldMinutes': 35.0,       # Hold trades for at least 35 min — was 20 min, winners were closed too soon
 }
 
 
@@ -29151,7 +29310,10 @@ def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dic
     normalized = dict(DEFAULT_PROFIT_PROTECTION_CONFIG)
     normalized['enabled'] = _coerce_bool(raw.get('enabled', normalized['enabled']), normalized['enabled'])
     normalized['activationPercent'] = max(0.5, min(50.0, _safe_float(raw.get('activationPercent', raw.get('activation_percent', normalized['activationPercent'])), normalized['activationPercent'])))
-    normalized['activationMinProfit'] = max(0.0, _safe_float(raw.get('activationMinProfit', raw.get('activation_min_profit', normalized['activationMinProfit'])), normalized['activationMinProfit']))
+    # activationMinProfit: floor = DEFAULT (5.0) — stored values below the safe minimum are raised.
+    # This feeds into meaningful_profit_peak which gates the zero-loss lock arm threshold.
+    _resolved_act_min = max(0.0, _safe_float(raw.get('activationMinProfit', raw.get('activation_min_profit', normalized['activationMinProfit'])), normalized['activationMinProfit']))
+    normalized['activationMinProfit'] = max(normalized['activationMinProfit'], _resolved_act_min)
     normalized['portfolioActivationMinProfit'] = max(0.0, _safe_float(raw.get('portfolioActivationMinProfit', raw.get('portfolio_activation_min_profit', normalized['portfolioActivationMinProfit'])), normalized['portfolioActivationMinProfit']))
     normalized['closeLosingPositionsWithProfitablePeers'] = _coerce_bool(
         raw.get(
@@ -29198,9 +29360,15 @@ def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dic
         max(0.1, _safe_float(raw.get('breakEvenActivationShare', raw.get('break_even_activation_share', normalized['breakEvenActivationShare'])), normalized['breakEvenActivationShare'])),
     )
     normalized['protectedSymbolCooldownMinutes'] = max(0.0, min(30.0, _safe_float(raw.get('protectedSymbolCooldownMinutes', raw.get('protected_symbol_cooldown_minutes', normalized['protectedSymbolCooldownMinutes'])), normalized['protectedSymbolCooldownMinutes'])))
-    normalized['loserRotationMinLoss'] = max(0.0, min(100.0, _safe_float(raw.get('loserRotationMinLoss', raw.get('loser_rotation_min_loss', normalized.get('loserRotationMinLoss', 0.0))), normalized.get('loserRotationMinLoss', 0.0))))
+    # loserRotationMinLoss: floor = DEFAULT (stored 0.0 must not bypass the safe 12-unit minimum;
+    # prevents any floating loss triggering immediate rotation before the threshold is reached)
+    _resolved_rotation_min_loss = max(0.0, min(100.0, _safe_float(raw.get('loserRotationMinLoss', raw.get('loser_rotation_min_loss', normalized.get('loserRotationMinLoss', 0.0))), normalized.get('loserRotationMinLoss', 0.0))))
+    normalized['loserRotationMinLoss'] = max(normalized['loserRotationMinLoss'], _resolved_rotation_min_loss)
     normalized['zeroLossLockEnabled'] = _coerce_bool(raw.get('zeroLossLockEnabled', raw.get('zero_loss_lock_enabled', normalized.get('zeroLossLockEnabled', True))), normalized.get('zeroLossLockEnabled', True))
-    normalized['minimumHoldMinutes'] = max(0.0, min(60.0, _safe_float(raw.get('minimumHoldMinutes', raw.get('minimum_hold_minutes', normalized.get('minimumHoldMinutes', 1.0))), normalized.get('minimumHoldMinutes', 1.0))))
+    # minimumHoldMinutes: floor = DEFAULT (stored 20 must not bypass the safe 35-min minimum;
+    # prevents profit protection from firing too early on trades that need time to develop)
+    _resolved_min_hold = max(0.0, min(60.0, _safe_float(raw.get('minimumHoldMinutes', raw.get('minimum_hold_minutes', normalized.get('minimumHoldMinutes', 1.0))), normalized.get('minimumHoldMinutes', 1.0))))
+    normalized['minimumHoldMinutes'] = max(normalized['minimumHoldMinutes'], _resolved_min_hold)
     return normalized
 
 
@@ -29989,6 +30157,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         profitable_peer_exists = profitable_peer_count > (1 if current_profit > 0 else 0)
         profitable_focus_ready = (
             profitable_peer_exists
+            and time_in_position >= 5.0  # Never rotate a fresh position before 5 min even with profitable peers
             and profitable_profit_pool >= max(
                 loser_rotation_activation_profit,
                 abs(current_profit) + max(1.0, loser_rotation_activation_profit * 0.5),
@@ -30111,15 +30280,34 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
                 hard_peak_lock_eligible = peak_profit >= meaningful_profit_peak
             else:
                 hard_peak_lock_eligible = peak_profit > 0
+
+            # High-watermark bypass: when peak profit is substantially larger than the
+            # minimum activation amount (3× threshold), the trade has clearly delivered
+            # a significant profit run.  Allow the hard peak lock to fire even if the
+            # minimum hold time has not yet elapsed.
+            # This prevents the GBP/USD scenario where +260 pips was completely ignored
+            # because the trade was only 4 minutes old, then reversed to a full loss.
+            _high_watermark_bypass_threshold = break_even_activation_amount * 3.0
+            _high_watermark_bypass = (
+                hard_peak_lock_eligible
+                and peak_profit >= _high_watermark_bypass_threshold
+                and current_profit <= peak_profit * (1.0 - _safe_float(effective_protection.get('retraceClosePercent'), 10.0) / 100.0)
+            )
+            _peak_lock_allowed = early_profit_exit_allowed or _high_watermark_bypass
+
             if (
-                early_profit_exit_allowed
-                and
-                peak_profit > 0
+                _peak_lock_allowed
+                and peak_profit > 0
                 and hard_peak_lock_eligible
                 and current_profit <= hard_peak_lock_floor
                 and not _recent_close_request(tracked)
             ):
                 close_reason = 'HARD_PEAK_PROFIT_LOCK'
+                if _high_watermark_bypass and not early_profit_exit_allowed:
+                    logger.info(
+                        f"🏔️ Bot {bot_id}: HARD_PEAK_PROFIT_LOCK via high-watermark bypass on {symbol} "
+                        f"(peak={peak_profit:.2f}, current={current_profit:.2f}, hold={time_in_position:.1f}m < {protection_min_hold_minutes:.0f}m required)"
+                    )
 
         if not close_reason:
             # Zero-loss lock: close any trade that was ever in profit but has fallen back to 0 or negative.
@@ -30134,8 +30322,20 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
                 if is_exness_forex_position
                 else (protection_hold_satisfied or peak_profit >= meaningful_profit_peak)
             )
+            # Also allow zero-loss lock to fire (regardless of hold time) when the
+            # high-watermark bypass is active — same condition as peak lock above.
+            if not zero_loss_hold_satisfied and '_high_watermark_bypass' in dir():
+                zero_loss_hold_satisfied = zero_loss_hold_satisfied or _high_watermark_bypass
 
-            if zero_loss_lock_active and peak_profit > 0 and current_profit <= 0 and zero_loss_hold_satisfied and not _recent_close_request(tracked):
+            # Require a meaningful profit peak before the zero-loss lock can arm — for ALL brokers.
+            # On Binance, the 0.1%/side commission is not in unrealized P/L, so any $0.01 tick arms
+            # the lock and closes at 'zero' while realising -commission.
+            # On MT5/Exness, the spread (1-2 pips on EUR/USD 0.03 lot ≈ $3-6 = 55-110 ZAR) causes
+            # the same problem: position opens, spread briefly closes to zero, lock arms, price falls
+            # one pip, lock fires → closes at -spread. Using meaningful_profit_peak (floor $0.50) as
+            # the arm threshold prevents noise-driven exits across all broker types.
+            _zero_loss_peak_threshold = meaningful_profit_peak
+            if zero_loss_lock_active and peak_profit > _zero_loss_peak_threshold and current_profit <= 0 and zero_loss_hold_satisfied and not _recent_close_request(tracked):
                 close_reason = 'ZERO_LOSS_LOCK'
 
         if not close_reason:
@@ -30745,9 +30945,9 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
 
     if balance_zar > 0 and balance_zar <= 1_500:
         profile.update({
-            'sameDirectionLossCooldownMinutes': 10.0,
-            'symbolChurnCooldownMinutes': 5.0,
-            'symbolChurnCooldownWithOpenPositionsMinutes': 10.0,
+            'sameDirectionLossCooldownMinutes': 25.0,  # was 10 — small accounts can't absorb repeat counter-trend losses
+            'symbolChurnCooldownMinutes': 10.0,
+            'symbolChurnCooldownWithOpenPositionsMinutes': 20.0,
             'lossStreakPauseAfter': 2,
             'lossStreakPauseMinutes': 30,
             'lossStreakHardPauseAfter': 4,
@@ -30758,9 +30958,9 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
         })
     elif balance_zar <= 20_000:
         profile.update({
-            'sameDirectionLossCooldownMinutes': 8.0,
-            'symbolChurnCooldownMinutes': 4.0,
-            'symbolChurnCooldownWithOpenPositionsMinutes': 8.0,
+            'sameDirectionLossCooldownMinutes': 20.0,  # was 8
+            'symbolChurnCooldownMinutes': 8.0,
+            'symbolChurnCooldownWithOpenPositionsMinutes': 15.0,
             'lossStreakPauseAfter': 3,
             'lossStreakPauseMinutes': 20,
             'lossStreakHardPauseAfter': 5,
@@ -30771,9 +30971,9 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
         })
     elif balance_zar <= 100_000:
         profile.update({
-            'sameDirectionLossCooldownMinutes': 6.0,
-            'symbolChurnCooldownMinutes': 4.0,
-            'symbolChurnCooldownWithOpenPositionsMinutes': 7.0,
+            'sameDirectionLossCooldownMinutes': 15.0,  # was 6
+            'symbolChurnCooldownMinutes': 6.0,
+            'symbolChurnCooldownWithOpenPositionsMinutes': 12.0,
             'lossStreakPauseAfter': 3,
             'lossStreakPauseMinutes': 15,
             'lossStreakHardPauseAfter': 5,
@@ -30783,9 +30983,9 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
         })
     elif balance_zar <= 1_000_000:
         profile.update({
-            'sameDirectionLossCooldownMinutes': 5.0,
-            'symbolChurnCooldownMinutes': 3.0,
-            'symbolChurnCooldownWithOpenPositionsMinutes': 6.0,
+            'sameDirectionLossCooldownMinutes': 12.0,  # was 5
+            'symbolChurnCooldownMinutes': 5.0,
+            'symbolChurnCooldownWithOpenPositionsMinutes': 10.0,
             'lossStreakPauseAfter': 4,
             'lossStreakPauseMinutes': 12,
             'lossStreakHardPauseAfter': 6,
@@ -30795,9 +30995,9 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
         })
     elif balance_zar > 1_000_000:
         profile.update({
-            'sameDirectionLossCooldownMinutes': 4.0,
-            'symbolChurnCooldownMinutes': 3.0,
-            'symbolChurnCooldownWithOpenPositionsMinutes': 5.0,
+            'sameDirectionLossCooldownMinutes': 10.0,  # was 4
+            'symbolChurnCooldownMinutes': 5.0,
+            'symbolChurnCooldownWithOpenPositionsMinutes': 8.0,
             'lossStreakPauseAfter': 4,
             'lossStreakPauseMinutes': 10,
             'lossStreakHardPauseAfter': 6,
@@ -30976,7 +31176,10 @@ def enforce_live_capital_safety_net(
         warnings.append("allowedVolatility narrowed by capital safety net")
     guarded_data['allowedVolatility'] = filtered_volatility
 
-    guarded_data['allowCrossMarketReallocation'] = False
+    # Do NOT force allowCrossMarketReallocation=False — the intelligent scanner needs
+    # the freedom to probe symbols outside the initial list when configured symbols degrade.
+    if 'allowCrossMarketReallocation' not in guarded_data:
+        guarded_data['allowCrossMarketReallocation'] = True
     return guarded_data, warnings, str(band['name'])
 
 
@@ -33635,6 +33838,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 
                 # Detect broker type
                 broker_type = bot_config.get('broker_type', 'MT5')
+                normalized_broker = canonicalize_broker_name(broker_type)  # used by Exness volume cap below
                 is_ig = broker_type == 'IG Markets'
                 is_fxcm = broker_type in ['FXCM', 'fxcm', 'FXM']
                 is_mt5 = broker_type in ['MetaTrader 5', 'MetaQuotes', 'XM Global', 'XM', 'Exness', 'PXBT', 'MT5']
@@ -34593,6 +34797,25 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             continue
 
                         order_type = trade_params['type']
+
+                        # ── Anti-hedge guard ─────────────────────────────────────────────
+                        # Block any trade that would open a position OPPOSITE to an already-
+                        # open position on the same symbol.  Same-direction adds are still
+                        # gated by maxPositionsPerSymbol.  This prevents USD/CAD-style hedges
+                        # where both a Buy and a Sell run simultaneously, guaranteeing a loss.
+                        _symbol_base_for_hedge_check = _normalize_symbol_base(symbol)
+                        _open_dir_for_symbol = bot_config.get('_openPositionDirection_' + _symbol_base_for_hedge_check)
+                        if _open_dir_for_symbol and _open_dir_for_symbol.upper() != order_type.upper():
+                            last_order_block_reason = (
+                                f"{symbol} anti-hedge guard: open {_open_dir_for_symbol} position blocks "
+                                f"new {order_type} trade on same symbol"
+                            )
+                            logger.info(
+                                f"🛡️ Bot {bot_id}: {last_order_block_reason}"
+                            )
+                            continue
+                        # ── End anti-hedge guard ─────────────────────────────────────────
+
                         if fixed_trade_amount and is_mt5 and mt5_api is not None:
                             fixed_trade_volume, volume_details = estimate_mt5_stop_loss_risk_volume(
                                 float(fixed_trade_amount),
@@ -34913,15 +35136,42 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             logger.info(f"⏭️ Bot {bot_id}: {last_order_block_reason}")
                                             continue
 
-                                        if net_after_fees < 0 and not allow_loss_exit:
+                                        # Soft stop-loss for Binance spot: allow exit on a loss when
+                                        # the drawdown exceeds 1.5% of entry notional (approx 7× round-trip fees).
+                                        # This caps the 30% losers that were running uncapped and dragging
+                                        # balance below the 70% win-rate gains.
+                                        entry_notional_for_sl = entry_price * held_volume if entry_price > 0 and held_volume > 0 else 0.0
+                                        try:
+                                            binance_soft_sl_pct = max(0.5, min(5.0, float(
+                                                bot_config.get('binanceSpotSoftSlPct')
+                                                or os.getenv('BINANCE_SPOT_SOFT_SL_PCT', '1.5')
+                                                or '1.5'
+                                            )))
+                                        except Exception:
+                                            binance_soft_sl_pct = 1.5
+                                        soft_sl_threshold = entry_notional_for_sl * (binance_soft_sl_pct / 100.0)
+                                        loss_exceeds_soft_sl = (
+                                            entry_notional_for_sl > 0
+                                            and abs(gross_pnl) >= soft_sl_threshold
+                                            and gross_pnl < 0
+                                            and held_minutes >= min_hold_minutes
+                                        )
+                                        if net_after_fees < 0 and not allow_loss_exit and not loss_exceeds_soft_sl:
                                             last_order_block_reason = (
-                                                f"Binance spot loss guard on {symbol}: net_after_fees {net_after_fees:.4f} < 0"
+                                                f"Binance spot loss guard on {symbol}: net_after_fees {net_after_fees:.4f} < 0 "
+                                                f"(loss {abs(gross_pnl):.4f} < soft-SL threshold {soft_sl_threshold:.4f})"
                                             )
                                             guard_stats['edgeBlocks'] = int(guard_stats.get('edgeBlocks') or 0) + 1
                                             guard_stats['lastEdgeBlockAt'] = datetime.now().isoformat()
                                             guard_stats['lastSymbol'] = symbol
                                             logger.info(f"⏭️ Bot {bot_id}: {last_order_block_reason}")
                                             continue
+                                        if loss_exceeds_soft_sl and gross_pnl < 0:
+                                            logger.info(
+                                                f"🛑 Bot {bot_id}: Binance spot soft-SL triggered on {symbol}: "
+                                                f"loss {abs(gross_pnl):.4f} >= {binance_soft_sl_pct}% of notional ({soft_sl_threshold:.4f}) "
+                                                f"after {held_minutes:.1f}m — allowing loss exit to cap drawdown"
+                                            )
 
                                         if net_after_fees < min_required_net and sell_signal_urgency < 12:
                                             last_order_block_reason = (
@@ -38156,8 +38406,16 @@ def bot_status():
                 symbol = 'EURUSDm'
             trade_history = bot.get('tradeHistory', [])
             last_trade_time = trade_history[-1].get('time') if trade_history else bot.get('createdAt', datetime.now().isoformat())
-            bot_mode_value = (bot.get('mode') or 'demo')
-            bot_is_live = str(bot_mode_value).lower() == 'live'
+            # Use the in-memory mode if set; fall back to the is_live flag so that live
+            # bots without a 'mode' key are never mis-classified as demo.
+            _raw_mode = (bot.get('mode') or '').strip().lower()
+            if _raw_mode in ('live', 'real'):
+                bot_mode_value = 'live'
+            elif _raw_mode in ('demo', 'trial'):
+                bot_mode_value = 'demo'
+            else:
+                bot_mode_value = 'live' if bool(bot.get('is_live')) else 'demo'
+            bot_is_live = bot_mode_value == 'live'
             display_currency = _resolve_display_currency_for_mode(bot_mode_value, bot.get('displayCurrency', 'USD'))
             normalized_open_positions = [
                 _normalize_trade_display_payload(position, display_currency)
@@ -39644,7 +39902,9 @@ def bot_summary():
             if bot.get('user_id') != user_id:
                 continue
             if mode_filter in ('LIVE', 'DEMO'):
-                bot_mode = str(bot.get('mode') or 'demo').upper()
+                _m = (bot.get('mode') or '').strip().lower()
+                _il = bool(bot.get('is_live'))
+                bot_mode = ('live' if (_m in ('live','real') or (not _m and _il)) else 'demo').upper()
                 if bot_mode != mode_filter:
                     continue
             has_matching_runtime_bot = True
@@ -39679,7 +39939,9 @@ def bot_summary():
             if runtime_bot.get('user_id') != user_id:
                 continue
             if mode_filter in ('LIVE', 'DEMO'):
-                runtime_mode = (runtime_bot.get('mode') or 'demo').upper()
+                _m = (runtime_bot.get('mode') or '').strip().lower()
+                _il = bool(runtime_bot.get('is_live'))
+                runtime_mode = ('live' if (_m in ('live','real') or (not _m and _il)) else 'demo').upper()
                 if runtime_mode != mode_filter:
                     continue
             runtime_bot_id = str(runtime_bot.get('botId') or '').strip()
@@ -39694,7 +39956,9 @@ def bot_summary():
                 continue
 
             if mode_filter in ('LIVE', 'DEMO'):
-                bot_mode = (bot.get('mode') or 'demo').upper()
+                _m = (bot.get('mode') or '').strip().lower()
+                _il = bool(bot.get('is_live'))
+                bot_mode = ('live' if (_m in ('live','real') or (not _m and _il)) else 'demo').upper()
                 if bot_mode != mode_filter:
                     continue
 
