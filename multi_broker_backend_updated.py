@@ -30281,13 +30281,15 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             else:
                 hard_peak_lock_eligible = peak_profit > 0
 
-            # High-watermark bypass: when peak profit is substantially larger than the
-            # minimum activation amount (3× threshold), the trade has clearly delivered
-            # a significant profit run.  Allow the hard peak lock to fire even if the
-            # minimum hold time has not yet elapsed.
-            # This prevents the GBP/USD scenario where +260 pips was completely ignored
-            # because the trade was only 4 minutes old, then reversed to a full loss.
-            _high_watermark_bypass_threshold = break_even_activation_amount * 3.0
+            # High-watermark bypass: when peak profit exceeds the break-even activation
+            # amount by 1.25×, the trade has delivered a meaningful run.  Allow the hard
+            # peak lock to fire even if the minimum hold time has not yet elapsed.
+            # This prevents scenarios where profit reaches 30–50 ZAR in a young trade
+            # and reverses to 0 with no protection because hold time wasn't satisfied.
+            # 1.25× means: for Exness forex (break_even_activation_amount ≈ 24 ZAR),
+            # bypass activates at peak ≥ 30 ZAR and closes when profit retraces 10%
+            # from peak (e.g. peak=50 → close at 45; peak=30 → close at 27).
+            _high_watermark_bypass_threshold = break_even_activation_amount * 1.25
             _high_watermark_bypass = (
                 hard_peak_lock_eligible
                 and peak_profit >= _high_watermark_bypass_threshold
