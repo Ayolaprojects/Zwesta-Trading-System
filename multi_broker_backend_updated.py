@@ -36938,7 +36938,103 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 
                 except Exception as close_check_e:
                     logger.warning(f"Bot {bot_id}: Error checking closed positions: {close_check_e}")
-                
+
+                # ==================== RECONCILE UNTRACKED CLOSED TRADES ====================
+                # Scan MT5 closed deals from today for trades on bot symbols that this bot
+                # never tracked (e.g. orphaned positions closed manually or via TP/SL before
+                # the bot could adopt them).  Attribute their real P&L to dailyProfit so the
+                # bot card shows the correct "Today's Profit" figure after a backend restart.
+                try:
+                    if is_mt5 and mt5_conn and mt5_conn.mt5 and bot_config.get('symbols'):
+                        _recon_today = datetime.now().strftime('%Y-%m-%d')
+                        _recon_today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                        _recon_symbols = set(str(s).strip().upper() for s in bot_config.get('symbols', []))
+                        # Collect tickets already known to this bot (tracked or in history)
+                        _known_tickets: set = set()
+                        for _t in bot_config.get('tradeHistory', []):
+                            if isinstance(_t, dict) and _t.get('ticket'):
+                                _known_tickets.add(str(_t['ticket']))
+                        for _t in (bot_config.get('open_positions') or {}).keys():
+                            _known_tickets.add(str(_t))
+                        _recon_seen_key = f'_recon_seen_{_recon_today}'
+                        _already_reconciled: set = set(bot_config.get(_recon_seen_key) or [])
+
+                        try:
+                            import mt5 as _mt5_lib
+                            _from_ts = int(_recon_today_start.timestamp())
+                            _to_ts = int(datetime.now().timestamp()) + 60
+                            _deals = mt5_conn.mt5.history_deals_get(
+                                datetime.utcfromtimestamp(_from_ts),
+                                datetime.utcfromtimestamp(_to_ts),
+                            ) or []
+                        except Exception:
+                            _deals = []
+
+                        _recon_added = 0
+                        for _deal in _deals:
+                            try:
+                                _deal_ticket = str(getattr(_deal, 'position_id', None) or getattr(_deal, 'order', None) or '').strip()
+                                _deal_entry = getattr(_deal, 'entry', None)  # 0=IN, 1=OUT, 2=INOUT, 3=OUT_BY
+                                if _deal_entry not in (1, 2, 3):  # only closing deals
+                                    continue
+                                if not _deal_ticket or _deal_ticket in _known_tickets or _deal_ticket in _already_reconciled:
+                                    continue
+                                _deal_symbol = str(getattr(_deal, 'symbol', '') or '').strip().upper()
+                                _base_sym = _normalize_symbol_base(_deal_symbol)
+                                if _deal_symbol not in _recon_symbols and _base_sym not in _recon_symbols:
+                                    # try with 'm' suffix stripped (GBPUSDm -> GBPUSD)
+                                    if _deal_symbol.rstrip('mM') not in _recon_symbols:
+                                        continue
+                                _deal_profit = float(getattr(_deal, 'profit', 0) or 0) + float(getattr(_deal, 'commission', 0) or 0) + float(getattr(_deal, 'swap', 0) or 0)
+                                _deal_close_time = datetime.utcfromtimestamp(int(getattr(_deal, 'time', 0) or 0))
+                                if _deal_close_time < _recon_today_start:
+                                    continue
+                                # Attribute to dailyProfit
+                                _daily_profits = bot_config.setdefault('dailyProfits', {})
+                                _daily_profits[_recon_today] = round(_daily_profits.get(_recon_today, 0.0) + _deal_profit, 2)
+                                bot_config['dailyProfit'] = _daily_profits[_recon_today]
+                                _already_reconciled.add(_deal_ticket)
+                                _known_tickets.add(_deal_ticket)
+                                # Add to tradeHistory so it shows in bot card
+                                _recon_trade = {
+                                    'ticket': _deal_ticket,
+                                    'symbol': _deal_symbol,
+                                    'type': 'SELL' if getattr(_deal, 'type', 1) == 1 else 'BUY',
+                                    'volume': float(getattr(_deal, 'volume', 0) or 0),
+                                    'entryPrice': float(getattr(_deal, 'price', 0) or 0),
+                                    'exitPrice': float(getattr(_deal, 'price', 0) or 0),
+                                    'profit': round(_deal_profit, 2),
+                                    'exitTime': _deal_close_time.isoformat(),
+                                    'time': _deal_close_time.isoformat(),
+                                    'timestamp': int(datetime.now().timestamp() * 1000),
+                                    'botId': bot_id,
+                                    'status': 'closed',
+                                    'isWinning': _deal_profit > 0,
+                                    'source': 'RECONCILED_MT5_HISTORY',
+                                    'closeReason': 'EXTERNAL_MANUAL_CLOSE',
+                                }
+                                bot_config.setdefault('tradeHistory', []).append(_recon_trade)
+                                if _deal_profit > 0:
+                                    bot_config['winningTrades'] = bot_config.get('winningTrades', 0) + 1
+                                bot_config['totalProfit'] = round(bot_config.get('totalProfit', 0.0) + _deal_profit, 2)
+                                bot_config['totalTrades'] = bot_config.get('totalTrades', 0) + 1
+                                _recon_added += 1
+                                logger.info(
+                                    f"📊 Bot {bot_id}: Reconciled untracked closed trade {_deal_ticket} "
+                                    f"{_deal_symbol} profit={_deal_profit:.2f} -> dailyProfit now {_daily_profits[_recon_today]:.2f}"
+                                )
+                            except Exception as _deal_e:
+                                logger.debug(f"Bot {bot_id}: Recon deal error: {_deal_e}")
+
+                        if _recon_added > 0:
+                            bot_config[_recon_seen_key] = list(_already_reconciled)
+                            persist_bot_runtime_state(bot_id, force=True)
+                        elif not bot_config.get(_recon_seen_key):
+                            # Mark as checked even if nothing added, so we don't log every cycle
+                            bot_config[_recon_seen_key] = list(_already_reconciled)
+                except Exception as _recon_e:
+                    logger.warning(f"Bot {bot_id}: MT5 history reconciliation error: {_recon_e}")
+
                 # ==================== DISCOVER UNTRACKED POSITIONS ====================
                 # Sync MT5 positions for this bot's symbols into open_positions/tradeHistory.
                 # Only adopts positions that the bot itself placed (comment tag match) OR
