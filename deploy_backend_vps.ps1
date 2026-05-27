@@ -54,6 +54,15 @@ Write-Host "Backup saved as: multi_broker_backend_updated.BACKUP_$ts.py"
 Write-Host "`nVerifying syntax of new backend file..." -ForegroundColor Cyan
 python -c "import ast; ast.parse(open('C:/backend/multi_broker_backend_updated.py','r',encoding='utf-8',errors='replace').read()); print('SYNTAX OK')"
 
+Write-Host "`nEnsuring waitress is installed for production startup..." -ForegroundColor Cyan
+python -c "import waitress; print('WAITRESS OK')" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    python -m pip install waitress
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install waitress"
+    }
+}
+
 # ── STEP 5: Start new backend ─────────────────────────────────────────────────
 Write-Host "`nStarting new backend..." -ForegroundColor Green
 Start-Process -FilePath "python" -ArgumentList "C:\backend\multi_broker_backend_updated.py" -WindowStyle Minimized

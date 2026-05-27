@@ -1,0 +1,236 @@
+c:\zwesta-trader\Zwesta Flutter App\lib\l10n\app_localizations.dart:class AppLocalizations {
+c:\zwesta-trader\Zwesta Flutter App\lib\l10n\app_localizations.dart:class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {
+c:\zwesta-trader\Zwesta Flutter App\lib\main.dart:  class MyApp extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\main.dart:class AuthWrapper extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\account.dart:class Account {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\bot_model.dart:class Bot {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\bot_model.dart:class BotStats {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\bot_model.dart:class BotBilling {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\broker_connection_model.dart:class BrokerAccount {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\broker_connection_model.dart:class ConnectionMetric {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\broker_connection_model.dart:class ConnectionStats {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\broker_connection_model.dart:class BrokerRequirements {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\financial_statement.dart:class FinancialStatement {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\financial_statement.dart:class CashFlowEntry {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\financial_statement.dart:/// Helper class for financial calculations
+c:\zwesta-trader\Zwesta Flutter App\lib\models\financial_statement.dart:class FinancialMetrics {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\statement.dart:class Statement {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\statement.dart:class StatementTrade {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\trade.dart:class Trade {
+c:\zwesta-trader\Zwesta Flutter App\lib\models\user.dart:class User {
+c:\zwesta-trader\Zwesta Flutter App\lib\providers\currency_provider.dart:class CurrencyProvider extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\providers\fallback_status_provider.dart:class FallbackStatusProvider extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\account_detail_screen.dart:class AccountDetailScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\account_detail_screen.dart:class _AccountDetailScreenState extends State<AccountDetailScreen>
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\account_management_screen.dart:class AccountManagementScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\account_management_screen.dart:class _AccountManagementScreenState extends State<AccountManagementScreen>
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\activity_log_screen.dart:class ActivityLogScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\activity_log_screen.dart:class _ActivityLogScreenState extends State<ActivityLogScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\admin_dashboard_screen.dart:class AdminDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\admin_dashboard_screen.dart:class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\admin_dashboard_screen.dart:class _StatCard extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\admin_dashboard_screen.dart:class _ManagementCard extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\admin_withdrawal_verification_screen.dart:class AdminWithdrawalVerificationScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\admin_withdrawal_verification_screen.dart:class _AdminWithdrawalVerificationScreenState
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\binance_withdrawal_screen.dart:class BinanceWithdrawalScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\binance_withdrawal_screen.dart:class _BinanceWithdrawalScreenState extends State<BinanceWithdrawalScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\binance_workspace_screen.dart:class BinanceWorkspaceScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\binance_workspace_screen.dart:class _BinanceWorkspaceScreenState extends State<BinanceWorkspaceScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_analytics_screen.dart:class BotAnalyticsScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_analytics_screen.dart:class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_configuration_route.dart:class BotConfigurationRoute extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_configuration_screen.dart:class BotConfigurationScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_configuration_screen.dart:class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_configuration_screen.dart:    {'symbol': 'ETCUSDT', 'name': '╬× Ethereum Classic / Tether', 'category': 'Altcoin'},
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_dashboard_screen.dart:class BotDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_dashboard_screen.dart:class _BotDashboardScreenState extends State<BotDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_dashboard_screen.dart:  /// Classifies bots by broker. Returns 'Binance' / 'Exness' / 'FXCM' / 'Other'.
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_dashboard_screen_old.dart:class BotDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_dashboard_screen_old.dart:class _BotDashboardScreenState extends State<BotDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_dashboard_screen_old.dart:class _StatTile extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_strategy_configuration_screen.dart:class BotStrategyConfigurationScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\bot_strategy_configuration_screen.dart:class _BotStrategyConfigurationScreenState extends State<BotStrategyConfigurationScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\broker_analytics_dashboard.dart:class BrokerAnalyticsDashboard extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\broker_analytics_dashboard.dart:class _BrokerAnalyticsDashboardState extends State<BrokerAnalyticsDashboard>
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\broker_integration_screen.dart:class BrokerIntegrationScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\broker_integration_screen.dart:class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\commission_config_screen.dart:class CommissionConfigScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\commission_config_screen.dart:class _CommissionConfigScreenState extends State<CommissionConfigScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\commission_dashboard_screen.dart:class CommissionDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\commission_dashboard_screen.dart:class _CommissionDashboardScreenState extends State<CommissionDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\consolidated_reports_screen.dart:class ConsolidatedReportsScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\consolidated_reports_screen.dart:class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\crypto_strategies_screen.dart:class CryptoStrategiesScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\crypto_strategies_screen.dart:class _CryptoStrategiesScreenState extends State<CryptoStrategiesScreen> with SingleTickerProviderStateMixin {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\dashboard_screen.dart:class _SampleCandle {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\dashboard_screen.dart:class DashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\dashboard_screen.dart:class _DashboardScreenState extends State<DashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\dashboard_screen.dart:class _FeatureAction {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\dashboard_screen_clean.dart:class DashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\dashboard_screen_clean.dart:class _DashboardScreenState extends State<DashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\demo_live_mode_screen.dart:class DemoLiveModeScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\demo_live_mode_screen.dart:class _DemoLiveModeScreenState extends State<DemoLiveModeScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\enhanced_dashboard_screen.dart:class EnhancedDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\enhanced_dashboard_screen.dart:class _EnhancedDashboardScreenState extends State<EnhancedDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\exness_setup_wizard_screen.dart:class ExnessSetupWizardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\exness_setup_wizard_screen.dart:class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\exness_withdrawal_screen.dart:class ExnessWithdrawalScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\exness_withdrawal_screen.dart:class _ExnessWithdrawalScreenState extends State<ExnessWithdrawalScreen>
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\exness_workspace_screen.dart:class ExnessWorkspaceScreen extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\financials_screen.dart:class FinancialsScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\financials_screen.dart:class _FinancialsScreenState extends State<FinancialsScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\forgot_password_screen.dart:class ForgotPasswordScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\forgot_password_screen.dart:class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\fxcm_withdrawal_screen.dart:class FxcmWithdrawalScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\fxcm_withdrawal_screen.dart:class _FxcmWithdrawalScreenState extends State<FxcmWithdrawalScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\fxcm_workspace_screen.dart:class FxcmWorkspaceScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\fxcm_workspace_screen.dart:class _FxcmWorkspaceScreenState extends State<FxcmWorkspaceScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\ig_withdrawal_screen.dart:class IGWithdrawalScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\ig_withdrawal_screen.dart:class _IGWithdrawalScreenState extends State<IGWithdrawalScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\join_with_referral_screen.dart:class JoinWithReferralScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\join_with_referral_screen.dart:class _JoinWithReferralScreenState extends State<JoinWithReferralScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\login_screen.dart:class LoginScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\login_screen.dart:class _LoginScreenState extends State<LoginScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\multi_account_management_screen.dart:class MultiAccountManagementScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\multi_account_management_screen.dart:class _MultiAccountManagementScreenState
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\multi_broker_management_screen.dart:class MultiBrokerManagementScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\multi_broker_management_screen.dart:class _MultiBrokerManagementScreenState
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\referral_dashboard_screen.dart:class ReferralDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\referral_dashboard_screen.dart:class _ReferralDashboardScreenState extends State<ReferralDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\referral_dashboard_screen.dart:class _EarningsTile extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\rentals_and_features_screen.dart:class RentalsAndFeaturesScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\rentals_and_features_screen.dart:class _RentalsAndFeaturesScreenState extends State<RentalsAndFeaturesScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\simple_bot_configuration_screen.dart:class SimpleBotConfigurationScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\simple_bot_configuration_screen.dart:class _SimpleBotConfigurationScreenState
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\statements_screen.dart:class StatementsScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\statements_screen.dart:class _StatementsScreenState extends State<StatementsScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\symbol_management_screen.dart:class SymbolManagementScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\symbol_management_screen.dart:class _SymbolManagementScreenState extends State<SymbolManagementScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trades_screen.dart:class TradesScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trades_screen.dart:class _TradesScreenState extends State<TradesScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trade_analysis_screen.dart:class TradeAnalysisScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trade_analysis_screen.dart:class _TradeAnalysisScreenState extends State<TradeAnalysisScreen>
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trade_analysis_screen.dart:class _SymbolStats {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trade_history_screen.dart:class TradeHistoryScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trade_history_screen.dart:class _TradeHistoryScreenState extends State<TradeHistoryScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trade_history_screen.dart:class TabSelector extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trading_bots_dashboard_screen.dart:class TradingBotsDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\trading_bots_dashboard_screen.dart:class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\unified_broker_dashboard_screen.dart:class UnifiedBrokerDashboardScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\unified_broker_dashboard_screen.dart:class _UnifiedBrokerDashboardScreenState extends State<UnifiedBrokerDashboardScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\user_account_management_screen.dart:class UserAccountManagementScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\user_account_management_screen.dart:class _UserAccountManagementScreenState extends State<UserAccountManagementScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\user_wallet_screen.dart:class UserWalletScreen extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\user_wallet_screen.dart:class _UserWalletScreenState extends State<UserWalletScreen> {
+c:\zwesta-trader\Zwesta Flutter App\lib\screens\_summary_tile.dart:class SummaryTile extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\activity_log_service.dart:class ActivityLogEntry {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\activity_log_service.dart:class ActivityLogService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\advanced_order_service.dart:class AdvancedOrder {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\advanced_order_service.dart:class AdvancedOrderService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\api_service.dart:class ApiService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\auth_service.dart:class AuthService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\binance_trading_service.dart:class BinanceTradingService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\bot_service.dart:class BotService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\broker_connection_service.dart:class BrokerConnectionService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\broker_credentials_service.dart:class BrokerCredential {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\broker_credentials_service.dart:class BrokerCredentialsService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\broker_registry_service.dart:class BrokerConfig {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\broker_registry_service.dart:class BrokerRegistryService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\commission_service.dart:class Commission {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\commission_service.dart:class CommissionStats {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\commission_service.dart:class CommissionService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\connection_analytics_service.dart:class ConnectionAnalyticsService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\connection_analytics_service.dart:class EquityDataPoint {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\connection_analytics_service.dart:class PerformanceSummary {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\exness_trading_service.dart:class ExnessAccount {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\exness_trading_service.dart:class ExnessOrder {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\exness_trading_service.dart:class ExnessTradingService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\exness_withdrawal_service.dart:class ExnessWithdrawalService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\financial_service.dart:class FinancialService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\fund_service.dart:class FundService with ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\fxcm_trading_service.dart:class FxcmTradingService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\ig_auto_connect_service.dart:class IGConnectionInfo {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\ig_auto_connect_service.dart:class IGAutoConnectService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\ig_trading_service.dart:class IGTradingService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\mock_data_provider.dart:class MockDataProvider {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\notification_service.dart:class NotificationService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\ozow_service.dart:class OzowService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\password_reset_service.dart:class PasswordResetService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_export_service.dart:class PdfExportService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:class PDFService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:    <div class="container">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:        <div class="summary">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:            <div class="stat-box">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-label">Account Number</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-value">$accountNumber</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:            <div class="stat-box">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-label">Current Balance</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-value">${currencyFormat.format(totalBalance)}</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:            <div class="stat-box">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-label">Total Profit/Loss</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-value ${totalProfit >= 0 ? 'positive' : 'negative'}">${currencyFormat.format(totalProfit)}</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:            <div class="stat-box">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-label">Win Rate</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-value positive">${winRate.toStringAsFixed(1)}% ($winningTrades/${closedTrades.length})</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:            <div class="stat-box">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-label">Open Trades</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-value">${activeTrades.length}</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:            <div class="stat-box">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-label">Closed Trades</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                <div class="stat-value">${closedTrades.length}</div>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <th class="text-center">Trades</th>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <th class="text-center">Wins</th>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <th class="text-right">Total Profit</th>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <th class="text-right">P/L %</th>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                  final profitClass = totalProfit >= 0 ? 'positive' : 'negative';
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <td class="text-center">${symbolTrades.length}</td>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <td class="text-center">$winCount</td>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <td class="text-right $profitClass"><strong>${currencyFormat.format(totalProfit)}</strong></td>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <td class="text-right $profitClass"><strong>${profitPercent.toStringAsFixed(1)}%</strong></td>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <th class="text-right">Entry</th>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <th class="text-center">Qty</th>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <th class="text-right">Profit</th>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                  final profitClass = (trade.profit ?? 0) >= 0 ? 'positive' : 'negative';
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <td class="text-right">${trade.entryPrice.toStringAsFixed(4)}</td>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <td class="text-center">${trade.quantity.toInt()}</td>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:                    <td class="text-right $profitClass"><strong>${currencyFormat.format(trade.profit ?? 0)}</strong></td>
+c:\zwesta-trader\Zwesta Flutter App\lib\services\pdf_service.dart:        <div class="footer">
+c:\zwesta-trader\Zwesta Flutter App\lib\services\realtime_price_websocket_service.dart:class PriceUpdate {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\realtime_price_websocket_service.dart:class RealtimePriceWebSocketService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\statement_service.dart:class StatementService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\trading_service.dart:class TradingService extends ChangeNotifier {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\unified_broker_service.dart:class UnifiedBrokerService {
+c:\zwesta-trader\Zwesta Flutter App\lib\services\withdrawal_service.dart:class WithdrawalService {
+c:\zwesta-trader\Zwesta Flutter App\lib\theme\app_theme.dart:class AppTheme {
+c:\zwesta-trader\Zwesta Flutter App\lib\utils\constants.dart:class AppColors {
+c:\zwesta-trader\Zwesta Flutter App\lib\utils\constants.dart:class AppSpacing {
+c:\zwesta-trader\Zwesta Flutter App\lib\utils\constants.dart:class AppConstants {
+c:\zwesta-trader\Zwesta Flutter App\lib\utils\environment_config.dart:class EnvironmentConfig {
+c:\zwesta-trader\Zwesta Flutter App\lib\utils\theme.dart:class AppTheme {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\account_display_widget.dart:class AccountDisplayWidget extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\account_display_widget.dart:class _AccountDisplayWidgetState extends State<AccountDisplayWidget> {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\advanced_order_widget.dart:class AdvancedOrderWidget extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\advanced_order_widget.dart:class _AdvancedOrderWidgetState extends State<AdvancedOrderWidget> {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\backend_status_indicator.dart:class BackendStatusIndicator extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\backend_status_indicator.dart:class _BackendStatusIndicatorState extends State<BackendStatusIndicator> {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\bot_status_indicator.dart:class BotStatusIndicator extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\bot_status_indicator.dart:class _BotStatusIndicatorState extends State<BotStatusIndicator>
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\bot_status_indicator.dart:class BotRunningBadge extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\bot_status_indicator.dart:class _BotRunningBadgeState extends State<BotRunningBadge>
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\custom_widgets.dart:class StatCard extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\custom_widgets.dart:class TradeCard extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\custom_widgets.dart:class LoadingOverlay extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\custom_widgets.dart:class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\custom_widgets.dart:class ErrorBanner extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\custom_widgets.dart:class SuccessBanner extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\global_error_banner.dart:class GlobalErrorBanner extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\global_loading_overlay.dart:class GlobalLoadingOverlay extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\live_bot_activity_widget.dart:class LiveBotActivityWidget extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\live_bot_activity_widget.dart:class _LiveBotActivityWidgetState extends State<LiveBotActivityWidget> {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\live_price_widget.dart:class LivePriceWidget extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\live_price_widget.dart:class _LivePriceWidgetState extends State<LivePriceWidget> {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\logo_widget.dart:class LogoWidget extends StatelessWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\pxbt_session_manager.dart:class PxbtSessionManager extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\pxbt_session_manager.dart:class _PxbtSessionManagerState extends State<PxbtSessionManager> {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\trading_mode_switcher.dart:class TradingModeSwitcher extends StatefulWidget {
+c:\zwesta-trader\Zwesta Flutter App\lib\widgets\trading_mode_switcher.dart:class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
