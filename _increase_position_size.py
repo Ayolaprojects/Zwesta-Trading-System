@@ -21,7 +21,11 @@ for bot_id, runtime_state in all_bots:
     
     # Increase base position size
     old_size = rs.get('basePositionSize', 0.01)
-    new_size = 0.02  # CHANGE THIS VALUE (0.02 = conservative, 0.03 = moderate, 0.05 = aggressive)
+    new_size = 0.02  # CHANGE THIS VALUE:
+                     # 0.02 = 2x (conservative)
+                     # 0.03 = 3x (moderate) 
+                     # 0.05 = 5x (aggressive)
+                     # 0.10 = 10x (VERY aggressive - with 10x symbol multiplier = 100x total!)
     
     rs['basePositionSize'] = new_size
     
