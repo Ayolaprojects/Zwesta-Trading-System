@@ -41,8 +41,9 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
       _isLoading = true;
     });
 
+    final prefs = await SharedPreferences.getInstance();
+
     try {
-      final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token');
       final userId = prefs.getString('user_id');
 
