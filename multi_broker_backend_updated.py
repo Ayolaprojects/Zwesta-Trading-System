@@ -5704,6 +5704,39 @@ class MT5Connection(BrokerConnection):
                             f"  🔁 MT5 is attached to terminal '{_current_path}', but account {account} needs '{normalized_path}' — forcing initialize() on the correct terminal"
                         )
                     else:
+                        # If the terminal is already connected to the exact account we need,
+                        # skip mt5.login() entirely — calling login with a stale/wrong password
+                        # will cause the terminal to re-authenticate and may trigger a lockout.
+                        _pre_acct = None
+                        try:
+                            _pre_acct = self.mt5.account_info()
+                        except Exception:
+                            pass
+                        if _pre_acct and _pre_acct.login == int(account):
+                            logger.info(f"✅ MT5 terminal already connected to account {account} — skipping mt5.login() (no credentials needed)")
+                            self.connected = True
+                            with mt5_account_lock:
+                                mt5_current_account = int(account)
+                            self.get_account_info()
+                            try:
+                                if self.account_info:
+                                    with balance_cache_lock:
+                                        ck = get_balance_cache_key(broker_name, account)
+                                        bal = float(self.account_info.get('balance', 0))
+                                        balance_cache[ck] = {
+                                            'balance': bal,
+                                            'equity': float(self.account_info.get('equity', 0)),
+                                            'margin': float(self.account_info.get('margin', 0)),
+                                            'marginFree': float(self.account_info.get('marginFree', 0)),
+                                            'margin_level': float(self.account_info.get('margin_level', 0)),
+                                            'currency': self.account_info.get('currency', 'USD'),
+                                            'timestamp': time.time()
+                                        }
+                                        logger.info(f"  💾 [ALREADY-CONNECTED CACHE] {ck} = {bal:.2f} {balance_cache[ck]['currency']}")
+                            except Exception as ce:
+                                logger.warning(f"  ⚠️  Failed to cache balance after already-connected path: {ce}")
+                            self._subscribe_symbols()
+                            return True
                         logger.info(f"  🔑 MT5 already running (v{_ver}) — using fast mt5.login() to switch to account {account}")
                         login_ok = self.mt5.login(int(account), password=str(password), server=str(server))
                         if login_ok:
@@ -15126,7 +15159,8 @@ BINANCE_VALID_SYMBOLS = {
     'AVAXUSDT', 'MATICUSDT', 'LINKUSDT', 'LTCUSDT', 'BCHUSDT', 'ETCUSDT',
     'TRXUSDT', 'DOTUSDT', 'ATOMUSDT', 'FILUSDT', 'ICPUSDT', 'HBARUSDT', 'VETUSDT',
     # Tier 3 — DeFi & Layer-2 (high volatility / liquidity)
-    'SHIBUSDT', 'UNIUSDT', 'NEARUSDT', 'ARBUSDT', 'OPUSDT', 'APTUSDT',
+    # ❌ REMOVED SHIBUSDT — Binance rejected as invalid symbol (May 27, 2026)
+    'UNIUSDT', 'NEARUSDT', 'ARBUSDT', 'OPUSDT', 'APTUSDT',
     'INJUSDT',  'SUIUSDT',  'FTMUSDT',  'AAVEUSDT', 'SEIUSDT', 'TIAUSDT',
     'JUPUSDT', 'ENAUSDT', 'FETUSDT', 'IMXUSDT',
     # Tier 4 — Gaming / Metaverse / Cross-chain
@@ -15135,13 +15169,16 @@ BINANCE_VALID_SYMBOLS = {
     'PEPEUSDT', 'WIFUSDT', 'BONKUSDT',
     # BTC quote markets
     'ETHBTC', 'BNBBTC', 'SOLBTC', 'XRPBTC', 'ADABTC', 'DOGEBTC',
-    'LINKBTC', 'AVAXBTC', 'LTCBTC', 'DOTBTC', 'ATOMBTC', 'SHIBBTC',
+    'LINKBTC', 'AVAXBTC', 'LTCBTC', 'DOTBTC', 'ATOMBTC',
+    # ❌ REMOVED SHIBBTC
     # ETH quote markets
     'BNBETH', 'SOLETH', 'XRPETH', 'ADAETH', 'DOGEETH', 'LINKETH',
-    'AVAXETH', 'LTCETH', 'DOTETH', 'ATOMETH', 'SHIBETH',
+    'AVAXETH', 'LTCETH', 'DOTETH', 'ATOMETH',
+    # ❌ REMOVED SHIBETH
     # BNB quote markets
     'ETHBNB', 'SOLBNB', 'XRPBNB', 'ADABNB', 'DOGEBNB', 'LINKBNB',
-    'AVAXBNB', 'LTCBNB', 'DOTBNB', 'ATOMBNB', 'SHIBBNB',
+    'AVAXBNB', 'LTCBNB', 'DOTBNB', 'ATOMBNB',
+    # ❌ REMOVED SHIBBNB
 }
 
 BINANCE_DYNAMIC_QUOTE_ASSETS = {
@@ -16114,8 +16151,7 @@ def validate_and_correct_symbols(symbols, broker_name=None):
             'AVAXUSD': 'AVAXUSDT', 'MATICS': 'MATICUSDT', 'MATIC/USDT': 'MATICUSDT', 'POLUSD': 'MATICUSDT',
             'LINKUSD': 'LINKUSDT', 'LTCUSD': 'LTCUSDT', 'TRXUSD': 'TRXUSDT',
             'DOTUSD': 'DOTUSDT', 'ATOMUSD': 'ATOMUSDT',
-            # Tier 3
-            'SHIBUSD': 'SHIBUSDT', 'SHIB/USDT': 'SHIBUSDT',
+            # Tier 3 — ❌ REMOVED SHIBUSDT mappings (Binance rejected May 27, 2026)
             'UNIUSD': 'UNIUSDT',  'UNI/USDT': 'UNIUSDT',
             'NEARUSD': 'NEARUSDT', 'ARBUSD': 'ARBUSDT', 'OPUSD': 'OPUSDT',
             'APTUSD': 'APTUSDT',  'INJUSD': 'INJUSDT', 'SUIUSD': 'SUIUSDT',
@@ -18260,6 +18296,11 @@ class DynamicPositionSizer:
 
         performance_state = _build_performance_sizing_state(bot_config, volatility_level)
         performance_multiplier = _safe_float(performance_state.get('multiplier'), 1.0)
+        # Keep Binance and Exness live bots from getting stuck at very small trade sizes
+        _broker_name = canonicalize_broker_name(bot_config.get('broker_type') or bot_config.get('broker') or '')
+        _is_live_mode = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower() == 'live' or bool(bot_config.get('is_live'))
+        min_multiplier_floor = 0.60 if ((_broker_name == 'Binance' or _broker_name == 'Exness') and _is_live_mode) else 0.45
+        performance_multiplier = max(min_multiplier_floor, performance_multiplier)
         size *= performance_multiplier
         bot_config['effectivePositionSizeMultiplier'] = round(performance_multiplier, 3)
         bot_config['effectiveScannerCapitalMultiplier'] = round(_safe_float(performance_state.get('scannerCapitalMultiplier'), 1.0), 3)
@@ -20984,10 +21025,13 @@ def persist_bot_runtime_state(bot_id: str, force: bool = False):
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
+            _bot_enabled = 1 if bot_config.get('enabled', False) else 0
+            _bot_status = 'active' if _bot_enabled else 'STOPPED'
             cursor.execute(
                 '''
                 UPDATE user_bots
                 SET enabled = ?,
+                    status = ?,
                     daily_profit = ?,
                     total_profit = ?,
                     runtime_state = ?,
@@ -20995,7 +21039,8 @@ def persist_bot_runtime_state(bot_id: str, force: bool = False):
                 WHERE bot_id = ?
                 ''',
                 (
-                    1 if bot_config.get('enabled', False) else 0,
+                    _bot_enabled,
+                    _bot_status,
                     daily_profit,
                     total_profit,
                     json.dumps(runtime_state),
@@ -23186,7 +23231,11 @@ def _resolve_adaptive_trade_amount(
         }
 
     performance_state = _build_performance_sizing_state(bot_config, volatility_level)
-    multiplier = max(0.45, _safe_float(performance_state.get('multiplier'), 1.0))
+    _broker_name = canonicalize_broker_name(bot_config.get('broker_type') or bot_config.get('broker') or '')
+    _is_live_mode = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower() == 'live' or bool(bot_config.get('is_live'))
+    # Keep Binance and Exness live bots from getting stuck at very small trade sizes.
+    min_multiplier_floor = 0.60 if ((_broker_name == 'Binance' or _broker_name == 'Exness') and _is_live_mode) else 0.45
+    multiplier = max(min_multiplier_floor, _safe_float(performance_state.get('multiplier'), 1.0))
     state = str(performance_state.get('state') or 'normal')
     reasons = []
 
@@ -23234,7 +23283,7 @@ def _resolve_adaptive_trade_amount(
         multiplier *= 0.65
         reasons.append('recovery mode')
 
-    is_live = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower() == 'live' or bool(bot_config.get('is_live'))
+    is_live = _is_live_mode
     max_boost = _resolve_scanner_capital_boost_cap(
         bot_config,
         is_live=is_live,
@@ -23258,7 +23307,7 @@ def _resolve_adaptive_trade_amount(
         if strong_setup_floor > multiplier:
             multiplier = strong_setup_floor
             reasons.append(f'high-conviction setup floor ({top_strength:.0f}/100)')
-    multiplier = max(0.45, min(multiplier, max_boost))
+    multiplier = max(min_multiplier_floor, min(multiplier, max_boost))
 
     adjusted_amount = round(max(1.0, safe_base_amount * multiplier), 2)
     bot_config['effectiveTradeAmount'] = adjusted_amount
@@ -29007,8 +29056,8 @@ BINANCE_CURATED_SCANNER_SYMBOLS = [
     'TRXUSDT', 'ATOMUSDT', 'NEARUSDT', 'XLMUSDT',
     # Tier 3 — DeFi / Layer-2
     'ARBUSDT', 'OPUSDT', 'APTUSDT', 'INJUSDT', 'SUIUSDT', 'AAVEUSDT', 'UNIUSDT',
-    # Tier 4 — high-beta meme / momentum
-    'PEPEUSDT', 'WIFUSDT', 'SHIBUSDT',
+    # Tier 4 — high-beta meme / momentum (❌ REMOVED SHIBUSDT - Binance rejected May 27, 2026)
+    'PEPEUSDT', 'WIFUSDT', 'BONKUSDT',
 ]
 
 DEFAULT_PROFIT_PROTECTION_CONFIG = {
@@ -29370,6 +29419,323 @@ def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dic
     _resolved_min_hold = max(0.0, min(60.0, _safe_float(raw.get('minimumHoldMinutes', raw.get('minimum_hold_minutes', normalized.get('minimumHoldMinutes', 1.0))), normalized.get('minimumHoldMinutes', 1.0))))
     normalized['minimumHoldMinutes'] = max(normalized['minimumHoldMinutes'], _resolved_min_hold)
     return normalized
+
+
+def get_default_profit_pyramiding_config(broker_type: str, is_live: bool = False) -> Dict[str, Any]:
+    """
+    Generate default profit pyramiding configuration for new bots
+    This ensures newly created bots automatically have pyramiding enabled
+    
+    Args:
+        broker_type: 'Binance', 'Exness', etc.
+        is_live: Whether this is a live or demo bot
+    
+    Returns:
+        Dict with pyramiding configuration
+    """
+    
+    # Base pyramiding configuration (AGGRESSIVE SETTINGS)
+    config = {
+        "enabled": True,
+        "strategy": "aggressive_scaling",
+        
+        # Profit thresholds and multipliers - MORE LEVELS, FASTER SCALING
+        "pyramid_levels": [
+            {"profit_threshold_pct": 0.2, "size_multiplier": 1.4, "description": "Quick confirmation"},
+            {"profit_threshold_pct": 0.4, "size_multiplier": 2.0, "description": "Early momentum"},
+            {"profit_threshold_pct": 0.7, "size_multiplier": 3.0, "description": "Strong trend"},
+            {"profit_threshold_pct": 1.2, "size_multiplier": 4.5, "description": "Breakout confirmed"},
+            {"profit_threshold_pct": 1.8, "size_multiplier": 6.0, "description": "Maximum scaling"},
+            {"profit_threshold_pct": 2.5, "size_multiplier": 8.0, "description": "Explosive move"}
+        ],
+        
+        # Risk management - AGGRESSIVE BUT PROTECTED
+        "max_total_multiplier": 12.0,  # Up from 10x
+        "partial_close_on_reversal": True,
+        "reversal_threshold_pct": -0.15,  # Tighter protection
+        "lock_profit_at_pct": 2.0,  # Lock earlier
+        
+        # Exit strategy - TAKE PROFITS FASTER
+        "take_profit_levels": [
+            {"pct": 1.5, "close_pct": 20},  # Start taking profits earlier
+            {"pct": 2.5, "close_pct": 25},
+            {"pct": 4.0, "close_pct": 30},
+            {"pct": 6.0, "close_pct": 25},  # Let winners run
+        ],
+        
+        "trailing_stop_activation_pct": 1.2,  # Start trailing sooner
+        "trailing_stop_distance_pct": 0.4,  # Tighter trail
+    }
+    
+    # Broker-specific customizations - AGGRESSIVE TERRITORY
+    if canonicalize_broker_name(broker_type) == 'Binance':
+        config.update({
+            "binance_daily_target_pct": 7.0,  # Up from 5% - MORE AGGRESSIVE
+            "binance_max_leverage": 15,  # Up from 10x - HIGHER LEVERAGE
+            "binance_compound_wins": True,
+            "binance_auto_increase_leverage": True,  # Scale leverage with account
+            "base_multiplier": 1.5,  # Start 50% larger positions
+            "recovery_multiplier": 0.80,  # More aggressive recovery
+            "min_multiplier": 0.75,  # Higher floor
+            "max_position_size_pct": 40.0,  # Use up to 40% of account per trade
+            "profit_lock_threshold": 3.0,  # Lock at 3% profit
+        })
+    
+    elif canonicalize_broker_name(broker_type) in ['Exness', 'XM', 'XM Global', 'FXCM']:
+        config.update({
+            "exness_profit_multiplier": 15.0,  # Turn R5 into R75 (up from R50)
+            "exness_base_lot_increase": 0.03,  # Larger pyramid additions
+            "exness_max_lot_per_trade": 2.0,  # Up from 1.0 lot
+            "base_multiplier": 1.3,  # Start 30% larger
+            "profit_target_multiplier": 15.0,
+            "min_lot_size": 0.08,  # Start bigger
+            "max_lot_size": 2.0,  # Allow larger positions
+            "aggressive_entry_on_strong_signal": True,
+            "double_size_on_80plus_signal": True,  # 2x size on 80+ signals
+        })
+    
+    # AGGRESSIVE LIVE SETTINGS (still protected but pushing limits)
+    if is_live:
+        config["max_total_multiplier"] = 10.0  # Up from 8x
+        config["reversal_threshold_pct"] = -0.12  # Very tight stop
+        # Keep aggressive settings but add extra protection
+        config["emergency_stop_loss_pct"] = -5.0  # Emergency kill switch
+        config["max_daily_drawdown_pct"] = 15.0  # Stop if down 15% in a day
+    
+    return config
+
+
+# ==================== PROFIT PYRAMIDING IMPLEMENTATION ====================
+
+def calculate_position_profit_pct(position: Dict[str, Any], current_price: float) -> float:
+    """Calculate current profit % for a position"""
+    if not position or not current_price:
+        return 0.0
+    
+    entry_price = _safe_float(position.get('entry_price', 0))
+    if entry_price == 0:
+        return 0.0
+    
+    position_type = str(position.get('type', 'buy')).lower()
+    
+    if position_type == 'buy':
+        profit_pct = ((current_price - entry_price) / entry_price) * 100
+    else:  # sell
+        profit_pct = ((entry_price - current_price) / entry_price) * 100
+    
+    return profit_pct
+
+
+def should_add_to_position(position: Dict[str, Any], current_price: float, runtime_state: Dict[str, Any]) -> tuple:
+    """Check if we should pyramid into this winning position"""
+    
+    pyramid_config = runtime_state.get('profit_pyramiding', {})
+    if not pyramid_config.get('enabled', False):
+        return False, 0
+    
+    profit_pct = calculate_position_profit_pct(position, current_price)
+    
+    if profit_pct <= 0:
+        return False, 0  # Not profitable yet
+    
+    # Check which pyramid level we should be at
+    pyramid_levels = pyramid_config.get('pyramid_levels', [])
+    current_pyramids = position.get('pyramid_count', 0)
+    max_total_multiplier = _safe_float(pyramid_config.get('max_total_multiplier', 10.0), 10.0)
+    
+    for level in pyramid_levels:
+        threshold = _safe_float(level.get('profit_threshold_pct', 0), 0)
+        multiplier = _safe_float(level.get('size_multiplier', 1.0), 1.0)
+        
+        # If we crossed this threshold and haven't pyramided to this level yet
+        if profit_pct >= threshold and current_pyramids < len(pyramid_levels):
+            # Check we haven't exceeded max multiplier
+            total_current_multiplier = _safe_float(position.get('total_size_multiplier', 1.0), 1.0)
+            if total_current_multiplier < max_total_multiplier:
+                return True, multiplier
+    
+    return False, 0
+
+
+def check_and_add_pyramids(bot_id: str, runtime_state: Dict[str, Any], broker_type: str) -> None:
+    """
+    Check all open positions and add pyramids if profitable
+    Call this in the main trading loop
+    """
+    
+    try:
+        pyramid_config = runtime_state.get('profit_pyramiding', {})
+        if not pyramid_config.get('enabled', False):
+            return
+        
+        # Get open positions from runtime state
+        open_positions = runtime_state.get('open_positions', {})
+        
+        for symbol, position in open_positions.items():
+            try:
+                # Get current price
+                current_price = _safe_float(position.get('current_price', 0), 0)
+                if current_price == 0:
+                    continue
+                
+                # Check if we should pyramid
+                should_pyramid, multiplier = should_add_to_position(position, current_price, runtime_state)
+                
+                if should_pyramid:
+                    profit_pct = calculate_position_profit_pct(position, current_price)
+                    
+                    # Update position metadata (actual order execution happens in main trading logic)
+                    pyramid_count = position.get('pyramid_count', 0) + 1
+                    position['pyramid_count'] = pyramid_count
+                    
+                    current_multiplier = _safe_float(position.get('total_size_multiplier', 1.0), 1.0)
+                    position['total_size_multiplier'] = current_multiplier + (multiplier - 1.0)
+                    
+                    if 'pyramids' not in position:
+                        position['pyramids'] = []
+                    
+                    position['pyramids'].append({
+                        'level': pyramid_count,
+                        'multiplier': multiplier,
+                        'timestamp': datetime.now().isoformat(),
+                        'profit_pct_at_addition': profit_pct,
+                    })
+                    
+                    logger.info(
+                        f"✅ {bot_id}: Pyramided {symbol} at +{profit_pct:.2f}% "
+                        f"with {multiplier}x size (level {pyramid_count})"
+                    )
+                    
+            except Exception as e:
+                logger.error(f"Error checking pyramid for {symbol}: {e}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"Error in check_and_add_pyramids for {bot_id}: {e}")
+
+
+def check_reversal_and_close_pyramids(position: Dict[str, Any], current_price: float, runtime_state: Dict[str, Any]) -> bool:
+    """
+    Close pyramid additions if price reverses against us
+    Protects accumulated profits
+    """
+    
+    try:
+        pyramid_config = runtime_state.get('profit_pyramiding', {})
+        if not pyramid_config.get('partial_close_on_reversal', False):
+            return False
+        
+        # Track peak profit
+        peak_profit_pct = _safe_float(position.get('peak_profit_pct', 0), 0)
+        current_profit_pct = calculate_position_profit_pct(position, current_price)
+        
+        if current_profit_pct > peak_profit_pct:
+            position['peak_profit_pct'] = current_profit_pct
+            return False  # New peak, don't close
+        
+        # Check for reversal from peak
+        reversal_threshold = _safe_float(pyramid_config.get('reversal_threshold_pct', -0.2), -0.2)
+        reversal_pct = current_profit_pct - peak_profit_pct
+        
+        if reversal_pct <= reversal_threshold:
+            # Reversal detected - mark pyramids for closure
+            symbol = position.get('symbol', 'UNKNOWN')
+            logger.warning(
+                f"⚠️  Reversal detected on {symbol}: {reversal_pct:.2f}% from peak. "
+                f"Marking pyramids for closure."
+            )
+            
+            # Set flag for main trading logic to close pyramid positions
+            position['should_close_pyramids'] = True
+            position['reversal_detected'] = True
+            position['reversal_at'] = datetime.now().isoformat()
+            
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error in check_reversal_and_close_pyramids: {e}")
+        return False
+
+
+def calculate_today_profit_pct(bot_id: str) -> float:
+    """Calculate today's profit % for a bot"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        today = datetime.now().date().isoformat()
+        
+        cursor.execute('''
+            SELECT SUM(profit) as today_profit
+            FROM trades
+            WHERE bot_id = ?
+              AND DATE(closed_at) = ?
+        ''', (bot_id, today))
+        
+        row = cursor.fetchone()
+        today_profit = _safe_float(row['today_profit'] if row and row['today_profit'] else 0, 0)
+        
+        # Get account balance to calculate %
+        cursor.execute('''
+            SELECT runtime_state FROM user_bots WHERE bot_id = ?
+        ''', (bot_id,))
+        
+        state_row = cursor.fetchone()
+        if state_row:
+            state = json.loads(state_row['runtime_state'])
+            account_balance = _safe_float(state.get('accountBalance', 1000), 1000)
+        else:
+            account_balance = 1000
+        
+        conn.close()
+        
+        if account_balance > 0:
+            profit_pct = (today_profit / account_balance) * 100
+            return profit_pct
+        
+        return 0.0
+        
+    except Exception as e:
+        logger.error(f"Error calculating today's profit for {bot_id}: {e}")
+        return 0.0
+
+
+def check_binance_daily_target(bot_id: str, runtime_state: Dict[str, Any]) -> bool:
+    """
+    Check if bot hit daily target (e.g., 5%)
+    If yes, should stop trading for the day
+    """
+    
+    try:
+        pyramid_config = runtime_state.get('profit_pyramiding', {})
+        daily_target = _safe_float(pyramid_config.get('binance_daily_target_pct', 5.0), 5.0)
+        
+        if daily_target <= 0:
+            return False  # No target set
+        
+        # Get today's profit
+        today_profit_pct = calculate_today_profit_pct(bot_id)
+        
+        if today_profit_pct >= daily_target:
+            logger.info(
+                f"🎯 {bot_id}: Daily target reached: {today_profit_pct:.2f}% "
+                f"(target: {daily_target}%)"
+            )
+            logger.info(f"💰 Stopping trading for today to lock in profits")
+            
+            # Set flag to stop trading
+            runtime_state['daily_target_reached'] = True
+            runtime_state['daily_target_reached_at'] = datetime.now().isoformat()
+            
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error checking daily target for {bot_id}: {e}")
+        return False
 
 
 def _promote_profit_protection_bucket(bucket: str) -> str:
@@ -32178,7 +32544,13 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
                     exness_runtime_risk.get('recoveryAllowedVolatility', effective['allowedVolatility'])
                 )
             if profile == 'fast_growth':
-                recovery_fast_growth_floor = 72 if is_live else 45
+                # Binance and Exness live bots need a lower recovery floor than default MT5 to avoid
+                # stalling entries after a small loss streak.
+                recovery_fast_growth_floor = (
+                    BINANCE_GUARDED_LIVE_SIGNAL_THRESHOLD
+                    if is_live and broker_name == 'Binance'
+                    else (63 if is_live and broker_name == 'Exness' else (72 if is_live else 45))
+                )
                 effective['signalThreshold'] = min(88, max(effective['signalThreshold'], recovery_fast_growth_floor))
                 if is_live or guarded_small_live or broker_name == 'Binance':
                     effective['maxOpenPositions'] = 1
@@ -33218,6 +33590,13 @@ def create_bot():
                 'profit': 0,
                 'open_positions': {},  # Track open positions for closure detection
             }
+            
+            # Add default profit pyramiding configuration for ALL new bots
+            active_bots[bot_id]['profit_pyramiding'] = get_default_profit_pyramiding_config(
+                broker_type=broker_name,
+                is_live=bool(is_live)
+            )
+            
             # Force immediate persistence so bot settings survive restarts
             # even before the periodic runtime-state debounce cycle.
             persist_bot_runtime_state(bot_id, force=True)
@@ -37221,6 +37600,29 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                     trades_placed,
                     open_pos_count,
                 )
+                
+                # ==================== PROFIT PYRAMIDING CHECKS ====================
+                # Check for pyramid opportunities on open positions
+                try:
+                    check_and_add_pyramids(bot_id, bot_config, normalized_broker)
+                    
+                    # Check for reversals and protect profits
+                    for symbol, position in (bot_config.get('open_positions', {}) or {}).items():
+                        current_price = _safe_float(position.get('current_price', 0), 0)
+                        if current_price > 0:
+                            check_reversal_and_close_pyramids(position, current_price, bot_config)
+                    
+                    # For Binance bots: check if daily target reached
+                    if normalized_broker == 'Binance':
+                        if check_binance_daily_target(bot_id, bot_config):
+                            logger.info(f"🎯 Bot {bot_id}: Binance daily target reached, stopping bot")
+                            bot_stop_flags[bot_id] = True
+                            running_bots[bot_id] = False
+                            break
+                except Exception as pyramid_error:
+                    logger.error(f"Bot {bot_id}: Pyramiding check error: {pyramid_error}")
+                # ==================== END PYRAMIDING CHECKS ====================
+                
                 persist_bot_runtime_state(bot_id)
                 
                 # Log cycle summary with position status for debugging
