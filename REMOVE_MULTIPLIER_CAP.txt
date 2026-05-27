@@ -1,0 +1,32 @@
+
+# REMOVE SYMBOL MULTIPLIER CAP - BACKEND CODE CHANGE
+
+📄 File: C:\backend\multi_broker_backend_updated.py
+📍 Line: ~3206
+
+CURRENT CODE (CAPPED):
+────────────────────────────────────────────────────
+if symbol_performance:
+    size_multiplier *= max(0.7, min(_safe_float(symbol_performance.get('multiplier'), 1.0), 1.1))
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                CAPS AT 1.1x - PREVENTS GBPUSDm FROM REACHING 1.5x
+
+CHANGE TO (UNCAPPED):
+────────────────────────────────────────────────────
+if symbol_performance:
+    symbol_mult = max(0.7, _safe_float(symbol_performance.get('multiplier'), 1.0))
+    size_multiplier *= symbol_mult
+    # Allow up to 1.5x for 'favored' symbols (removed artificial 1.1x cap)
+
+WHY THIS HELPS:
+────────────────────────────────────────────────────
+- GBPUSDm with 'favored' verdict can reach 1.5x multiplier
+- System already calculates 1.5x based on profitability
+- Cap at 1.1x was preventing profitable symbols from scaling up
+- Removing cap = more profit from proven winners like GBPUSDm
+
+RISK:
+────────────────────────────────────────────────────
+- Low risk (only affects profitable symbols)
+- System still limits to 1.5x maximum (SYMBOL_PERF_FAVOR_MULT = 1.5)
+- Losing symbols still get reduced (0.7x minimum)
