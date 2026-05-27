@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/login_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/onboarding_screen.dart';
 import 'services/auth_service.dart';
 import 'services/trading_service.dart';
 import 'services/bot_service.dart';
@@ -150,17 +152,53 @@ void main() async {
   }
 }
 
-class AuthWrapper extends StatelessWidget {
+class AuthWrapper extends StatefulWidget {
   const AuthWrapper({Key? key}) : super(key: key);
+
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
+  bool? _onboardingComplete;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkOnboardingStatus();
+  }
+
+  Future<void> _checkOnboardingStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _onboardingComplete = prefs.getBool('onboarding_complete') ?? false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     try {
       return Consumer<AuthService>(
         builder: (context, authService, _) {
+          // Loading state while checking onboarding status
+          if (_onboardingComplete == null) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+
+          // If authenticated
           if (authService.isAuthenticated) {
+            // Check if user needs to see onboarding
+            if (!_onboardingComplete!) {
+              return const OnboardingScreen();
+            }
             return const DashboardScreen();
           }
+
+          // Not authenticated - show login
           return const LoginScreen();
         },
       );
