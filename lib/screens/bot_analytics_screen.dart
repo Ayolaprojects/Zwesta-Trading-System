@@ -27,6 +27,7 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   Timer? _refreshTimer;
   late Map<String, dynamic> _botData;
   List<Map<String, dynamic>> _fallbackTradeHistory = [];
+  DateTime? _lastFallbackTradeRefreshAt;
 
   // Withdrawal analytics state
   Map<String, dynamic>? _withdrawalAnalytics;
@@ -61,6 +62,12 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   }
 
   Future<void> _loadTradeHistoryFallback() async {
+    final now = DateTime.now();
+    if (_lastFallbackTradeRefreshAt != null && now.difference(_lastFallbackTradeRefreshAt!) < const Duration(seconds: 8)) {
+      return;
+    }
+    _lastFallbackTradeRefreshAt = now;
+
     try {
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token');
@@ -198,14 +205,7 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
             setState(() {
               _botData = bot;
             });
-            final tradeHistory = bot['tradeHistory'] as List?;
-            if (tradeHistory == null || tradeHistory.isEmpty) {
-              await _loadTradeHistoryFallback();
-            } else if (_fallbackTradeHistory.isNotEmpty && mounted) {
-              setState(() {
-                _fallbackTradeHistory = [];
-              });
-            }
+            await _loadTradeHistoryFallback();
           }
         }
       } else if (response.statusCode == 401 || response.statusCode == 403) {
@@ -231,6 +231,89 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
       return value.toDouble();
     }
     return double.tryParse(value.toString()) ?? fallback;
+  }
+
+  DateTime? _tradeTimestamp(Map<String, dynamic> trade) {
+    final timeRaw =
+        trade['closedAt'] ??
+        trade['time'] ??
+        trade['closeTime'] ??
+        trade['time_close'] ??
+        trade['openedAt'] ??
+        trade['time_open'] ??
+        trade['openTime'];
+    if (timeRaw == null) {
+      return null;
+    }
+    if (timeRaw is num) {
+      final millis = timeRaw > 1e12 ? timeRaw.toInt() : timeRaw.toInt() * 1000;
+      return DateTime.fromMillisecondsSinceEpoch(millis);
+    }
+    return DateTime.tryParse(timeRaw.toString());
+  }
+
+  int _tradeTimestampMillis(Map<String, dynamic> trade) {
+    return _tradeTimestamp(trade)?.millisecondsSinceEpoch ?? 0;
+  }
+
+  String _tradeIdentityKey(Map<String, dynamic> trade) {
+    final ticket = trade['ticket']?.toString().trim();
+    if (ticket != null && ticket.isNotEmpty) {
+      return 'ticket:$ticket';
+    }
+
+    final tradeId =
+        trade['tradeId']?.toString().trim() ??
+        trade['trade_id']?.toString().trim() ??
+        trade['trade_id']?.toString().trim();
+    if (tradeId != null && tradeId.isNotEmpty) {
+      return 'trade:$tradeId';
+    }
+
+    final symbol = trade['symbol']?.toString().trim() ?? '';
+    final type = trade['type']?.toString().trim() ?? '';
+    final status = trade['status']?.toString().trim() ?? '';
+    final timestamp = _tradeTimestampMillis(trade);
+    final volume = trade['volume']?.toString().trim() ?? '';
+    return 'fallback:$symbol|$type|$status|$timestamp|$volume';
+  }
+
+  Map<String, dynamic> _mergeTradeRecords(
+    Map<String, dynamic> current,
+    Map<String, dynamic> incoming,
+  ) {
+    final merged = <String, dynamic>{...current, ...incoming};
+
+    for (final key in const [
+      'closedAt',
+      'time',
+      'closeTime',
+      'time_close',
+      'openedAt',
+      'time_open',
+      'openTime',
+      'ticket',
+      'tradeId',
+      'trade_id',
+      'symbol',
+      'type',
+      'status',
+      'profit',
+      'entryPrice',
+      'exitPrice',
+      'currentPrice',
+      'volume',
+    ]) {
+      final currentValue = current[key];
+      final incomingValue = incoming[key];
+      final currentIsEmpty = currentValue == null || currentValue.toString().trim().isEmpty;
+      final incomingIsFilled = incomingValue != null && incomingValue.toString().trim().isNotEmpty;
+      if (currentIsEmpty && incomingIsFilled) {
+        merged[key] = incomingValue;
+      }
+    }
+
+    return merged;
   }
 
   Map<String, double> _resolvedDailyProfitSeries() {
@@ -286,15 +369,13 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   }
 
   List<Map<String, dynamic>> _getTradesChartData() {
-    final tradeHistory = (_botData['tradeHistory'] as List?) ?? _fallbackTradeHistory;
+    final tradeHistory = _tradeHistoryRecords();
     if (tradeHistory.isEmpty) {
       return [];
     }
     final trades = List.from(tradeHistory)
       ..sort((a, b) {
-        final aTime = a['time']?.toString() ?? '';
-        final bTime = b['time']?.toString() ?? '';
-        return aTime.compareTo(bTime);
+        return _tradeTimestampMillis(a).compareTo(_tradeTimestampMillis(b));
       });
     return trades
         .map((t) => {
@@ -331,8 +412,34 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   }
 
   List<Map<String, dynamic>> _tradeHistoryRecords() {
-    final history = (_botData['tradeHistory'] as List?) ?? _fallbackTradeHistory;
-    return history.map((entry) => Map<String, dynamic>.from(entry as Map)).toList();
+    final mergedTrades = <String, Map<String, dynamic>>{};
+
+    void mergeSource(dynamic source) {
+      if (source is! List) {
+        return;
+      }
+      for (final entry in source) {
+        if (entry is! Map) {
+          continue;
+        }
+        final trade = Map<String, dynamic>.from(entry);
+        final key = _tradeIdentityKey(trade);
+        final existing = mergedTrades[key];
+        if (existing == null) {
+          mergedTrades[key] = trade;
+        } else {
+          mergedTrades[key] = _mergeTradeRecords(existing, trade);
+        }
+      }
+    }
+
+    mergeSource(_botData['tradeHistory']);
+    mergeSource(_botData['brokerRecentTrades']);
+    mergeSource(_fallbackTradeHistory);
+
+    final mergedList = mergedTrades.values.toList()
+      ..sort((a, b) => _tradeTimestampMillis(b).compareTo(_tradeTimestampMillis(a)));
+    return mergedList;
   }
 
   String _symbolForCode(String currencyCode) {
@@ -367,6 +474,328 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
     }
 
     return '$formatted $resolvedCurrency';
+  }
+
+  bool _hasTemporalGuardData() {
+    final status = (_botData['temporalGuardStatus'] ?? '').toString().trim().toLowerCase();
+    final sessionPerf = _botData['sessionPerformance'];
+    final hourlyPerf = _botData['hourlyPerformance'];
+    return status.isNotEmpty || sessionPerf is Map || hourlyPerf is Map;
+  }
+
+  Map<String, dynamic> _mapValue(dynamic value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    if (value is Map) {
+      return value.map((key, entry) => MapEntry(key.toString(), entry));
+    }
+    return <String, dynamic>{};
+  }
+
+  List<MapEntry<String, dynamic>> _rankedTemporalEntries(dynamic rawMap) {
+    final data = _mapValue(rawMap);
+    final entries = data.entries.toList();
+
+    int verdictRank(Map<String, dynamic> bucket) {
+      switch ((bucket['verdict'] ?? 'normal').toString().trim().toLowerCase()) {
+        case 'blocked':
+          return 0;
+        case 'demoted':
+          return 1;
+        default:
+          return 2;
+      }
+    }
+
+    entries.sort((a, b) {
+      final aMap = _mapValue(a.value);
+      final bMap = _mapValue(b.value);
+      final verdictCompare = verdictRank(aMap).compareTo(verdictRank(bMap));
+      if (verdictCompare != 0) {
+        return verdictCompare;
+      }
+      final aSamples = _toDouble(aMap['samples']).toInt();
+      final bSamples = _toDouble(bMap['samples']).toInt();
+      final sampleCompare = bSamples.compareTo(aSamples);
+      if (sampleCompare != 0) {
+        return sampleCompare;
+      }
+      return a.key.compareTo(b.key);
+    });
+
+    return entries;
+  }
+
+  Color _temporalVerdictColor(String verdict) {
+    switch (verdict.trim().toLowerCase()) {
+      case 'blocked':
+        return const Color(0xFFFF8A80);
+      case 'demoted':
+        return const Color(0xFFFFB74D);
+      default:
+        return const Color(0xFF69F0AE);
+    }
+  }
+
+  String _temporalVerdictLabel(String verdict) {
+    switch (verdict.trim().toLowerCase()) {
+      case 'blocked':
+        return 'Blocked';
+      case 'demoted':
+        return 'Reduced';
+      default:
+        return 'Normal';
+    }
+  }
+
+  Widget _buildTemporalGuardSection() {
+    final status = (_botData['temporalGuardStatus'] ?? 'normal').toString().trim().toLowerCase();
+    final headline = (_botData['temporalGuardHeadline'] ?? 'Normal').toString().trim();
+    final reason = (_botData['temporalGuardReason'] ?? '').toString().trim();
+    final activeSession = _mapValue(_botData['activeSessionPerformance']);
+    final activeHour = _mapValue(_botData['activeHourPerformance']);
+    final sessionEntries = _rankedTemporalEntries(_botData['sessionPerformance']);
+    final hourEntries = _rankedTemporalEntries(_botData['hourlyPerformance']);
+    final accent = _temporalVerdictColor(status);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                accent.withValues(alpha: 0.16),
+                accent.withValues(alpha: 0.05),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: accent.withValues(alpha: 0.35)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    status == 'blocked' ? Icons.block_outlined : Icons.schedule_outlined,
+                    color: accent,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      headline.isNotEmpty ? headline : 'Adaptive time guard',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  _buildProtectionBadge(_temporalVerdictLabel(status), accent),
+                ],
+              ),
+              if (reason.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text(
+                  reason,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildTemporalActiveCard(
+                      title: 'Current session',
+                      data: activeSession,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildTemporalActiveCard(
+                      title: 'Current hour',
+                      data: activeHour,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (sessionEntries.isNotEmpty) ...[
+          _buildTemporalBucketSection(
+            title: 'Session buckets',
+            entries: sessionEntries,
+          ),
+          const SizedBox(height: 14),
+        ],
+        if (hourEntries.isNotEmpty)
+          _buildTemporalBucketSection(
+            title: 'Hour buckets',
+            entries: hourEntries,
+          ),
+      ],
+    );
+  }
+
+  Widget _buildTemporalActiveCard({
+    required String title,
+    required Map<String, dynamic> data,
+  }) {
+    final label = (data['label'] ?? '--').toString();
+    final verdict = (data['verdict'] ?? 'normal').toString();
+    final color = _temporalVerdictColor(verdict);
+    final winRate = _toDouble(data['winRate']) * 100.0;
+    final pnl = _toDouble(data['pnl']);
+    final samples = _toDouble(data['samples']).toInt();
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _buildProtectionBadge(_temporalVerdictLabel(verdict), color),
+              _buildProtectionBadge('${winRate.toStringAsFixed(0)}% WR', Colors.cyanAccent),
+              _buildProtectionBadge(
+                _formatAmount(pnl, currencyCode: _displayCurrencyCode()),
+                pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
+              ),
+              _buildProtectionBadge('$samples trades', const Color(0xFFB0BEC5)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTemporalBucketSection({
+    required String title,
+    required List<MapEntry<String, dynamic>> entries,
+  }) {
+    final visibleEntries = entries.take(8).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: visibleEntries.map((entry) {
+            final bucket = _mapValue(entry.value);
+            final label = (bucket['label'] ?? entry.key).toString();
+            final verdict = (bucket['verdict'] ?? 'normal').toString();
+            final color = _temporalVerdictColor(verdict);
+            final winRate = _toDouble(bucket['winRate']) * 100.0;
+            final pnl = _toDouble(bucket['pnl']);
+            final samples = _toDouble(bucket['samples']).toInt();
+
+            return Container(
+              width: 156,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: color.withValues(alpha: 0.28)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _temporalVerdictLabel(verdict),
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${winRate.toStringAsFixed(0)}% win rate',
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _formatAmount(pnl, currencyCode: _displayCurrencyCode()),
+                    style: TextStyle(
+                      color: pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$samples trade${samples == 1 ? '' : 's'}',
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
   }
 
   @override
@@ -442,6 +871,12 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
               // Account Balance Card
               _buildBalanceCard(),
               const SizedBox(height: 16),
+
+              if (_hasTemporalGuardData()) ...[
+                _buildSectionHeader('Adaptive Time Guard'),
+                _buildTemporalGuardSection(),
+                const SizedBox(height: 24),
+              ],
 
               // Open Positions Section
               _buildOpenPositionsSection(),
@@ -2051,9 +2486,7 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
       );
     }
 
-    final recentTrades = tradeHistory.length > 50
-        ? tradeHistory.sublist(tradeHistory.length - 50)
-        : tradeHistory;
+    final recentTrades = tradeHistory.take(50).toList();
 
     return Column(
       children: recentTrades.map((trade) {
@@ -2062,6 +2495,11 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
         final isWinning = (trade['isWinning'] as bool?) ?? false;
         final profit = ((trade['profit'] as num?) ?? 0).toDouble();
         final currentPrice = (trade['currentPrice'] as num?)?.toDouble();
+        final tradeTime = _tradeTimestamp(trade);
+        final timeLabel = tradeTime != null
+            ? '${tradeTime.day.toString().padLeft(2, '0')}/${tradeTime.month.toString().padLeft(2, '0')} '
+              '${tradeTime.hour.toString().padLeft(2, '0')}:${tradeTime.minute.toString().padLeft(2, '0')}'
+            : null;
         return Container(
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(12),
@@ -2099,6 +2537,16 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
                         fontSize: 12,
                       ),
                     ),
+                    if (timeLabel != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        timeLabel,
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
