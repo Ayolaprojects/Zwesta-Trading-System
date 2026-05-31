@@ -9,6 +9,7 @@ import '../models/account.dart';
 import '../models/financial_statement.dart';
 import '../services/financial_service.dart';
 import '../services/trading_service.dart';
+import '../theme/app_theme.dart';
 import '../utils/environment_config.dart';
 import '../utils/constants.dart';
 import '../widgets/logo_widget.dart';
@@ -558,8 +559,9 @@ class _FinancialsScreenState extends State<FinancialsScreen> {
 
   Widget _buildProfitSection(FinancialStatement stmt) {
     final isProfitable = stmt.netProfit >= 0;
+    final accent = isProfitable ? context.semantic.profit : context.semantic.loss;
     return Card(
-      color: isProfitable ? Colors.green[900] : Colors.red[900],
+      color: Color.alphaBlend(accent.withValues(alpha: 0.85), Colors.black),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(

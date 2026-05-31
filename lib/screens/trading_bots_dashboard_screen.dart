@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../theme/app_theme.dart';
 import '../utils/environment_config.dart';
 import '../widgets/logo_widget.dart';
 
@@ -183,7 +184,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
     final totalProfit = stats['totalProfit'] ?? 0.0;
     final totalBalanceByCurrency = stats['totalBalanceByCurrency'] as Map<String, dynamic>?;
     final totalProfitByCurrency = stats['totalProfitByCurrency'] as Map<String, dynamic>?;
-    final profitColor = totalProfit >= 0 ? Colors.greenAccent : Colors.redAccent;
+    final profitColor = totalProfit >= 0 ? context.semantic.profit : context.semantic.loss;
 
     return Column(
       children: [
@@ -274,7 +275,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
     final balance = bot['balance'] ?? 0.0;
     final profit = bot['profit'] ?? 0.0;
     final displayCurrency = _normalizeCurrency(bot['displayCurrency'] ?? bot['currency']);
-    final profitColor = profit >= 0 ? Colors.greenAccent : Colors.redAccent;
+    final profitColor = profit >= 0 ? context.semantic.profit : context.semantic.loss;
     final winRate = bot['winRate'] ?? 0.0;
 
     return GestureDetector(
@@ -384,7 +385,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
                       _buildQuickStat('Balance', _formatMoney(balance, displayCurrency), Colors.blueAccent),
                       _buildQuickStat('Profit', _formatMoney(profit, displayCurrency), profitColor),
                       _buildQuickStat('Trades', '${bot['trades'] ?? 0}', Colors.orange),
-                      _buildQuickStat('Win Rate', '${winRate.toStringAsFixed(1)}%', winRate >= 50 ? Colors.green : Colors.red),
+                      _buildQuickStat('Win Rate', '${winRate.toStringAsFixed(1)}%', winRate >= 50 ? context.semantic.profit : context.semantic.loss),
                     ],
                   ),
                 ],

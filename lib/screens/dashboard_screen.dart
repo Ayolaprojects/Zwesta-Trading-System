@@ -17,6 +17,8 @@ import '../services/auth_service.dart';
 import '../services/bot_service.dart';
 import '../services/trading_service.dart';
 import '../utils/environment_config.dart';
+import '../theme/app_theme.dart';
+import '../widgets/kill_switch_banner.dart';
 import '../widgets/logo_widget.dart';
 import 'account_management_screen.dart';
 import 'admin_dashboard_screen.dart';
@@ -233,9 +235,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return _normalizeCurrency(rawCurrency);
   }
 
-  Map<String, double> _aggregateAccountBalances(Iterable<Map<String, dynamic>> accounts) {
+  Map<String, double> _aggregateAccountBalances(
+    Iterable<Map<String, dynamic>> accounts, {
+    bool respectPortfolioTotalsFlag = false,
+  }) {
     final totals = <String, double>{};
     for (final account in accounts) {
+      if (respectPortfolioTotalsFlag && account['includeInPortfolioTotals'] == false) {
+        continue;
+      }
       final currency = _accountCurrency(account);
       final amount = (account['balance'] as num?)?.toDouble() ?? 0.0;
       totals[currency] = (totals[currency] ?? 0.0) + amount;
@@ -562,7 +570,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _totalBrokerBalance = 0;
 
   // Demo/Live balance toggle
-  String _balanceMode = 'all'; // 'all', 'live', 'demo'
+  String _balanceMode = 'live'; // 'all', 'live', 'demo'
   String _portfolioBrokerFilter = 'All';
 
   // Balance tracking for increases/decreases
@@ -603,6 +611,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     final selected = prefs.getString('preferred_broker_display') ?? prefs.getString('broker') ?? 'Exness';
     final savedReportingCurrency = _normalizeCurrency(prefs.getString('reporting_currency') ?? 'USD');
+    final savedBalanceMode = (prefs.getString('dashboard_balance_mode') ?? 'live').trim().toLowerCase();
+    final normalizedBalanceMode = {'all', 'live', 'demo'}.contains(savedBalanceMode) ? savedBalanceMode : 'live';
     if (!mounted) {
       return;
     }
@@ -610,7 +620,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _preferredBrokerDisplay = _normalizeBrokerDisplayName(selected);
       _portfolioBrokerFilter = 'All';
       _reportingCurrency = savedReportingCurrency == 'ZAR' ? 'ZAR' : 'USD';
+      _balanceMode = normalizedBalanceMode;
     });
+    if (normalizedBalanceMode != 'live') {
+      _fetchBrokerBalances();
+    }
+  }
+
+  Future<void> _setBalanceMode(String mode) async {
+    final normalizedMode = {'all', 'live', 'demo'}.contains(mode) ? mode : 'live';
+    if (normalizedMode == _balanceMode) {
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('dashboard_balance_mode', normalizedMode);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _balanceMode = normalizedMode;
+    });
+    await _fetchBrokerBalances();
   }
 
   Future<Map<String, dynamic>?> _loadLocalBrokerSnapshot() async {
@@ -1148,7 +1180,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
-                  if (isIncreasing) Colors.green.withOpacity(0.3) else Colors.red.withOpacity(0.3),
+                  if (isIncreasing)
+                    context.semantic.profit.withValues(alpha: 0.3)
+                  else
+                    context.semantic.loss.withValues(alpha: 0.3),
                   Colors.transparent,
                 ],
               ),
@@ -2941,7 +2976,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     for (final mode in [{'key': 'all', 'label': 'All'}, {'key': 'live', 'label': 'Live'}, {'key': 'demo', 'label': 'Demo'}])
                       Expanded(
                         child: GestureDetector(
-                          onTap: () => setState(() => _balanceMode = mode['key']!),
+                          onTap: () => _setBalanceMode(mode['key']!),
                           child: Container(
                             padding: const EdgeInsets.symmetric(vertical: 8),
                             decoration: BoxDecoration(
@@ -3000,7 +3035,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   final filtered = filteredConnected.isNotEmpty ? filteredConnected : filteredAll;
                   final liveAccounts = liveConnectedAccounts.isNotEmpty ? liveConnectedAccounts : liveAllAccounts;
                   final demoAccounts = demoConnectedAccounts.isNotEmpty ? demoConnectedAccounts : demoAllAccounts;
-                  final filteredTotals = _aggregateAccountBalances(filtered);
+                  final filteredTotals = _aggregateAccountBalances(
+                    filtered,
+                    respectPortfolioTotalsFlag: _balanceMode == 'all',
+                  );
                   final connectedCount = filtered.where((a) => a['connected'] == true).length;
 
                   return Container(
@@ -3285,9 +3323,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final liveProfitByCurrency = _aggregateBotValuesFor('profit', mode: 'live');
     final demoProfitByCurrency = _aggregateBotValuesFor('profit', mode: 'demo');
     final totalProfit = totalProfitByCurrency.values.fold<double>(0, (sum, value) => sum + value);
-    final winningBots = selectedBots.where((bot) => (double.tryParse(bot['profit']?.toString() ?? '0') ?? 0) > 0).length;
+    final profitableBots = selectedBots.where((bot) => (double.tryParse(bot['profit']?.toString() ?? '0') ?? 0) > 0).length;
     final totalBots = selectedBots.length;
-    final winRate = totalBots > 0 ? (winningBots / totalBots * 100) : 0.0;
+    final profitableBotsRate = totalBots > 0 ? (profitableBots / totalBots * 100) : 0.0;
     final liveWinningBots = _filteredBots('live').where((bot) => (double.tryParse(bot['profit']?.toString() ?? '0') ?? 0) > 0).length;
     final demoWinningBots = _filteredBots('demo').where((bot) => (double.tryParse(bot['profit']?.toString() ?? '0') ?? 0) > 0).length;
     final liveBotsCount = _filteredBots('live').length;
@@ -3363,13 +3401,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ],
           const SizedBox(height: 24),
-          // Win Rate Bar
+          // Profitable Bots Bar
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: SizedBox(
               height: 10,
               child: LinearProgressIndicator(
-                value: winRate / 100,
+                value: profitableBotsRate / 100,
                 backgroundColor: Colors.white10,
                 valueColor: const AlwaysStoppedAnimation(Color(0xFF00E5FF)),
               ),
@@ -3380,11 +3418,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'Win Rate: ${winRate.toStringAsFixed(1)}%',
+                'Profitable Bots: ${profitableBotsRate.toStringAsFixed(1)}%',
                 style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontSize: 13, fontWeight: FontWeight.w600),
               ),
               Text(
-                '$winningBots / $totalBots bots profitable',
+                '$profitableBots / $totalBots bots profitable',
                 style: GoogleFonts.poppins(color: Colors.white38, fontSize: 11),
               ),
             ],
@@ -3963,6 +4001,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           else
             ...recentTrades.take(5).map((trade) {
               final profit = trade.profit ?? 0;
+              final tradeCurrency = trade.currency.isNotEmpty ? trade.currency : accountCurrency;
               final direction = trade.type == TradeType.buy ? 'BUY' : 'SELL';
               final tradeTime = trade.closedAt ?? trade.openedAt;
 
@@ -4007,7 +4046,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ),
                     Text(
-                      '${profit >= 0 ? "+" : ""}${_formatCurrencyAmount(profit, accountCurrency)}',
+                      '${profit >= 0 ? "+" : ""}${_formatCurrencyAmount(profit, tradeCurrency)}',
                       style: GoogleFonts.poppins(
                         color: profit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
                         fontWeight: FontWeight.w600,
@@ -4212,6 +4251,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         actions: [
+          const KillSwitchButton(),
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white70),
             onPressed: _fetchRealBots,
@@ -4221,6 +4261,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       body: Column(
         children: [
+          const KillSwitchBanner(),
           Consumer<FallbackStatusProvider>(
             builder: (context, fallback, _) {
               if (fallback.usingFallback) {
