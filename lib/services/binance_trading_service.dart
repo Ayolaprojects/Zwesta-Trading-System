@@ -54,8 +54,10 @@ class BinanceTradingService {
 
   static Future<Map<String, dynamic>> getAccounts() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/binance/accounts'),
+        headers: headers,
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -69,8 +71,10 @@ class BinanceTradingService {
 
   static Future<Map<String, dynamic>> getBalance() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/binance/balance'),
+        headers: headers,
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -84,8 +88,10 @@ class BinanceTradingService {
 
   static Future<Map<String, dynamic>> getFunds() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/binance/funds'),
+        headers: headers,
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -99,8 +105,10 @@ class BinanceTradingService {
 
   static Future<Map<String, dynamic>> getPositions() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/binance/positions'),
+        headers: headers,
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
@@ -114,8 +122,10 @@ class BinanceTradingService {
 
   static Future<Map<String, dynamic>> getFuturesPositions() async {
     try {
+      final headers = await _authHeaders();
       final resp = await http.get(
         Uri.parse('$_baseUrl/api/binance/futures-positions'),
+        headers: headers,
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
