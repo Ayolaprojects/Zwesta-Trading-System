@@ -447,11 +447,27 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     return _buildMetaChip(label, Theme.of(context).colorScheme.primary);
   }
 
-  String _formatBotAggregate(CurrencyProvider currencyProvider, List<Map<String, dynamic>> bots, String field, {int decimals = 2}) {
+  double _botAmount(Map<String, dynamic> bot, List<String> fields) {
+    for (final field in fields) {
+      final raw = bot[field];
+      if (raw == null) continue;
+      final parsed = double.tryParse(raw.toString());
+      if (parsed != null) return parsed;
+    }
+    return 0.0;
+  }
+
+  String _formatBotAggregate(
+    CurrencyProvider currencyProvider,
+    List<Map<String, dynamic>> bots,
+    String field, {
+    int decimals = 2,
+    List<String> fallbackFields = const [],
+  }) {
     final totals = <String, double>{};
     for (final bot in bots) {
       final currency = _botDisplayCurrency(bot);
-      final amount = double.tryParse(bot[field]?.toString() ?? '0') ?? 0.0;
+      final amount = _botAmount(bot, [field, ...fallbackFields]);
       totals[currency] = (totals[currency] ?? 0.0) + amount;
     }
     if (totals.isEmpty) {
@@ -514,7 +530,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
 
         final activeBots = allBots.where((b) => b['enabled'] == true || b['status'] == 'Active').length;
         final totalProfit = allBots.fold<double>(
-          0, (sum, b) => sum + (double.tryParse(b['profit']?.toString() ?? '0') ?? 0),
+          0,
+          (sum, b) => sum + _botAmount(b, ['allTimeProfit', 'totalProfit', 'profit']),
         );
 
         return Container(
@@ -616,7 +633,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                           const SizedBox(width: 10),
                           _summaryChip(
                             totalProfit >= 0 ? Icons.trending_up : Icons.trending_down,
-                            _formatBotAggregate(currencyProvider, allBots, 'profit'),
+                            _formatBotAggregate(
+                              currencyProvider,
+                              allBots,
+                              'allTimeProfit',
+                              fallbackFields: ['totalProfit', 'profit'],
+                            ),
                             totalProfit >= 0 ? Colors.green : Theme.of(context).colorScheme.secondary,
                           ),
                         ],
@@ -975,7 +997,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final byCurrency = <String, double>{};
     for (final b in group) {
       final code = _botDisplayCurrency(b);
-      final p = double.tryParse(b['profit']?.toString() ?? '0') ?? 0;
+      final p = _botAmount(b, ['allTimeProfit', 'totalProfit', 'profit']);
       byCurrency[code] = (byCurrency[code] ?? 0) + p;
     }
     final totalsText = byCurrency.entries
@@ -1025,7 +1047,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                   ),
                 ),
                 Text(
-                  '$activeCount active • $count bot${count == 1 ? '' : 's'}',
+                  '$activeCount active • $count bot${count == 1 ? '' : 's'} • all-time P/L',
                   style: GoogleFonts.poppins(
                     color: Colors.white60,
                     fontSize: 11,
@@ -1057,7 +1079,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final botMode = (bot['mode'] ?? '').toString().trim().toLowerCase();
     final isDemoBot = botMode == 'demo' || (botMode.isEmpty && bot['is_live'] != true);
     final status = (bot['status'] ?? (isEnabled ? 'Active' : 'Inactive')).toString().toUpperCase();
-    final profit = double.tryParse(bot['profit']?.toString() ?? '0') ?? 0;
+    final sessionProfit = _botAmount(bot, ['sessionProfit', 'currentProfit', 'profit']);
+    final allTimeProfit = _botAmount(bot, ['allTimeProfit', 'totalProfit', 'lifetimeCurrentProfit', 'profit']);
     final totalTrades = int.tryParse(bot['totalTrades']?.toString() ?? '0') ?? 0;
     final winRate = double.tryParse(bot['winRate']?.toString() ?? '0') ?? 0;
     final roi = double.tryParse(bot['roi']?.toString() ?? '0') ?? 0;
@@ -1067,7 +1090,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final openPositions = (bot['openPositionsPreview'] as List?) ?? (bot['openPositions'] as List?) ?? [];
     final floatingProfit = double.tryParse(bot['floatingProfit']?.toString() ?? '0') ??
       openPositions.fold<double>(0, (sum, position) => sum + (double.tryParse(position['profit']?.toString() ?? '0') ?? 0));
-    final currentProfit = double.tryParse(bot['currentProfit']?.toString() ?? '0') ?? profit;
+    final currentProfit = sessionProfit;
     final promotionStatus = (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
     final isPromotionEligible = isDemoBot && (bot['promotionEligible'] == true || promotionStatus == 'ready');
     final accountBalance = double.tryParse(bot['accountBalance']?.toString() ?? '0') ?? 0;
@@ -1095,13 +1118,28 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final runtime = bot['runtimeFormatted'] ?? '--';
     final pauseReason = (bot['pauseReason'] ?? '').toString().trim();
     final lastNoTradeReason = (bot['lastNoTradeReason'] ?? '').toString().trim();
-    final idleReason = pauseReason.isNotEmpty ? pauseReason : lastNoTradeReason;
+    final lastNoTradeAtText = (bot['lastNoTradeAt'] ?? '').toString().trim();
+    final lastNoTradeAt = lastNoTradeAtText.isEmpty ? null : DateTime.tryParse(lastNoTradeAtText);
+    final hasRecentNoTradeReason =
+      lastNoTradeReason.isNotEmpty &&
+      lastNoTradeAt != null &&
+      DateTime.now().difference(lastNoTradeAt.toLocal()).inMinutes <= 15;
+    final idleReason = pauseReason.isNotEmpty
+      ? pauseReason
+      : (hasRecentNoTradeReason ? lastNoTradeReason : '');
     final drawdownPauseUntilText = bot['drawdownPauseUntil']?.toString();
     final drawdownPauseUntil = drawdownPauseUntilText == null || drawdownPauseUntilText.isEmpty
       ? null
       : DateTime.tryParse(drawdownPauseUntilText);
     final isCoolingDown = drawdownPauseUntil != null && drawdownPauseUntil.isAfter(DateTime.now());
     final activeSymbolCooldowns = (bot['activeSymbolCooldowns'] as List?) ?? [];
+    final temporalGuardStatus = (bot['temporalGuardStatus'] ?? 'normal').toString().trim().toLowerCase();
+    final temporalGuardHeadline = (bot['temporalGuardHeadline'] ?? '').toString().trim();
+    final temporalGuardReason = (bot['temporalGuardReason'] ?? '').toString().trim();
+    final showTemporalGuard = temporalGuardStatus == 'blocked' || temporalGuardStatus == 'demoted';
+    final temporalGuardColor = temporalGuardStatus == 'blocked'
+      ? const Color(0xFFFF8A80)
+      : const Color(0xFFFFB74D);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -1173,6 +1211,55 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         fontSize: 11,
                         fontWeight: FontWeight.w500,
                       ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (showTemporalGuard) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: temporalGuardColor.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: temporalGuardColor.withOpacity(0.35)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Icon(
+                      temporalGuardStatus == 'blocked' ? Icons.block_outlined : Icons.tune_outlined,
+                      color: temporalGuardColor,
+                      size: 16,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          temporalGuardHeadline.isNotEmpty ? temporalGuardHeadline : 'Adaptive time guard',
+                          style: GoogleFonts.poppins(
+                            color: temporalGuardColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (temporalGuardReason.isNotEmpty)
+                          Text(
+                            temporalGuardReason,
+                            style: GoogleFonts.poppins(
+                              color: Colors.white70,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                 ],
@@ -1265,6 +1352,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                   'Fixed: ${_formatAmount(currencyProvider, tradeAmount, decimals: tradeAmount == tradeAmount.roundToDouble() ? 0 : 2, currencyCode: displayCurrency)}',
                   const Color(0xFFAB47BC),
                 ),
+              if (showTemporalGuard)
+                _buildMetaChip(
+                  temporalGuardHeadline.isNotEmpty ? temporalGuardHeadline : 'Adaptive guard',
+                  temporalGuardColor,
+                ),
               _buildAdaptationChip(bot),
               if (isDemoBot && promotionStatus != 'not_applicable')
                 _buildPromotionChip(bot),
@@ -1286,7 +1378,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               Text('Today closed ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
               Text(_formatAmount(currencyProvider, todaysProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: todaysProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w600, fontSize: 12)),
               const Spacer(),
-              Text('Current P/L ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+              Text('Session P/L ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
               Text(_formatAmount(currencyProvider, currentProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: currentProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w700, fontSize: 12)),
             ],
           ),
@@ -1295,7 +1387,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
             children: [
               _botStat('Trades', '$totalTrades', const Color(0xFF00E5FF)),
               _botStat('Win Rate', '${winRate.toStringAsFixed(1)}%', const Color(0xFF69F0AE)),
-              _botStat('Profit', _formatAmount(currencyProvider, currentProfit, currencyCode: displayCurrency), currentProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80)),
+              _botStat('All-time', _formatAmount(currencyProvider, allTimeProfit, currencyCode: displayCurrency), allTimeProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80)),
             ],
           ),
           const SizedBox(height: 8),
