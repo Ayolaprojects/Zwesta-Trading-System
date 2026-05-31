@@ -8800,7 +8800,51 @@ class BinanceConnection(BrokerConnection):
             else:
                 params['quantity'] = quantity_value
             endpoint = f"{self.fapi_url}/v1/order" if self.market == 'futures' else f"{self.base_url}/v3/order"
+            if self.market == 'futures':
+                logger.debug(
+                    f"[BINANCE FUTURES] POST order {instrument} {order_type.upper()} "
+                    f"qty='{params.get('quantity')}' step={futures_step} "
+                    f"precision={futures_quantity_precision}"
+                )
             resp = self._request_with_time_retry('POST', endpoint, headers=self._headers(), params=params, timeout=15)
+            # Binance -1111 = quantity precision over limit. Refresh exchangeInfo and retry once
+            # in case our cached/fallback step size is stale (Binance can tighten precision).
+            if (
+                self.market == 'futures'
+                and resp.status_code != 200
+                and resp.content
+                and '-1111' in resp.text
+            ):
+                try:
+                    fresh_filters = self._get_futures_symbol_filters(instrument) or {}
+                    fresh_lot = (
+                        fresh_filters.get('MARKET_LOT_SIZE')
+                        or fresh_filters.get('LOT_SIZE')
+                        or {}
+                    )
+                    fresh_step = _safe_float(fresh_lot.get('stepSize'), futures_step)
+                    fresh_min = _safe_float(fresh_lot.get('minQty'), futures_min)
+                    fresh_precision = fresh_filters.get('__quantityPrecision')
+                    try:
+                        fresh_precision = int(fresh_precision) if fresh_precision is not None else futures_quantity_precision
+                    except (TypeError, ValueError):
+                        fresh_precision = futures_quantity_precision
+                    retry_qty = self._format_spot_quantity(
+                        self._normalize_spot_quantity(normalized_qty, fresh_step, fresh_min),
+                        fresh_step,
+                        fresh_min,
+                        max_decimals=fresh_precision,
+                    )
+                    if retry_qty != '0' and retry_qty != params.get('quantity'):
+                        logger.warning(
+                            f"[BINANCE FUTURES] -1111 retry for {instrument}: "
+                            f"qty '{params.get('quantity')}' -> '{retry_qty}' "
+                            f"(step {futures_step}->{fresh_step}, precision {futures_quantity_precision}->{fresh_precision})"
+                        )
+                        params['quantity'] = retry_qty
+                        resp = self._request_with_time_retry('POST', endpoint, headers=self._headers(), params=params, timeout=15)
+                except Exception as retry_exc:
+                    logger.warning(f"[BINANCE FUTURES] -1111 retry failed for {instrument}: {retry_exc}")
             if resp.status_code == 200:
                 result = resp.json()
                 executed_qty = _safe_float(result.get('executedQty'), quantity)
@@ -8870,11 +8914,38 @@ class BinanceConnection(BrokerConnection):
                     return {'success': False, 'error': f'Futures position {position_id} not found'}
                 self.cancel_futures_protective_orders(pos.get('symbol', ''))
                 close_side = 'SELL' if pos['type'] == 'BUY' else 'BUY'
+                pos_symbol = pos.get('symbol', '')
+                close_qty_str = str(pos['size'])
+                try:
+                    futures_filters = self._get_futures_symbol_filters(pos_symbol) or {}
+                    close_lot = (
+                        futures_filters.get('MARKET_LOT_SIZE')
+                        or futures_filters.get('LOT_SIZE')
+                        or {}
+                    )
+                    close_step = _safe_float(close_lot.get('stepSize'), 0.0)
+                    close_min = _safe_float(close_lot.get('minQty'), 0.0)
+                    close_precision = futures_filters.get('__quantityPrecision')
+                    try:
+                        close_precision = int(close_precision) if close_precision is not None else None
+                    except (TypeError, ValueError):
+                        close_precision = None
+                    if close_step > 0:
+                        formatted = self._format_spot_quantity(
+                            float(pos['size']),
+                            close_step,
+                            close_min,
+                            max_decimals=close_precision,
+                        )
+                        if formatted and formatted != '0':
+                            close_qty_str = formatted
+                except Exception as fmt_exc:
+                    logger.debug(f"close_position quantity format fallback for {pos_symbol}: {fmt_exc}")
                 params = {
-                    'symbol': pos['symbol'],
+                    'symbol': pos_symbol,
                     'side': close_side,
                     'type': 'MARKET',
-                    'quantity': str(pos['size']),
+                    'quantity': close_qty_str,
                     'reduceOnly': 'true',
                 }
                 resp = self._request_with_time_retry('POST', f'{self.fapi_url}/v1/order', headers=self._headers(), params=params, timeout=15)
