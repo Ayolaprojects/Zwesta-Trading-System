@@ -592,6 +592,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return prefs.getString('trading_mode') ?? 'DEMO';
   }
 
+  Future<void> _persistTradingMode(String mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('trading_mode', mode.trim().toUpperCase());
+  }
+
   // Dialog to input account number
   Future<String?> _showAccountInputDialog(BuildContext context) async {
     String? account;
@@ -2712,6 +2717,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         );
       }
 
+      final createdMode = ((botPayload['mode'] ?? 'demo').toString()).toUpperCase();
+      await _persistTradingMode(createdMode);
+
       final createdBotId =
           (createData['botId']?.toString().trim().isNotEmpty ?? false)
           ? createData['botId'].toString().trim()
@@ -2767,9 +2775,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       }
 
       final botService = Provider.of<BotService>(context, listen: false);
-      final currentTradingMode = await _currentTradingMode();
       await botService.fetchActiveBots(
-        tradingMode: currentTradingMode,
+        tradingMode: createdMode,
         force: true,
       );
 
@@ -3500,6 +3507,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           ? createData['botId'].toString().trim()
           : _botIdController.text.trim();
 
+      final createdMode = ((botPayload['mode'] ?? 'demo').toString()).toUpperCase();
+      await _persistTradingMode(createdMode);
+
       if (createdBotId.isEmpty) {
         throw Exception(
           'Bot creation succeeded but no botId was returned by the backend.',
@@ -3552,9 +3562,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
       // Force-refresh bot list before navigating
       final botService = Provider.of<BotService>(context, listen: false);
-      final currentTradingMode = await _currentTradingMode();
       await botService.fetchActiveBots(
-        tradingMode: currentTradingMode,
+        tradingMode: createdMode,
         force: true,
       );
 

@@ -322,7 +322,10 @@ class BotService extends ChangeNotifier {
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final responseData = jsonDecode(response.body);
         if (responseData['success'] == true) {
-          await fetchActiveBots(force: true);
+          final createdMode = ((requestBody['mode'] ?? 'demo').toString()).toUpperCase();
+          await prefs.setString('trading_mode', createdMode);
+          _lastTradingMode = createdMode;
+          await fetchActiveBots(tradingMode: createdMode, force: true);
           return true;
         }
         _errorMessage = responseData['error'] ?? 'Failed to create bot';
