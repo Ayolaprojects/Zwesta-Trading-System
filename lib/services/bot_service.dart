@@ -85,6 +85,7 @@ class BotService extends ChangeNotifier {
     'Scalping',
     'Momentum Trading',
     'Trend Following',
+    'EMA Pullback ML',
     'Mean Reversion',
     'Range Trading',
     'Breakout Trading'

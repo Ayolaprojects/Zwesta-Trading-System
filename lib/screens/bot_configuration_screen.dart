@@ -685,11 +685,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   // Profit Protection Settings
   bool _enableProfitProtection = true;
-  double _profitProtectionActivationPercent = 5;
-  double _profitProtectionActivationMinProfit = 5;
-  double _profitProtectionMinLockedProfit = 0;
+  double _profitProtectionActivationPercent = 3;
+  double _profitProtectionActivationMinProfit = 0.50;  // 🎯 Aggressive early activation (was 5)
+  double _profitProtectionMinLockedProfit = 0.30;  // Lock 30% minimum (was 0)
   double _profitProtectionMarginTakeProfitPercent = 30;
-  double _profitProtectionRetracePercent = 35;
+  double _profitProtectionRetracePercent = 12;  // 🚨 Fast exit on 12% retrace (was 35) - mimics manual pattern
   bool _profitProtectionSwitchOnReversal = true;
   bool _profitProtectionAdaptiveByVolatility = true;
   bool _copyTradingEnabled = false;
@@ -1951,9 +1951,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         _minProfit = 5;
         _maxProfit = 50;
         _winRateMin = 58;
-        _profitProtectionActivationPercent = 3;
-        _profitProtectionActivationMinProfit = 2;
-        _profitProtectionRetracePercent = 22;
+        _profitProtectionActivationPercent = 2;
+        _profitProtectionActivationMinProfit = 0.50;  // 🎯 Aggressive (was 2)
+        _profitProtectionRetracePercent = 12;  // 🚨 Fast exit (was 22)
       } else if (profile == 'small_account') {
         _maxOpenTrades = 2;
         _riskPercent = 5.0;
@@ -2117,6 +2117,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   final List<String> strategies = [
     'Trend Following',
+    'EMA Pullback ML',
     'Scalping',
     'Momentum Trading',
     'Mean Reversion',

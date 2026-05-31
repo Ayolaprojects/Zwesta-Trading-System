@@ -453,7 +453,7 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
         _label('Strategy'),
         _dropdown(
           value: _strategy,
-          items: ['Trend Following', 'Scalping', 'Swing Trading', 'Conservative'],
+          items: ['Trend Following', 'EMA Pullback ML', 'Scalping', 'Swing Trading', 'Conservative'],
           onChanged: (v) => setState(() => _strategy = v!),
         ),
         const SizedBox(height: 20),

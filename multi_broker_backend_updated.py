@@ -30997,7 +30997,7 @@ def _default_strategy_trading_cadence(strategy_name: str, management_profile: st
     if normalized_strategy == 'scalping':
         return {'tradingMode': 'signal-driven', 'tradingInterval': 30, 'pollInterval': 2}
 
-    if normalized_strategy in {'momentum trading', 'breakout trading', 'bitcoin liquidity sweep', 'funding rate exhaustion', 'session range reversal', 'gold volatility expansion'}:
+    if normalized_strategy in {'momentum trading', 'breakout trading', 'bitcoin liquidity sweep', 'funding rate exhaustion', 'session range reversal', 'gold volatility expansion', 'ema pullback ml'}:
         return {'tradingMode': 'signal-driven', 'tradingInterval': 90, 'pollInterval': 8}
 
     if normalized_strategy in {'swing trend dca', 'ethereum relative strength', 'solana trend continuation'}:
@@ -31026,7 +31026,7 @@ def _minimum_saved_bot_trade_cadence(
     if normalized_strategy == 'scalping':
         return {'tradingMode': 'signal-driven', 'tradingInterval': 30, 'pollInterval': 2}
 
-    if normalized_strategy in {'momentum trading', 'breakout trading', 'bitcoin liquidity sweep', 'funding rate exhaustion', 'session range reversal', 'gold volatility expansion'}:
+    if normalized_strategy in {'momentum trading', 'breakout trading', 'bitcoin liquidity sweep', 'funding rate exhaustion', 'session range reversal', 'gold volatility expansion', 'ema pullback ml'}:
         if normalized_profile in {'advanced', 'fast_growth'}:
             return {'tradingMode': 'signal-driven', 'tradingInterval': 60, 'pollInterval': 5}
         return {'tradingMode': 'signal-driven', 'tradingInterval': 90, 'pollInterval': 8}
@@ -32164,7 +32164,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         base_symbol = _normalize_symbol_base(symbol)
         is_exness_index_runner_position = broker_name == 'Exness' and base_symbol in {'US30', 'USTEC'}
         allow_wider_trend_exits = (
-            strategy_name in {'trend following', 'swing trend dca', 'ethereum relative strength', 'solana trend continuation'}
+            strategy_name in {'trend following', 'swing trend dca', 'ethereum relative strength', 'solana trend continuation', 'ema pullback ml'}
             and base_symbol not in {'GBPUSD'}
         )
         symbol_market_data = _get_market_data_for_symbol(symbol)
