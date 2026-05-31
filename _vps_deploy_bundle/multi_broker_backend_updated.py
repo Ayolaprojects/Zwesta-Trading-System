@@ -1420,6 +1420,10 @@ def repopulate_active_bots():
     try:
         restored_count = load_user_bots_from_database(enabled_only=True)
         logger.info(f"✅ Repopulated {restored_count} bots from database on startup.")
+        try:
+            _load_user_kill_switches_from_db()
+        except Exception as ks_exc:
+            logger.warning(f"Could not load user kill switches on startup: {ks_exc}")
     except Exception as e:
         logger.error(f"❌ Error repopulating active_bots: {e}")
 
@@ -4183,6 +4187,88 @@ def delete_all_user_bots():
     except Exception as e:
         logger.error(f"❌ Error deleting all bots for user: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bots/kill-switch', methods=['GET'])
+@require_session
+def get_user_kill_switch():
+    """Return whether the emergency kill switch is currently active for the user."""
+    user_id = request.user_id
+    return jsonify({
+        'success': True,
+        'killSwitchActive': is_user_kill_switch_active(user_id),
+    }), 200
+
+
+@app.route('/api/bots/kill-all', methods=['POST'])
+@require_session
+def kill_all_user_bots():
+    """Emergency stop: halt every running bot for the user and block new starts."""
+    try:
+        user_id = request.user_id
+        data = request.get_json(silent=True) or {}
+        reason = str(data.get('reason') or 'user_panic_stop')[:200]
+
+        set_user_kill_switch(user_id, True, reason=reason)
+
+        stopped = []
+        errors = []
+        runtime_bot_ids = [
+            bid for bid, cfg in list(active_bots.items())
+            if cfg.get('user_id') == user_id
+        ]
+        for bot_id in runtime_bot_ids:
+            try:
+                bot_config = active_bots.get(bot_id)
+                if not bot_config:
+                    continue
+                if bot_config.get('enabled') or bot_id in bot_threads:
+                    stop_bot_runtime(bot_id, bot_config)
+                stopped.append(bot_id)
+            except Exception as exc:
+                errors.append({'botId': bot_id, 'error': str(exc)})
+
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('UPDATE user_bots SET enabled = 0 WHERE user_id = ?', (user_id,))
+            conn.commit()
+            conn.close()
+        except Exception as exc:
+            logger.warning(f"kill-all: could not flag DB bots disabled for {user_id}: {exc}")
+
+        logger.warning(
+            f"🛑 KILL SWITCH activated for user {user_id} — stopped {len(stopped)} bots (reason={reason})"
+        )
+
+        return jsonify({
+            'success': True,
+            'killSwitchActive': True,
+            'stoppedBots': stopped,
+            'failures': errors,
+            'reason': reason,
+        }), 200
+    except Exception as exc:
+        logger.error(f"Error in kill-all endpoint: {exc}", exc_info=True)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/bots/resume-all', methods=['POST'])
+@require_session
+def resume_user_bots():
+    """Clear the emergency kill switch. Bots remain stopped until manually started."""
+    try:
+        user_id = request.user_id
+        set_user_kill_switch(user_id, False)
+        logger.info(f"✅ Kill switch cleared for user {user_id}")
+        return jsonify({
+            'success': True,
+            'killSwitchActive': False,
+            'message': 'Kill switch cleared. Start bots manually when ready.',
+        }), 200
+    except Exception as exc:
+        logger.error(f"Error in resume-all endpoint: {exc}", exc_info=True)
+        return jsonify({'success': False, 'error': str(exc)}), 500
 
 
 def init_database():
@@ -26617,6 +26703,81 @@ bot_start_pending = {}  # {bot_id: epoch_seconds} - bot marked running but threa
 bot_start_locks = {}  # {bot_id: threading.Lock()} — prevents duplicate thread spawning on concurrent /start requests
 bot_start_locks_lock = threading.Lock()  # protects access to bot_start_locks dict
 
+# User-level emergency kill switch. When active, every bot owned by the user
+# halts at the next loop iteration and start_bot rejects new starts until cleared.
+_user_kill_switches: set = set()
+_user_kill_switches_lock = threading.Lock()
+
+
+def _load_user_kill_switches_from_db() -> None:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_kill_switches (
+                user_id TEXT PRIMARY KEY,
+                activated_at TEXT,
+                reason TEXT
+            )
+        ''')
+        conn.commit()
+        cursor.execute('SELECT user_id FROM user_kill_switches')
+        rows = cursor.fetchall()
+        conn.close()
+        with _user_kill_switches_lock:
+            _user_kill_switches.clear()
+            for row in rows:
+                uid = row[0] if not isinstance(row, dict) else row.get('user_id')
+                if uid:
+                    _user_kill_switches.add(str(uid))
+    except Exception as exc:
+        try:
+            logger.warning(f"Could not load user kill switches: {exc}")
+        except Exception:
+            pass
+
+
+def is_user_kill_switch_active(user_id: Optional[str]) -> bool:
+    if not user_id:
+        return False
+    with _user_kill_switches_lock:
+        return str(user_id) in _user_kill_switches
+
+
+def set_user_kill_switch(user_id: str, active: bool, reason: str = '') -> None:
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return
+    with _user_kill_switches_lock:
+        if active:
+            _user_kill_switches.add(user_id)
+        else:
+            _user_kill_switches.discard(user_id)
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_kill_switches (
+                user_id TEXT PRIMARY KEY,
+                activated_at TEXT,
+                reason TEXT
+            )
+        ''')
+        if active:
+            cursor.execute(
+                'INSERT OR REPLACE INTO user_kill_switches (user_id, activated_at, reason) VALUES (?, ?, ?)',
+                (user_id, datetime.now().isoformat(), reason or ''),
+            )
+        else:
+            cursor.execute('DELETE FROM user_kill_switches WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        try:
+            logger.warning(f"Could not persist user kill switch ({user_id}={active}): {exc}")
+        except Exception:
+            pass
+
 # Per-account MT5 connection locks — allows different accounts on different terminals to connect in parallel
 # Key: canonical terminal path string, Value: threading.Lock()
 mt5_per_terminal_locks = {}  # {terminal_path: threading.Lock()}
@@ -35567,6 +35728,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         
         while not bot_stop_flags.get(bot_id, False):
             try:
+                if is_user_kill_switch_active(bot_config.get('user_id') or user_id):
+                    logger.warning(f"🛑 Bot {bot_id}: user kill switch active — halting trading loop")
+                    bot_stop_flags[bot_id] = True
+                    bot_config['enabled'] = False
+                    running_bots[bot_id] = False
+                    break
                 trade_cycle += 1
                 logger.info(f"🔄 Bot {bot_id}: Trade cycle #{trade_cycle} starting at {datetime.now().isoformat()}")
                 
@@ -40069,7 +40236,14 @@ def start_bot():
         
         if not user_id:
             return jsonify({'success': False, 'error': 'user_id required'}), 400
-        
+
+        if is_user_kill_switch_active(user_id):
+            return jsonify({
+                'success': False,
+                'error': 'Emergency kill switch is active for this account. Resume trading from the dashboard before starting bots.',
+                'killSwitchActive': True,
+            }), 423
+
         # ✅ FIX: Restore from DB when the bot is missing or currently stopped so
         # restart picks up the latest persisted config/runtime state.
         runtime_bot = active_bots.get(bot_id)
