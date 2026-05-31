@@ -19151,6 +19151,220 @@ def gold_volatility_expansion_strategy(symbol, account_id, risk_amount, market_d
     }
 
 
+# ====================== EMA PULLBACK ML STRATEGY (Forex) ======================
+# News filter cache (Forex Factory)
+import threading as _ema_threading
+_news_cache_lock = _ema_threading.Lock()
+_news_cache: Dict[str, Any] = {'ts': 0.0, 'events': []}
+_NEWS_CACHE_TTL = 300  # 5 minutes
+
+def _fetch_high_impact_news() -> list:
+    """Fetch upcoming high-impact forex news from Forex Factory. Cached 5 min."""
+    import time as _t
+    now_ts = _t.time()
+    with _news_cache_lock:
+        if now_ts - _news_cache['ts'] < _NEWS_CACHE_TTL:
+            return list(_news_cache['events'])
+    try:
+        import datetime as _dt
+        import pytz as _pytz
+        resp = requests.get(
+            'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+            timeout=8,
+        )
+        resp.raise_for_status()
+        events = resp.json()
+        now_utc = _dt.datetime.now(_pytz.UTC)
+        upcoming = []
+        for ev in events:
+            try:
+                ev_time = _dt.datetime.fromisoformat(ev['date'].replace('Z', '+00:00'))
+                delta = (ev_time - now_utc).total_seconds()
+                if 0 < delta < 3600 and int(ev.get('impact', 0)) >= 2:
+                    upcoming.append(str(ev.get('title', 'Unknown')))
+            except Exception:
+                continue
+        with _news_cache_lock:
+            _news_cache['ts'] = now_ts
+            _news_cache['events'] = upcoming
+        return upcoming
+    except Exception:
+        with _news_cache_lock:
+            _news_cache['ts'] = now_ts
+            _news_cache['events'] = []
+        return []
+
+
+# ML model cache: {symbol: {'model': fitted RFC, 'ts': float}}
+_ml_model_cache: Dict[str, Any] = {}
+_ML_MODEL_TTL = 3600   # Retrain every hour
+_ML_MIN_ROWS = 60      # Minimum history rows needed to train
+
+
+def _build_ml_features(price_history: list):
+    """Compute [RSI-14, 1-bar return, synthetic-ATR] features from a flat close list.
+    Returns a 2-D numpy array (n_rows, 3) or None on failure."""
+    try:
+        import numpy as np
+        closes = np.array(price_history, dtype=float)
+        n = len(closes)
+        if n < 20:
+            return None
+        # RSI-14
+        deltas = np.diff(closes)
+        gains  = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+        ag = np.convolve(gains,  np.ones(14) / 14, mode='valid')
+        al = np.convolve(losses, np.ones(14) / 14, mode='valid')
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rs = np.where(al == 0, 100.0, ag / al)
+        rsi_arr = 100.0 - 100.0 / (1.0 + rs)
+        # 1-bar return
+        ret_arr = np.diff(closes) / np.where(closes[:-1] == 0, 1.0, closes[:-1])
+        # Synthetic ATR (|1-bar change|)
+        atr_arr = np.abs(np.diff(closes))
+        min_len = min(len(rsi_arr), len(ret_arr), len(atr_arr))
+        return np.stack([rsi_arr[-min_len:], ret_arr[-min_len:], atr_arr[-min_len:]], axis=1)
+    except Exception:
+        return None
+
+
+def _get_ml_prediction(symbol: str, price_history: list) -> Optional[int]:
+    """Return 1 (bullish) or 0 (bearish) from the cached RandomForest model.
+    Returns None if sklearn unavailable or insufficient data."""
+    import time as _t
+    try:
+        from sklearn.ensemble import RandomForestClassifier as _RFC
+    except ImportError:
+        return None  # sklearn not installed — news + EMA logic still runs
+
+    now_ts = _t.time()
+    cache_entry = _ml_model_cache.get(symbol)
+    need_retrain = cache_entry is None or (now_ts - cache_entry['ts']) > _ML_MODEL_TTL
+
+    if need_retrain:
+        try:
+            import numpy as np
+            feats = _build_ml_features(price_history)
+            if feats is None or len(feats) < _ML_MIN_ROWS:
+                return None
+            closes = np.array(price_history, dtype=float)
+            aligned = closes[-len(feats):]
+            # Target: did price go up over next 6 bars?
+            target = (np.roll(aligned, -6) > aligned).astype(int)
+            X, y = feats[:-6], target[:-6]
+            if len(X) < 30:
+                return None
+            split = max(10, int(len(X) * 0.8))
+            model = _RFC(n_estimators=100, random_state=42, n_jobs=-1)
+            model.fit(X[:split], y[:split])
+            _ml_model_cache[symbol] = {'model': model, 'ts': now_ts}
+            cache_entry = _ml_model_cache[symbol]
+        except Exception:
+            return None
+
+    try:
+        feats = _build_ml_features(price_history)
+        if feats is None or len(feats) == 0:
+            return None
+        return int(cache_entry['model'].predict(feats[-1:])[0])
+    except Exception:
+        return None
+
+
+def ema_pullback_ml_strategy(symbol: str, account_id, risk_amount, market_data=None):
+    """EMA Pullback with ML + News Filter (Forex / Exness).
+
+    Logic (multi-timeframe EMA pullback adapted to existing market_data):
+      - Directional bias: trend UP/DOWN from evaluate_real_trade_signal (EMA10/20 + MA)
+      - Entry:  bullish bias + price < MA20 + RSI < 45  → BUY  (pullback to mean)
+                bearish bias + price > MA20 + RSI > 55  → SELL (bounce to mean)
+      - ML gate: RandomForest on [RSI, 1-bar return, ATR] trained on price history;
+                 rejects trade when ML direction disagrees
+      - News gate: skips trade if high-impact Forex Factory event in next 60 min
+    Minimum R:R enforced at 1:2 via take_profit = 2x stop_loss.
+    Best for: GBPUSD, AUDUSD, EURUSD on Exness/MT5.
+    """
+    if market_data is None:
+        market_data = commodity_market_data.get(symbol, {})
+
+    # --- News filter: skip trade window around high-impact events ---
+    news = _fetch_high_impact_news()
+    if news:
+        logger.info(f'[EMA Pullback ML] {symbol}: news gate active — {news[:3]}')
+        return None
+
+    # --- Core signal evaluation ---
+    signal_eval = evaluate_real_trade_signal(symbol, market_data)
+    params      = _get_effective_symbol_params(symbol, market_data)
+    trend = signal_eval.get('trend', 'RANGING')
+    rsi   = _safe_float(signal_eval.get('rsi'), 50.0)
+
+    if trend == 'RANGING':
+        return None  # No directional bias — sit out
+
+    price_history = [
+        float(p) for p in (market_data.get('price_history') or [])
+        if p and float(p) > 0
+    ]
+    current_price = float(
+        market_data.get('current_price', 0) or market_data.get('price', 0) or 0
+    )
+    if current_price <= 0 or len(price_history) < 10:
+        return None
+
+    # MA20 as the mean-reversion anchor (matches evaluate_real_trade_signal internals)
+    ma20 = sum(price_history[-20:]) / min(20, len(price_history))
+
+    # --- Pullback / bounce condition ---
+    if trend == 'UP'   and current_price < ma20 and rsi < 45:
+        order_type = 'BUY'
+    elif trend == 'DOWN' and current_price > ma20 and rsi > 55:
+        order_type = 'SELL'
+    else:
+        return None  # Waiting for pullback to develop
+
+    # --- ML filter: must agree with trade direction ---
+    ml_pred = _get_ml_prediction(symbol, price_history)
+    if ml_pred is not None:
+        expected = 1 if order_type == 'BUY' else 0
+        if ml_pred != expected:
+            logger.info(
+                f'[EMA Pullback ML] {symbol}: ML rejected {order_type} '
+                f'(pred={ml_pred}, expected={expected})'
+            )
+            return None
+
+    # --- Signal strength gate ---
+    if signal_eval['strength'] < params['effective_min_signal_strength']:
+        return None
+
+    sl_pips = _safe_float(params.get('stop_loss_pips'), 80.0)
+    tp_pips = max(_safe_float(params.get('take_profit_pips'), 0.0), sl_pips * 2.0)
+
+    ml_tag = (
+        f', ML={"bullish" if ml_pred == 1 else "bearish"}' if ml_pred is not None else ''
+    )
+    entry_reason = (
+        f'EMA pullback: trend={trend}, RSI={rsi:.1f}, '
+        f'price {"below" if order_type == "BUY" else "above"} MA20{ml_tag}'
+    )
+
+    return {
+        'symbol':           symbol,
+        'type':             order_type,
+        'volume':           1.0,
+        'stop_loss':        sl_pips,
+        'take_profit':      tp_pips,
+        'signal': {
+            **signal_eval,
+            'entry_reason': entry_reason,
+            'strategy':     'EMA Pullback ML',
+        },
+        'duration_seconds': 21600,  # 6-hour hold (aligned with ML label horizon)
+    }
+
+
 STRATEGY_MAP = {
     'Scalping': scalping_strategy,
     'Momentum Trading': momentum_strategy,
@@ -19165,6 +19379,7 @@ STRATEGY_MAP = {
     'Solana Trend Continuation': solana_trend_continuation_strategy,
     'Session Range Reversal': session_range_reversal_strategy,
     'Gold Volatility Expansion': gold_volatility_expansion_strategy,
+    'EMA Pullback ML': ema_pullback_ml_strategy,
 }
 
 # ==================== INTELLIGENT STRATEGY SWITCHING & POSITION SIZING ====================
@@ -19192,6 +19407,7 @@ class StrategyPerformanceTracker:
             'Solana Trend Continuation': {'trades': 0, 'wins': 0, 'losses': 0, 'profit': 0.0, 'wins_streak': 0, 'losses_streak': 0},
             'Session Range Reversal': {'trades': 0, 'wins': 0, 'losses': 0, 'profit': 0.0, 'wins_streak': 0, 'losses_streak': 0},
             'Gold Volatility Expansion': {'trades': 0, 'wins': 0, 'losses': 0, 'profit': 0.0, 'wins_streak': 0, 'losses_streak': 0},
+            'EMA Pullback ML':        {'trades': 0, 'wins': 0, 'losses': 0, 'profit': 0.0, 'wins_streak': 0, 'losses_streak': 0},
         }
     
     def record_trade(self, strategy, profit, symbol=''):
