@@ -29,21 +29,26 @@
    if (Test-Path C:\Temp\_vps_deploy_bundle\system) { Copy-Item C:\Temp\_vps_deploy_bundle\system\* C:\backend\system\ -Recurse -Force }
    Remove-Item C:\backend\__pycache__ -Recurse -Force -ErrorAction SilentlyContinue
 
-4. Copy + run BINANCE optimizer (threshold=2 manual, $50 trade, age-timeout 4h):
+4. Apply tuned BINANCE bot state for bot_1779229018996 (DB-side runtime_state fix):
+   Copy-Item C:\Temp\_vps_deploy_bundle\_apply_binance_bot_1779229018996_aggressive_state.py C:\backend\_apply_binance_bot_1779229018996_aggressive_state.py -Force
+   cd C:\backend
+   & "C:\Program Files\Python311\python.exe" _apply_binance_bot_1779229018996_aggressive_state.py --db C:\backend\zwesta_trading.db
+
+5. Copy + run BINANCE optimizer (general threshold=2 manual, but preserves the tuned override for bot_1779229018996):
    Copy-Item C:\Temp\_vps_deploy_bundle\_optimize_vps.py C:\backend\_optimize_vps.py -Force
    cd C:\backend
    & "C:\Program Files\Python311\python.exe" _optimize_vps.py
 
-5. Copy + run EXNESS optimizer (threshold=65 manual, 60m post-close cooldown):
+6. Copy + run EXNESS optimizer (threshold=65 manual, 60m post-close cooldown):
    Copy-Item C:\Temp\_vps_deploy_bundle\_optimize_exness.py C:\backend\_optimize_exness.py -Force
    cd C:\backend
    & "C:\Program Files\Python311\python.exe" _optimize_exness.py
 
-6. Restart backend:
+7. Restart backend:
    cd C:\backend
    Start-Process -FilePath "C:\Program Files\Python311\python.exe" -ArgumentList "multi_broker_backend_updated.py" -RedirectStandardOutput C:\backend\backend.log -RedirectStandardError C:\backend\backend.err -WindowStyle Hidden
 
-7. Verify (after ~60s):
+8. Verify (after ~60s):
    Get-Content C:\backend\backend.err -Tail 60
    # Expected new log lines:
    #   "[BALANCE] Bot xxx: equity trend = growing/flat/shrinking ..."
