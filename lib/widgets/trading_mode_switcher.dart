@@ -56,6 +56,10 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
       // Persist locally immediately so the rest of the app sees the change at once.
       await prefs.setString('trading_mode', newMode);
       await prefs.setBool('is_live_mode', newMode == 'LIVE');
+      await prefs.setString(
+        'dashboard_balance_mode',
+        newMode == 'LIVE' ? 'live' : 'demo',
+      );
       widget.onModeChanged(newMode);
 
       final response = await http.post(
@@ -74,6 +78,12 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
 
       if (response.statusCode == 200) {
         final confirmedMode = (payload['mode'] as String?) ?? newMode;
+        await prefs.setString('trading_mode', confirmedMode);
+        await prefs.setBool('is_live_mode', confirmedMode == 'LIVE');
+        await prefs.setString(
+          'dashboard_balance_mode',
+          confirmedMode == 'LIVE' ? 'live' : 'demo',
+        );
         final activeCredential = payload['active_credential'];
 
         // Update credential info if provided
@@ -93,6 +103,10 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
         final error = payload['error']?.toString() ?? 'Failed to switch mode: ${response.statusCode}';
         await prefs.setString('trading_mode', previousMode);
         await prefs.setBool('is_live_mode', previousMode == 'LIVE');
+        await prefs.setString(
+          'dashboard_balance_mode',
+          previousMode == 'LIVE' ? 'live' : 'demo',
+        );
         setState(() => _selectedMode = previousMode);
         widget.onModeChanged(previousMode);
         _showError(error);
@@ -102,6 +116,10 @@ class _TradingModeSwitcherState extends State<TradingModeSwitcher> {
       // Timeout or network error — revert optimistic change.
       await prefs.setString('trading_mode', previousMode);
       await prefs.setBool('is_live_mode', previousMode == 'LIVE');
+      await prefs.setString(
+        'dashboard_balance_mode',
+        previousMode == 'LIVE' ? 'live' : 'demo',
+      );
       setState(() => _selectedMode = previousMode);
       widget.onModeChanged(previousMode);
       _showError('Could not reach server. Please try again.');

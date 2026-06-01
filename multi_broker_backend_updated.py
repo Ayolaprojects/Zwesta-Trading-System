@@ -5270,6 +5270,7 @@ def init_database():
 def get_db_connection():
     """Get database connection with WAL mode for concurrent writes"""
     return build_sqlite_connection(
+        database_path=DATABASE_PATH,
         timeout=SQLITE_CONNECTION_TIMEOUT_SECONDS,
         row_factory=True,
         busy_timeout_ms=SQLITE_BUSY_TIMEOUT_MS,
@@ -5386,6 +5387,7 @@ BOT_CREATE_DB_BUSY_TIMEOUT_MS = int(os.getenv('BOT_CREATE_DB_BUSY_TIMEOUT_MS', '
 
 def get_bot_create_db_connection(*, row_factory: bool = True):
     return build_sqlite_connection(
+        database_path=DATABASE_PATH,
         timeout=BOT_CREATE_DB_TIMEOUT_SECONDS,
         row_factory=row_factory,
         busy_timeout_ms=BOT_CREATE_DB_BUSY_TIMEOUT_MS,
@@ -18680,6 +18682,8 @@ def build_scanner_symbol_universe(
             f"[Scanner] Weekend policy left no eligible configured {normalized_broker} symbols; scanner will stay idle until the configured market reopens"
         )
         return []
+    if normalized_broker == 'Exness' and normalized_configured:
+        return normalized_configured
     idle_cycles = int(bot_config.get('adaptiveSignalMissCount') or 0)
     expand_small_account_universe = idle_cycles >= ADAPTIVE_SCANNER_TRIGGER_MISSES
 
@@ -21300,6 +21304,7 @@ PERSISTED_BOT_STATE_FIELDS = {
     'effectiveTradingInterval', 'effectivePollInterval', 'lastCadenceResolvedAt',
     'lastCadenceSignalSymbol', 'lastCadenceSignalStrength', 'lastCadenceReason',
     'dailyEquityControllerEnabled', 'dailyEquityTargetPercent', 'dailyEquityController',
+    'accountProfitStaircaseEnabled', 'accountProfitStaircase',
     # Adaptive symbol/session performance & balance trend (per-bot)
     'symbolPerformance', 'sessionPerformance', 'hourlyPerformance',
     'equityTrendHistory', 'equityTrend', 'equityTrendUpdatedAt',
@@ -22057,6 +22062,24 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         _stored_sig = int(_safe_float(bot_state.get('signalThreshold'), 0.0))
         if _stored_sig <= 0:
             bot_state['signalThreshold'] = _binance_floor
+    # Migrate old Binance futures leverage defaults (base=20 / peak=50) to the
+    # current conservative profile (base=10 / peak=20). Only touches bots that
+    # still have the verbatim old defaults AND have auto-leverage enabled, so
+    # manually configured leverage values are never overwritten.
+    if (
+        broker_name == 'Binance'
+        and _coerce_bool(bot_state.get('binanceFuturesAutoLeverage', True), True)
+        and int(_safe_float(bot_state.get('binanceFuturesBaseLeverage'), 0) or 0) == 20
+        and int(_safe_float(bot_state.get('binanceFuturesPeakLeverage'), 0) or 0) == 50
+    ):
+        bot_state['binanceFuturesBaseLeverage'] = BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE
+        bot_state['binanceFuturesPeakLeverage'] = BINANCE_FUTURES_DEFAULT_PEAK_LEVERAGE
+        bot_state['effectiveBinanceFuturesLeverage'] = BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE
+        bot_state['_runtimeStateAdjusted'] = True
+        logger.info(
+            f"📊 Bot {row['bot_id']}: migrated Binance futures leverage from 20/50 to "
+            f"{BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE}/{BINANCE_FUTURES_DEFAULT_PEAK_LEVERAGE}"
+        )
     if isinstance(bot_state.get('lastNoTradeReason'), str) and 'threshold=' in bot_state.get('lastNoTradeReason', ''):
         bot_state['lastNoTradeReason'] = re.sub(
             r"threshold=\d+(?:\.\d+)?/100",
@@ -24772,6 +24795,146 @@ def _update_daily_equity_controller(bot_config: Dict[str, Any], live_equity: flo
     return resolved_state
 
 
+def _update_account_profit_staircase(bot_config: Dict[str, Any], live_equity: float = 0.0) -> Dict[str, Any]:
+    if not isinstance(bot_config, dict):
+        return {'enabled': False, 'armed': False, 'breached': False, 'changed': False}
+
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
+    mode_value = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower()
+    is_live = mode_value == 'live' or bool(bot_config.get('is_live'))
+    enabled_default = broker_name in {'Binance', 'Exness'} and is_live
+    enabled = _coerce_bool(bot_config.get('accountProfitStaircaseEnabled', enabled_default), enabled_default)
+    controller_state = bot_config.get('accountProfitStaircase') if isinstance(bot_config.get('accountProfitStaircase'), dict) else {}
+
+    current_equity = max(
+        _safe_float(live_equity, 0.0),
+        _safe_float(bot_config.get('accountEquity'), 0.0),
+        _safe_float(bot_config.get('accountBalance'), 0.0),
+    )
+    if current_equity <= 0 and controller_state:
+        current_equity = _safe_float(controller_state.get('currentEquity'), 0.0)
+
+    if current_equity <= 0:
+        bot_config['accountProfitStaircaseEnabled'] = bool(enabled)
+        return {
+            'enabled': bool(enabled),
+            'armed': False,
+            'breached': False,
+            'changed': False,
+        }
+
+    baseline_equity = max(_safe_float(controller_state.get('baselineEquity'), current_equity), 0.0)
+    if baseline_equity <= 0:
+        baseline_equity = current_equity
+    peak_equity = max(
+        _safe_float(controller_state.get('peakEquity'), baseline_equity),
+        current_equity,
+        baseline_equity,
+    )
+    peak_gain = round(max(0.0, peak_equity - baseline_equity), 2)
+    current_gain = round(current_equity - baseline_equity, 2)
+    gain_ratio = (peak_gain / baseline_equity) if baseline_equity > 0 else 0.0
+
+    account_currency = str(
+        bot_config.get('displayCurrency') or bot_config.get('accountCurrency') or 'USD'
+    ).upper()
+    material_gain_floor = max(1.0, round(baseline_equity * 0.0035, 2))
+    if account_currency == 'ZAR':
+        material_gain_floor = max(10.0, round(baseline_equity * 0.0025, 2))
+
+    stage = 'idle'
+    stage_label = 'baseline'
+    lock_share = 0.0
+    risk_scale = 1.0
+    profit_lock_scale = 1.0
+    pullback_scale = 1.0
+    reason = 'account profit staircase idle'
+
+    if enabled and peak_gain >= material_gain_floor and baseline_equity > 0:
+        if gain_ratio >= 0.12:
+            stage = 'surge'
+            stage_label = 'surge guard'
+            lock_share = 0.85
+            risk_scale = 0.45
+            profit_lock_scale = 0.45
+            pullback_scale = 0.38
+        elif gain_ratio >= 0.08:
+            stage = 'strong'
+            stage_label = 'strong guard'
+            lock_share = 0.75
+            risk_scale = 0.58
+            profit_lock_scale = 0.55
+            pullback_scale = 0.50
+        elif gain_ratio >= 0.05:
+            stage = 'firm'
+            stage_label = 'firm guard'
+            lock_share = 0.65
+            risk_scale = 0.70
+            profit_lock_scale = 0.66
+            pullback_scale = 0.64
+        elif gain_ratio >= 0.03:
+            stage = 'guarded'
+            stage_label = 'guarded build-up'
+            lock_share = 0.50
+            risk_scale = 0.82
+            profit_lock_scale = 0.78
+            pullback_scale = 0.78
+        elif gain_ratio >= 0.015:
+            stage = 'warming'
+            stage_label = 'warming build-up'
+            lock_share = 0.35
+            risk_scale = 0.92
+            profit_lock_scale = 0.90
+            pullback_scale = 0.90
+
+    armed = bool(enabled and lock_share > 0 and peak_gain >= material_gain_floor)
+    locked_equity_floor = round(baseline_equity + (peak_gain * lock_share), 2) if armed else 0.0
+    max_allowed_pullback = round(max(0.0, peak_equity - locked_equity_floor), 2) if armed else 0.0
+    current_pullback = round(max(0.0, peak_equity - current_equity), 2) if peak_equity > 0 else 0.0
+    breached = bool(armed and current_equity < locked_equity_floor and current_pullback >= max_allowed_pullback)
+
+    if armed:
+        reason = (
+            f"{stage_label}: protecting {lock_share * 100:.0f}% of peak equity gains "
+            f"after {gain_ratio * 100:.1f}% account growth"
+        )
+
+    persisted_state = {
+        'enabled': bool(enabled),
+        'baselineEquity': round(baseline_equity, 2),
+        'currentEquity': round(current_equity, 2),
+        'peakEquity': round(peak_equity, 2),
+        'peakGain': peak_gain,
+        'currentGain': round(current_gain, 2),
+        'gainRatio': round(gain_ratio, 4),
+        'materialGainFloor': round(material_gain_floor, 2),
+        'stage': stage,
+        'stageLabel': stage_label,
+        'armed': armed,
+        'breached': breached,
+        'lockedEquityFloor': locked_equity_floor,
+        'maxAllowedPullback': max_allowed_pullback,
+        'currentPullback': current_pullback,
+        'lockShare': round(lock_share, 2),
+        'riskScale': round(risk_scale, 2),
+        'profitLockScale': round(profit_lock_scale, 2),
+        'pullbackScale': round(pullback_scale, 2),
+        'reason': reason,
+    }
+    previous_state = {
+        key: controller_state.get(key)
+        for key in persisted_state.keys()
+    }
+    changed = previous_state != persisted_state
+    persisted_state['updatedAt'] = datetime.now().isoformat()
+
+    bot_config['accountProfitStaircase'] = persisted_state
+    bot_config['accountProfitStaircaseEnabled'] = bool(enabled)
+    return {**persisted_state, 'changed': changed}
+
+
 def _daily_equity_progress_risk_scale(controller_state: Dict[str, Any]) -> Tuple[float, str]:
     if not isinstance(controller_state, dict) or not controller_state.get('enabled'):
         return 1.0, ''
@@ -24834,21 +24997,83 @@ def _apply_daily_equity_profit_lock_tightening(
         ),
     )
     controller_scale, controller_reason = _daily_equity_profit_lock_scale(daily_equity_controller)
-    if controller_scale >= 1.0:
+    staircase_state = _update_account_profit_staircase(
+        bot_config,
+        max(
+            _safe_float(bot_config.get('accountEquity'), 0.0),
+            _safe_float(bot_config.get('accountBalance'), 0.0),
+        ),
+    )
+    staircase_scale = max(0.0, _safe_float(staircase_state.get('profitLockScale'), 1.0))
+
+    effective_scale = min(controller_scale, staircase_scale)
+    if effective_scale >= 1.0:
         return None
 
-    tightened_profit_lock = round(max(1.0, max(_safe_float(base_profit_lock, 0.0), 0.0) * controller_scale), 2)
+    tightened_profit_lock = round(max(1.0, max(_safe_float(base_profit_lock, 0.0), 0.0) * effective_scale), 2)
     prior_reason = str(profit_lock_eval.get('reason') or '').strip()
+    override_reasons = []
+    if controller_scale < 1.0 and controller_reason:
+        override_reasons.append(controller_reason)
+    staircase_reason = str(staircase_state.get('reason') or '').strip()
+    if staircase_scale < 1.0 and staircase_reason:
+        override_reasons.append(staircase_reason)
+    if not override_reasons:
+        override_reasons.append('equity growth guard tightening active')
     profit_lock_eval.update({
         'effectiveProfitLock': tightened_profit_lock,
-        'profitLockScale': round(controller_scale, 2),
+        'profitLockScale': round(effective_scale, 2),
         'relaxed': False,
-        'reason': controller_reason,
+        'reason': '; '.join(override_reasons),
         'dailyEquityController': daily_equity_controller,
-        'controllerOverride': True,
+        'accountProfitStaircase': staircase_state,
+        'controllerOverride': controller_scale < 1.0,
+        'staircaseOverride': staircase_scale < 1.0,
         'controllerBaseReason': prior_reason,
     })
     return tightened_profit_lock
+
+
+def _apply_account_profit_staircase_daily_loss_tightening(
+    bot_config: Dict[str, Any],
+    daily_loss_eval: Dict[str, Any],
+    base_max_daily_loss: float,
+    current_effective_max_daily_loss: float,
+) -> Optional[float]:
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
+    signal_direction = str(daily_loss_eval.get('signalDirection') or '').upper()
+    if broker_name not in {'Binance', 'Exness'} or signal_direction not in {'BUY', 'SELL'}:
+        return None
+
+    staircase_state = _update_account_profit_staircase(
+        bot_config,
+        max(
+            _safe_float(bot_config.get('accountEquity'), 0.0),
+            _safe_float(bot_config.get('accountBalance'), 0.0),
+        ),
+    )
+    staircase_scale = max(0.0, _safe_float(staircase_state.get('riskScale'), 1.0))
+    if staircase_scale >= 1.0:
+        return None
+
+    staircase_cap = round(max(1.0, max(_safe_float(base_max_daily_loss, 0.0), 0.0) * staircase_scale), 2)
+    tightened_effective = staircase_cap
+    if _safe_float(current_effective_max_daily_loss, 0.0) > 0:
+        tightened_effective = round(min(_safe_float(current_effective_max_daily_loss, 0.0), staircase_cap), 2)
+
+    prior_reason = str(daily_loss_eval.get('reason') or '').strip()
+    override_reason = str(staircase_state.get('reason') or 'account profit staircase tightening').strip()
+    daily_loss_eval.update({
+        'effectiveMaxDailyLoss': tightened_effective,
+        'lossLimitScale': round(staircase_scale, 2),
+        'relaxed': False,
+        'reason': override_reason if not prior_reason else f"{override_reason}; base={prior_reason}",
+        'accountProfitStaircase': staircase_state,
+        'staircaseOverride': True,
+    })
+    return tightened_effective
 
 
 def _resolve_adaptive_trade_amount(
@@ -25021,6 +25246,20 @@ def _resolve_adaptive_trade_amount(
     if controller_scale < 1.0:
         multiplier *= controller_scale
         reasons.append(controller_reason)
+
+    staircase_state = _update_account_profit_staircase(
+        bot_config,
+        max(
+            _safe_float(bot_config.get('accountEquity'), 0.0),
+            _safe_float(bot_config.get('accountBalance'), 0.0),
+        ),
+    )
+    staircase_scale = max(0.0, _safe_float(staircase_state.get('riskScale'), 1.0))
+    staircase_reason = str(staircase_state.get('reason') or '').strip()
+    if staircase_scale < 1.0:
+        multiplier *= staircase_scale
+        if staircase_reason:
+            reasons.append(staircase_reason)
 
     adjusted_amount = round(max(1.0, safe_base_amount * multiplier), 2)
     bot_config['effectiveTradeAmount'] = adjusted_amount
@@ -25350,6 +25589,18 @@ def should_trade_today(bot_config, symbol):
         except Exception as _trend_err:
             logger.debug(f"[BALANCE] equity trend update failed: {_trend_err}")
     daily_equity_controller = _update_daily_equity_controller(bot_config, live_equity)
+    account_profit_staircase = _update_account_profit_staircase(bot_config, live_equity)
+    if account_profit_staircase.get('changed'):
+        _persist_pause_state()
+    if account_profit_staircase.get('armed') and account_profit_staircase.get('breached'):
+        return _record_trade_risk_block(
+            bot_config,
+            symbol,
+            f"account profit staircase floor active: current equity ${_safe_float(account_profit_staircase.get('currentEquity'), 0.0):.2f} "
+            f"is below locked floor ${_safe_float(account_profit_staircase.get('lockedEquityFloor'), 0.0):.2f} "
+            f"after peak ${_safe_float(account_profit_staircase.get('peakEquity'), 0.0):.2f} ({account_profit_staircase.get('stageLabel')})",
+            level='warning',
+        )
 
     # Hard block: tiny live accounts should not open new BTC/ETH positions.
     symbol_base = _normalize_symbol_base(symbol)
@@ -29795,8 +30046,8 @@ SCANNER_CAPITAL_LIVE_MAX_BOOST = 10.0  # 🚀 Increased from 1.6 to 10.0 for agg
 SCANNER_CAPITAL_GUARDED_LIVE_MAX_BOOST = 10.0  # 🚀 Increased from 1.15 to 10.0
 SCANNER_CAPITAL_ABSOLUTE_MAX_BOOST = 100.0  # 🚀 Increased from 10.0 to 100.0 (only capital-limited)
 BINANCE_FUTURES_MAX_LEVERAGE = 125
-BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE = 20
-BINANCE_FUTURES_DEFAULT_PEAK_LEVERAGE = 50
+BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE = 10   # conservative baseline; auto-leverage raises to peak when profitable
+BINANCE_FUTURES_DEFAULT_PEAK_LEVERAGE = 20   # max when in hot/profitable regime
 UPSWING_SCALE_MIN_OPEN_PROFIT = 2.0
 UPSWING_SCALE_MIN_SIGNAL_STRENGTH = 72.0
 UPSWING_RETRACE_MIN_PEAK_PROFIT = 3.0
@@ -30032,8 +30283,8 @@ def _safe_resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> 
 # MT5/Exness cannot change broker leverage per order like Binance futures.
 # We emulate a leverage regime by scaling order volume relative to a 100x
 # baseline, while never exceeding the account's available MT5 leverage cap.
-MT5_DEFAULT_BASE_MULTIPLIER = 1.0    # 100x-style baseline exposure
-MT5_DEFAULT_PEAK_MULTIPLIER = 50.0   # 🚀 5000x-style peak exposure (was 5.0)
+MT5_DEFAULT_BASE_MULTIPLIER = 10.0   # Align MT5 baseline sizing with Binance 10x baseline
+MT5_DEFAULT_PEAK_MULTIPLIER = 20.0   # Align MT5 peak sizing with Binance 20x peak
 MT5_MAX_MULTIPLIER = 100.0           # 🚀 absolute ceiling (10000x-style, was 5.0) - only capital-limited
 MT5_BASE_REFERENCE_LEVERAGE = 100.0
 MT5_SUPPORTIVE_REFERENCE_LEVERAGE = 250.0
@@ -30648,6 +30899,15 @@ def _effective_daily_loss_limit(
         bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
     )
     if broker_name != 'Exness' or signal_direction not in {'BUY', 'SELL'}:
+        tightened_max_daily_loss = _apply_account_profit_staircase_daily_loss_tightening(
+            bot_config,
+            daily_loss_eval,
+            max_daily_loss,
+            max_daily_loss,
+        )
+        if tightened_max_daily_loss is not None:
+            bot_config['lastEffectiveDailyLossEval'] = daily_loss_eval
+            return tightened_max_daily_loss
         daily_loss_eval['reason'] = 'base-limit-non-exness-or-neutral'
         bot_config['lastEffectiveDailyLossEval'] = daily_loss_eval
         return max_daily_loss
@@ -30689,6 +30949,15 @@ def _effective_daily_loss_limit(
     })
 
     if not continuation_candidate_exists:
+        tightened_max_daily_loss = _apply_account_profit_staircase_daily_loss_tightening(
+            bot_config,
+            daily_loss_eval,
+            max_daily_loss,
+            max_daily_loss,
+        )
+        if tightened_max_daily_loss is not None:
+            bot_config['lastEffectiveDailyLossEval'] = daily_loss_eval
+            return tightened_max_daily_loss
         daily_loss_eval['reason'] = 'base-limit-no-qualifying-open-profit-buffer'
         bot_config['lastEffectiveDailyLossEval'] = daily_loss_eval
         return max_daily_loss
@@ -30718,6 +30987,15 @@ def _effective_daily_loss_limit(
             else 'portfolio-open-profit-buffer'
         ),
     })
+    tightened_max_daily_loss = _apply_account_profit_staircase_daily_loss_tightening(
+        bot_config,
+        daily_loss_eval,
+        max_daily_loss,
+        effective_max_daily_loss,
+    )
+    if tightened_max_daily_loss is not None:
+        bot_config['lastEffectiveDailyLossEval'] = daily_loss_eval
+        return tightened_max_daily_loss
     bot_config['lastEffectiveDailyLossEval'] = daily_loss_eval
     return effective_max_daily_loss
 
@@ -34837,6 +35115,8 @@ def sanitize_bot_risk_config(
     if symbol_override_warnings:
         warnings.extend(symbol_override_warnings)
 
+    default_allow_cross_market = False if normalized_broker == 'Exness' else True
+
     return {
         'riskPerTrade': risk_per_trade,
         'maxDailyLoss': max_daily_loss,
@@ -34862,8 +35142,11 @@ def sanitize_bot_risk_config(
         'managementProfile': management_profile,
         'assistedCycleSymbolCap': assisted_cycle_symbol_cap,
         'allowCrossMarketReallocation': _coerce_bool(
-            data.get('allowCrossMarketReallocation', intelligent_settings.get('allowCrossMarketReallocation', True)),
-            True,
+            data.get(
+                'allowCrossMarketReallocation',
+                intelligent_settings.get('allowCrossMarketReallocation', default_allow_cross_market),
+            ),
+            default_allow_cross_market,
         ),
         'scannerCapitalLiveMaxBoost': scanner_cap_live,
         'binanceFuturesAutoLeverage': binance_futures_auto_leverage,
@@ -35337,6 +35620,42 @@ def create_bot():
                     _save_bot_records_once,
                     retries=1,
                 )
+
+                verify_conn = None
+                try:
+                    verify_conn = get_bot_create_db_connection()
+                    verify_cursor = verify_conn.cursor()
+                    verify_cursor.execute(
+                        'SELECT 1 FROM user_bots WHERE bot_id = ? AND user_id = ?',
+                        (bot_id, user_id),
+                    )
+                    bot_row_exists = verify_cursor.fetchone() is not None
+                    verify_cursor.execute(
+                        'SELECT 1 FROM bot_credentials WHERE bot_id = ? AND credential_id = ? AND user_id = ?',
+                        (bot_id, credential_id, user_id),
+                    )
+                    bot_credential_exists = verify_cursor.fetchone() is not None
+
+                    if not bot_row_exists or not bot_credential_exists:
+                        logger.warning(
+                            f"Bot creation verification failed for {bot_id} on {DATABASE_PATH}; repairing missing rows "
+                            f"(bot_row={bot_row_exists}, credential_row={bot_credential_exists})"
+                        )
+                        verify_cursor.execute('BEGIN IMMEDIATE')
+                        if not bot_row_exists:
+                            verify_cursor.execute('''
+                                INSERT INTO user_bots (bot_id, user_id, name, strategy, status, enabled, broker_account_id, symbols, is_live, created_at, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (bot_id, user_id, data.get('name', strategy), strategy, status, 1 if trading_enabled else 0, account_id, ','.join(symbols), 1 if is_live else 0, created_at, created_at))
+                        if not bot_credential_exists:
+                            verify_cursor.execute('''
+                                INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
+                                VALUES (?, ?, ?, ?)
+                            ''', (bot_id, credential_id, user_id, created_at))
+                        verify_conn.commit()
+                finally:
+                    if verify_conn is not None:
+                        verify_conn.close()
             except Exception as e:
                 logger.error(f"❌ [DB ERROR] Exception during bot creation: {type(e).__name__}: {str(e)}")
                 if 'UNIQUE constraint' in str(e):
@@ -42662,42 +42981,12 @@ def bot_summary():
             bot_is_live = str(bot_mode_value).lower() == 'live'
             display_currency = _resolve_display_currency_for_mode(bot_mode_value, bot.get('displayCurrency', 'USD'))
             broker_name = canonicalize_broker_name(bot.get('brokerName') or bot.get('broker_type') or bot.get('broker') or 'MT5')
-            if broker_name == 'FXCM':
-                fxcm_snapshot = _build_fxcm_bot_broker_snapshot(user_id, bot, fxcm_snapshot_cache)
-                if fxcm_snapshot.get('fetched'):
-                    broker_confirmed_positions = list(fxcm_snapshot.get('positions') or [])
-                    broker_recent_trades = list(fxcm_snapshot.get('recentTrades') or [])
-                    broker_snapshot_source = fxcm_snapshot.get('dataSource')
-                    open_positions = broker_confirmed_positions
-                    floating_profit = sum(_resolve_open_position_profit(position) for position in open_positions)
-                    current_profit = total_profit + floating_profit
-                    fxcm_account_info = fxcm_snapshot.get('accountInfo') or {}
-                    account_balance = round(_safe_float(fxcm_account_info.get('balance'), account_balance), 2)
-                    account_equity = round(_safe_float(fxcm_account_info.get('equity'), account_equity), 2)
-            elif broker_name == 'Binance':
-                binance_snapshot = _build_binance_bot_broker_snapshot(user_id, bot, binance_snapshot_cache)
-                if binance_snapshot.get('fetched'):
-                    broker_confirmed_positions = list(binance_snapshot.get('positions') or [])
-                    broker_recent_trades = list(binance_snapshot.get('recentTrades') or [])
-                    broker_snapshot_source = binance_snapshot.get('dataSource')
-                    open_positions = broker_confirmed_positions
-                    floating_profit = sum(_resolve_open_position_profit(position) for position in open_positions)
-                    current_profit = total_profit + floating_profit
-                    binance_account_info = binance_snapshot.get('accountInfo') or {}
-                    account_balance = round(_safe_float(binance_account_info.get('balance'), account_balance), 2)
-                    account_equity = round(_safe_float(binance_account_info.get('equity'), account_equity), 2)
-            elif is_mt5_broker_name(broker_name):
-                mt5_snapshot = _build_mt5_bot_broker_snapshot(user_id, bot)
-                broker_snapshot_source = mt5_snapshot.get('dataSource')
-                if mt5_snapshot.get('fetched'):
-                    broker_confirmed_positions = list(mt5_snapshot.get('positions') or [])
-                    broker_recent_trades = list(mt5_snapshot.get('recentTrades') or [])
-                    open_positions = broker_confirmed_positions
-                    floating_profit = sum(_resolve_open_position_profit(position) for position in open_positions)
-                    current_profit = total_profit + floating_profit
-                    mt5_account_info = mt5_snapshot.get('accountInfo') or {}
-                    account_balance = round(_safe_float(mt5_account_info.get('balance'), account_balance), 2)
-                    account_equity = round(_safe_float(mt5_account_info.get('equity'), account_equity), 2)
+            # NOTE: bot_summary is a lightweight polling endpoint — skip live broker
+            # snapshot connections (MT5/Binance/FXCM) here. They add 2-8 s per bot
+            # and cause the Flutter app's 10 s timeout to fire. Use the runtime
+            # positions and cached balance that the trading loop already maintains.
+            broker_snapshot_source = 'runtime-cache'
+            # Live broker snapshots skipped here — the trading loop keeps positions current.
 
             account_number = str(bot.get('accountNumber') or bot.get('account_number') or '').strip()
             if not account_number:
@@ -43123,6 +43412,11 @@ def get_bot_analytics_snapshot(bot_id: str):
             bot = active_bots.get(bot_id)
         if not bot or bot.get('user_id') != user_id:
             return jsonify({'success': False, 'error': f'Bot {bot_id} not found'}), 404
+
+        trade_history = bot.get('tradeHistory') or []
+        deduped_trade_count = len(_dedupe_trade_records(trade_history))
+        if not trade_history or int(bot.get('totalTrades', 0) or 0) > deduped_trade_count:
+            _merge_bot_trade_history_from_db(bot, bot_id)
 
         if bot.get('tradeHistory'):
             _rebuild_bot_profit_tracking(bot)
@@ -43588,6 +43882,7 @@ def get_bot_commissions(bot_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/dashboard/bots-summary', methods=['GET'])
 @app.route('/api/dashboard/bots-summary', methods=['GET'])
 @require_session
 def get_dashboard_summary():
@@ -43667,6 +43962,8 @@ def get_dashboard_summary():
             total_profit = bot.get('totalProfit', 0)
             total_trades = bot.get('totalTrades', 0)
             display_currency = (bot.get('displayCurrency') or bot.get('accountCurrency') or 'USD').upper()
+            current_balance = float(bot.get('accountBalance') or bot.get('accountEquity') or 0)
+            broker_type = bot.get('broker_type') or bot.get('brokerName') or 'Unknown'
 
             total_balance_by_currency[display_currency] = total_balance_by_currency.get(display_currency, 0.0) + float(current_balance or 0)
             total_profit_by_currency[display_currency] = total_profit_by_currency.get(display_currency, 0.0) + float(total_profit or 0)
@@ -48566,10 +48863,8 @@ def exness_onboard_wizard():
             account_number = _cred_row[1]
             is_live = bool(_cred_row[2])
 
-            # Delegate to the existing /api/bot/create logic by forwarding internally
-            bot_id = f"bot_{int(time.time() * 1000)}"
             bot_payload = {
-                'botId': bot_id,
+                'botId': f"bot_{int(time.time() * 1000)}",
                 'credentialId': credential_id,
                 'mode': 'live' if is_live else 'demo',
                 'symbols': symbols if isinstance(symbols, list) else [symbols],
@@ -48577,57 +48872,50 @@ def exness_onboard_wizard():
                 'riskPerTrade': risk_per_trade,
                 'maxDailyLoss': max_daily_loss,
                 'autoStart': False,  # User starts manually from the app
+                'enabled': False,
             }
 
-            # Call create_bot internally
-            with app.test_request_context(
-                '/api/bot/create',
-                method='POST',
-                json=bot_payload,
-                headers={'X-Session-Token': request.headers.get('X-Session-Token', '')},
-            ):
-                from flask import g
-                g._session_user_id = user_id  # used by require_session bypass below
-                pass  # construct only — cannot easily call decorated view internally
-
-            # Direct DB insert (bypass HTTP re-entry which is problematic in Flask)
             try:
-                now_iso = datetime.now().isoformat()
-                _bot_conn = get_db_connection()
-                _bot_cur = _bot_conn.cursor()
-                _bot_cur.execute(
-                    '''INSERT OR IGNORE INTO user_bots
-                       (bot_id, user_id, credential_id, name, strategy, symbols,
-                        risk_per_trade, max_daily_loss, mode, status, is_live, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?)''',
-                    (
-                        bot_id, user_id, credential_id,
-                        f'Exness {"Live" if is_live else "Demo"} Bot',
-                        strategy,
-                        json.dumps(symbols if isinstance(symbols, list) else [symbols]),
-                        risk_per_trade, max_daily_loss,
-                        'live' if is_live else 'demo',
-                        int(is_live), now_iso, now_iso,
-                    )
-                )
-                _bot_conn.commit()
-                _bot_conn.close()
-            except Exception as _dbe:
-                logger.error(f'Exness wizard step 3 bot DB insert failed: {_dbe}')
+                with app.test_request_context(
+                    '/api/bot/create',
+                    method='POST',
+                    json=bot_payload,
+                    headers={'X-Session-Token': request.headers.get('X-Session-Token', '')},
+                ):
+                    request.user_id = user_id
+                    create_result = create_bot.__wrapped__()
+            except Exception as _create_err:
+                logger.error(f'Exness wizard step 3 delegated create failed: {_create_err}')
                 return jsonify({
-                    'success': False, 'step': 3,
-                    'error': f'Bot creation failed: {_dbe}',
+                    'success': False,
+                    'step': 3,
+                    'error': f'Bot creation failed: {_create_err}',
                 }), 500
 
+            create_response = create_result[0] if isinstance(create_result, tuple) else create_result
+            create_status = create_result[1] if isinstance(create_result, tuple) and len(create_result) > 1 else getattr(create_response, 'status_code', 500)
+            create_data = create_response.get_json(silent=True) or {}
+
+            if create_status not in (200, 201) or not create_data.get('success'):
+                return jsonify({
+                    'success': False,
+                    'step': 3,
+                    'error': create_data.get('error') or 'Bot creation failed.',
+                }), create_status
+
+            created_bot_id = str(create_data.get('botId') or bot_payload['botId'])
             return jsonify({
                 'success': True,
                 'step': 3,
-                'bot_id': bot_id,
+                'bot_id': created_bot_id,
+                'botId': created_bot_id,
                 'credential_id': credential_id,
+                'credentialId': credential_id,
                 'account_number': account_number,
                 'mode': 'live' if is_live else 'demo',
-                'symbols': symbols if isinstance(symbols, list) else [symbols],
+                'symbols': bot_payload['symbols'],
                 'strategy': strategy,
+                'warnings': create_data.get('warnings', []),
                 'message': (
                     f'Exness bot created for account {account_number}. '
                     'Tap Start to begin trading.'

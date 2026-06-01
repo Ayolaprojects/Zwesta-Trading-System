@@ -67,7 +67,7 @@ class _TradingBotsDashboardScreenState extends State<TradingBotsDashboardScreen>
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('auth_token') ?? '';
       final response = await http.get(
-        Uri.parse('${EnvironmentConfig.apiUrl}/dashboard/bots-summary'),
+        Uri.parse('${EnvironmentConfig.apiUrl}/api/dashboard/bots-summary'),
         headers: {'Authorization': 'Bearer $token'},
       ).timeout(const Duration(seconds: 10));
 

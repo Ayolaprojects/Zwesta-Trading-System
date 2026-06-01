@@ -255,7 +255,7 @@ class TradingService extends ChangeNotifier {
               'Content-Type': 'application/json',
               'X-Session-Token': sessionToken,
             },
-          ).timeout(const Duration(seconds: 10));
+          ).timeout(const Duration(seconds: 30));
 
           if (response.statusCode == 200) {
             final data = jsonDecode(response.body);
@@ -362,18 +362,18 @@ class TradingService extends ChangeNotifier {
             }
             
             allTrades.addAll(positions.map((p) => Trade(
-                id: p['ticket'].toString(),
-                symbol: p['symbol'],
-                type: p['type'] == 'BUY' ? TradeType.buy : TradeType.sell,
-                quantity: (p['volume'] as num).toDouble(),
-                entryPrice: (p['openPrice'] as num).toDouble(),
-                currentPrice: (p['currentPrice'] as num).toDouble(),
+                id: (p['ticket'] ?? p['id'] ?? DateTime.now().millisecondsSinceEpoch).toString(),
+                symbol: (p['symbol'] ?? 'UNKNOWN').toString(),
+                type: (p['type']?.toString().toUpperCase() == 'SELL') ? TradeType.sell : TradeType.buy,
+                quantity: _asDouble(p['volume'] ?? p['lots'] ?? 0),
+                entryPrice: _asDouble(p['openPrice'] ?? p['price'] ?? 0),
+                currentPrice: _asDouble(p['currentPrice'] ?? p['openPrice'] ?? p['price'] ?? 0),
                 takeProfit: null,
                 stopLoss: null,
-                status: TradeStatus.open, // MT5 positions are always open
+                status: TradeStatus.open,
                 openedAt: _parseBackendTime(p['openTime'] ?? p['time']),
-                profit: ((p['pnl'] ?? p['profit'] ?? 0) as num).toDouble(),
-                profitPercentage: ((p['pnlPercentage'] ?? p['profitPercent'] ?? 0) as num).toDouble(),
+                profit: _asDouble(p['pnl'] ?? p['profit'] ?? 0),
+                profitPercentage: _asDouble(p['pnlPercentage'] ?? p['profitPercent'] ?? 0),
               )));
           }
         } catch (e) {

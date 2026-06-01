@@ -11,6 +11,14 @@ import '../utils/environment_config.dart';
 import 'connection_analytics_service.dart';
 
 class BrokerConnectionService {
+  static String? _defaultMt5TerminalPath(String broker, {required bool isLive}) {
+    final normalizedBroker = broker.trim().toLowerCase();
+    if (normalizedBroker == 'exness') {
+      return isLive ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo';
+    }
+    return null;
+  }
+
   static final Map<String, BrokerRequirements> _brokerRequirements = {
     'Pepperstone': BrokerRequirements(
       brokerName: 'Pepperstone',
@@ -95,6 +103,7 @@ class BrokerConnectionService {
     String? username,
     String? accountId,
     String? market,
+    String? mt5TerminalPath,
     bool isLive = false, // DEMO by default
   }) async {
     try {
@@ -158,6 +167,13 @@ class BrokerConnectionService {
           'server': server?.trim(),
           'is_live': isLive,
         };
+        final resolvedMt5TerminalPath =
+            mt5TerminalPath?.trim().isNotEmpty == true
+                ? mt5TerminalPath!.trim()
+                : _defaultMt5TerminalPath(broker, isLive: isLive);
+        if (resolvedMt5TerminalPath != null && resolvedMt5TerminalPath.isNotEmpty) {
+          payload['mt5_terminal_path'] = resolvedMt5TerminalPath;
+        }
       }
 
         // Call backend API with session token and is_live flag.

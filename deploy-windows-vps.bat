@@ -126,7 +126,7 @@ REM Create service if NSSM is available
 where nssm >nul 2>&1
 if %errorlevel% equ 0 (
     echo Creating 'zwesta-trading' service...
-    nssm install zwesta-trading "%CD%\venv\Scripts\gunicorn.exe" --bind 0.0.0.0:9000 --workers 4 wsgi:app
+    nssm install zwesta-trading "%CD%\venv\Scripts\python.exe" "%CD%\multi_broker_backend_updated.py"
     nssm set zwesta-trading AppDirectory "%CD%"
     nssm set zwesta-trading AppEnvironmentExtra "PATH=!PATH!"
     nssm start zwesta-trading

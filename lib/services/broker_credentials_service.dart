@@ -6,6 +6,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/environment_config.dart';
 
+String? _defaultMt5TerminalPath(String broker, {required bool isLive}) {
+  final normalizedBroker = broker.trim().toLowerCase();
+  if (normalizedBroker == 'exness') {
+    return isLive ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo';
+  }
+  return null;
+}
+
 class BrokerCredential {
 
   BrokerCredential({
@@ -229,6 +237,7 @@ class BrokerCredentialsService extends ChangeNotifier {
     String? apiKey,
     String? apiSecret,
     String? username,
+    String? mt5TerminalPath,
   }) async {
     _isLoading = true;
     _errorMessage = null;
@@ -265,6 +274,13 @@ class BrokerCredentialsService extends ChangeNotifier {
       if (apiKey != null) body['api_key'] = apiKey;
       if (apiSecret != null) body['api_secret'] = apiSecret;
       if (username != null) body['username'] = username;
+      final resolvedMt5TerminalPath =
+          mt5TerminalPath?.trim().isNotEmpty == true
+              ? mt5TerminalPath!.trim()
+              : _defaultMt5TerminalPath(broker, isLive: isLive);
+      if (resolvedMt5TerminalPath != null && resolvedMt5TerminalPath.isNotEmpty) {
+        body['mt5_terminal_path'] = resolvedMt5TerminalPath;
+      }
       if (normalizedBroker == 'fxcm' || normalizedBroker == 'fxm') {
         final hasApiToken = apiKey != null && apiKey.trim().isNotEmpty;
         final hasUsername = username != null && username.trim().isNotEmpty;

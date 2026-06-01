@@ -324,6 +324,11 @@ class BotService extends ChangeNotifier {
         if (responseData['success'] == true) {
           final createdMode = ((requestBody['mode'] ?? 'demo').toString()).toUpperCase();
           await prefs.setString('trading_mode', createdMode);
+          await prefs.setBool('is_live_mode', createdMode == 'LIVE');
+          await prefs.setString(
+            'dashboard_balance_mode',
+            createdMode == 'LIVE' ? 'live' : 'demo',
+          );
           _lastTradingMode = createdMode;
           await fetchActiveBots(tradingMode: createdMode, force: true);
           return true;

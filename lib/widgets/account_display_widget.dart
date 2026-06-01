@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -24,6 +25,7 @@ class _AccountDisplayWidgetState extends State<AccountDisplayWidget> {
   bool _isLoading = false;
   String? _errorMessage;
   DateTime? _lastSyncTime;
+  Timer? _refreshTimer;
 
   String _accountCurrency(Map<String, dynamic> account) =>
       (account['currency'] ?? account['account_currency'] ?? 'USD')
@@ -47,6 +49,15 @@ class _AccountDisplayWidgetState extends State<AccountDisplayWidget> {
   void initState() {
     super.initState();
     _fetchAccounts();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) _fetchAccounts();
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   @override

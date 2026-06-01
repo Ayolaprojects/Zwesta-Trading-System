@@ -1,0 +1,107 @@
+{
+  "blacklisted_symbols": [
+    "BTCUSDm",
+    "ETHUSDm",
+    "BTCUSDT",
+    "ETHUSDT",
+    "ETHBTC",
+    "SOLUSDT",
+    "SOLBNB",
+    "LTCUSDT",
+    "SOLUSDm",
+    "BNBUSDm",
+    "EURUSDm",
+    "USDJPYm",
+    "USDCADm",
+    "NZDUSDm",
+    "AUDUSDm",
+    "UKOILm",
+    "USOILm",
+    "US30m"
+  ],
+  "blacklist_details": {
+    "BTCUSDm": {
+      "reason": "PF=0.31, -589 ZAR loss, fundamental strategy mismatch",
+      "pf": 0.31
+    },
+    "ETHUSDm": {
+      "reason": "PF=0.19, -331 ZAR loss, fundamental strategy mismatch",
+      "pf": 0.19
+    },
+    "BTCUSDT": {
+      "reason": "Crypto unprofitable on Binance, matches BTCUSDm failure",
+      "pf": 0.31
+    },
+    "ETHUSDT": {
+      "reason": "Crypto unprofitable on Binance, matches ETHUSDm failure",
+      "pf": 0.19
+    },
+    "ETHBTC": {
+      "reason": "Crypto pair unprofitable",
+      "pf": 0.2
+    },
+    "SOLUSDT": {
+      "reason": "Crypto unprofitable on Binance",
+      "pf": 0.25
+    },
+    "SOLBNB": {
+      "reason": "Crypto pair unprofitable",
+      "pf": 0.25
+    },
+    "LTCUSDT": {
+      "reason": "Crypto unprofitable",
+      "pf": 0.3
+    },
+    "SOLUSDm": {
+      "reason": "Crypto unprofitable",
+      "pf": 0.3
+    },
+    "BNBUSDm": {
+      "reason": "Crypto unprofitable",
+      "pf": 0.3
+    },
+    "EURUSDm": {
+      "reason": "PF=0.62, -224 ZAR loss, no improvement trend",
+      "pf": 0.62
+    },
+    "USDJPYm": {
+      "reason": "PF=0.65, -206 ZAR loss, recent 5% WR",
+      "pf": 0.65
+    },
+    "USDCADm": {
+      "reason": "PF=0.65, -206 ZAR loss, declining performance",
+      "pf": 0.65
+    },
+    "NZDUSDm": {
+      "reason": "PF=0.68, -153 ZAR loss",
+      "pf": 0.68
+    },
+    "AUDUSDm": {
+      "reason": "PF=0.68, -111 ZAR loss",
+      "pf": 0.68
+    },
+    "UKOILm": {
+      "reason": "PF=0.70, -108 ZAR loss",
+      "pf": 0.7
+    },
+    "USOILm": {
+      "reason": "PF=0.72, -126 ZAR loss",
+      "pf": 0.72
+    },
+    "US30m": {
+      "reason": "PF=0.75, -133 ZAR loss",
+      "pf": 0.75
+    }
+  },
+  "created_at": "2026-05-27T17:33:18.708913",
+  "version": "1.0",
+  "notes": [
+    "Symbols blacklisted based on 560-trade performance analysis",
+    "Criteria: Profit Factor < 0.80 = permanent blacklist",
+    "Crypto symbols: All showed catastrophic losses (PF 0.19-0.31)",
+    "Forex symbols: Consistent underperformance (PF 0.62-0.68)",
+    "Commodity symbols: Poor performance (PF 0.70-0.75)",
+    "Blacklist prevents adaptive scanner from selecting these symbols",
+    "To remove symbol from blacklist: Must show PF > 1.0 in 100+ demo trades"
+  ]
+}

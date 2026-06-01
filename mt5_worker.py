@@ -210,6 +210,87 @@ def unregister_worker():
 
 # ==================== MT5 CONNECTION ====================
 
+def _resolve_mt5_executable_path(path_hint: str) -> str:
+    normalized_path = str(path_hint or '').strip().strip('"').strip("'")
+    if not normalized_path:
+        return ''
+
+    normalized_path = os.path.normpath(normalized_path)
+    executable_names = ('terminal64.exe', 'terminal.exe')
+    lower_path = normalized_path.lower().replace('/', '\\')
+    first_executable_offset = -1
+    first_executable_name = ''
+
+    for executable_name in executable_names:
+        offset = lower_path.find(executable_name)
+        if offset >= 0 and (first_executable_offset < 0 or offset < first_executable_offset):
+            first_executable_offset = offset
+            first_executable_name = executable_name
+
+    if first_executable_offset >= 0:
+        normalized_path = normalized_path[:first_executable_offset + len(first_executable_name)]
+        normalized_path = os.path.normpath(normalized_path)
+
+    if os.path.isfile(normalized_path):
+        return normalized_path
+
+    if os.path.isdir(normalized_path):
+        for candidate_name in executable_names:
+            candidate_path = os.path.join(normalized_path, candidate_name)
+            if os.path.isfile(candidate_path):
+                return candidate_path
+            if os.path.isdir(candidate_path):
+                nested_64 = os.path.join(candidate_path, 'terminal64.exe')
+                nested_32 = os.path.join(candidate_path, 'terminal.exe')
+                if os.path.isfile(nested_64):
+                    return nested_64
+                if os.path.isfile(nested_32):
+                    return nested_32
+
+    return ''
+
+
+def _infer_mt5_terminal_path(credentials: Dict) -> str:
+    server_name = str(credentials.get('server', '') or '').strip().lower()
+    is_live = bool(credentials.get('is_live', False))
+    if 'real' in server_name or 'live' in server_name:
+        is_live = True
+    elif 'trial' in server_name or 'demo' in server_name:
+        is_live = False
+
+    preferred_mode_candidates = [
+        os.getenv('EXNESS_LIVE_PATH', '') or r'C:\MT5\Exness-Live',
+        r'C:\MT5\Exness-Live\terminal64.exe',
+        r'C:\MT5\Exness-Live\terminal64.exe\terminal64.exe',
+    ] if is_live else [
+        os.getenv('EXNESS_DEMO_PATH', '') or r'C:\MT5\Exness-Demo',
+        r'C:\MT5\Exness-Demo\terminal64.exe',
+        r'C:\MT5\Exness-Demo\terminal64.exe\terminal64.exe',
+    ]
+
+    fallback_candidates = [
+        credentials.get('mt5_path', ''),
+        credentials.get('path', ''),
+        credentials.get('mt5_terminal_path', ''),
+        os.getenv('EXNESS_LIVE_PATH', ''),
+        os.getenv('EXNESS_DEMO_PATH', ''),
+        r'C:\MT5\Exness-Live',
+        r'C:\MT5\Exness-Demo',
+        r'C:\MT5\Exness-Live\terminal64.exe',
+        r'C:\MT5\Exness-Demo\terminal64.exe',
+        r'C:\MT5\Exness-Live\terminal64.exe\terminal64.exe',
+        r'C:\MT5\Exness-Demo\terminal64.exe\terminal64.exe',
+        r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe',
+        r'C:\Program Files\MetaTrader 5\terminal64.exe',
+    ]
+
+    for candidate in preferred_mode_candidates + fallback_candidates:
+        resolved_path = _resolve_mt5_executable_path(candidate)
+        if resolved_path:
+            return resolved_path
+
+    return ''
+
 def init_mt5(credentials: Dict) -> bool:
     """Initialize this worker's own MT5 connection.
     Each worker process gets its own MetaTrader5 module instance."""
@@ -222,16 +303,18 @@ def init_mt5(credentials: Dict) -> bool:
         account = int(credentials.get('account_number', 0))
         password = str(credentials.get('password', ''))
         server = str(credentials.get('server', ''))
-        mt5_path = credentials.get('mt5_path', '')
+        mt5_path = _infer_mt5_terminal_path(credentials)
+        if mt5_path:
+            credentials['mt5_path'] = mt5_path
         
-        logger.info(f"Initializing MT5: account={account}, server={server}")
+        logger.info(f"Initializing MT5: account={account}, server={server}, path={mt5_path or 'auto'}")
         
         init_kwargs = {
             'login': account,
             'password': password,
             'server': server,
         }
-        if mt5_path and os.path.exists(mt5_path):
+        if mt5_path:
             init_kwargs['path'] = mt5_path
         
         if not mt5.initialize(**init_kwargs):
@@ -1216,6 +1299,8 @@ def resume_assigned_bots():
                     'account_number': row['account_number'],
                     'password': row['password'],
                     'server': row.get('server', ''),
+                    'is_live': bool(row.get('is_live', False)),
+                    'broker_name': row.get('broker_name', 'Exness'),
                 })
             
             # Load and start the bot

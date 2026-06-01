@@ -131,6 +131,13 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   double _doubleValue(dynamic value) =>
       value is num ? value.toDouble() : double.tryParse(value?.toString() ?? '0') ?? 0.0;
 
+  String? _preferredMt5TerminalPath() {
+    if (_isExnessBroker) {
+      return _isLiveMode ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo';
+    }
+    return null;
+  }
+
   String _currencySymbol(String currency) {
     switch (currency.toUpperCase()) {
       case 'ZAR':
@@ -380,12 +387,16 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     }
 
     final prefs = await SharedPreferences.getInstance();
+    final mt5TerminalPath = _preferredMt5TerminalPath();
     await prefs.setString('broker', _selectedBroker);
     await prefs.setString('mt5_account', _accountController.text);
     await prefs.setString('mt5_password', _passwordController.text);
     await prefs.setString('mt5_server', _serverController.text);
     await prefs.setString('broker_api_key', _apiKeyController.text);
     await prefs.setString('broker_username', _usernameController.text);
+    if (mt5TerminalPath != null) {
+      await prefs.setString('mt5_terminal_path', mt5TerminalPath);
+    }
 
     if (_isConnected) {
       await prefs.setBool('broker_connected', true);
@@ -412,6 +423,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         apiKey: _apiKeyController.text.isNotEmpty ? _apiKeyController.text : null,
         apiSecret: _passwordController.text.isNotEmpty ? _passwordController.text : null,
         username: _usernameController.text.isNotEmpty ? _usernameController.text : null,
+        mt5TerminalPath: mt5TerminalPath,
       );
 
       if (!success) {
@@ -582,6 +594,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     }
 
     try {
+      final mt5TerminalPath = _preferredMt5TerminalPath();
       final result = await BrokerConnectionService.testConnection(
         broker: _selectedBroker,
         accountNumber: effectiveAccountNumber,
@@ -594,6 +607,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         username: _usernameController.text.isEmpty ? null : _usernameController.text,
         accountId: effectiveAccountNumber,
         market: _isBinanceBroker ? _serverController.text : null,
+        mt5TerminalPath: mt5TerminalPath,
         isLive: _isLiveMode,
       );
 

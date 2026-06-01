@@ -1,0 +1,135 @@
+{
+  "comment": "Broker-specific symbol blacklists - allows different strategies per broker",
+  "version": "2.0",
+  "last_updated": "2026-05-27",
+  
+  "broker_blacklists": {
+    "exness": [
+      "BTCUSDm",
+      "ETHUSDm",
+      "EURUSDm",
+      "USDJPYm",
+      "USDCADm",
+      "NZDUSDm",
+      "AUDUSDm",
+      "UKOILm",
+      "USOILm",
+      "US30m",
+      "SOLUSDm",
+      "BNBUSDm",
+      "BTCUSDT",
+      "ETHUSDT",
+      "ETHBTC",
+      "SOLUSDT",
+      "SOLBNB",
+      "LTCUSDT"
+    ],
+    "binance_futures": [
+      "BTCUSDm",
+      "ETHUSDm",
+      "BTCUSDT",
+      "ETHUSDT",
+      "ETHBTC",
+      "SOLUSDT",
+      "SOLBNB",
+      "LTCUSDT",
+      "SOLUSDm",
+      "BNBUSDm"
+    ],
+    "binance_spot": [],
+    "fxcm": [
+      "BTCUSDm",
+      "ETHUSDm",
+      "BTCUSDT",
+      "ETHUSDT"
+    ]
+  },
+  
+  "global_blacklist": [],
+  
+  "blacklist_details": {
+    "BTCUSDm": {
+      "reason": "PF=0.31 on Exness, -$55 on Binance Futures (182 trades, avg win $0.39 vs avg loss $1.57)",
+      "pf": 0.31,
+      "binance_futures_pf": 0.44,
+      "note": "Allowed on Binance SPOT for client testing"
+    },
+    "ETHUSDm": {
+      "reason": "PF=0.19 on Exness, similar failure pattern to BTC",
+      "pf": 0.19,
+      "note": "Allowed on Binance SPOT for client testing"
+    },
+    "BTCUSDT": {
+      "reason": "Losing on Futures, but profitable on demo Spot - testing on live Spot",
+      "futures_pf": 0.44,
+      "spot_status": "TESTING"
+    },
+    "ETHUSDT": {
+      "reason": "Matches ETHUSDm failure on Futures, allowed on Spot for testing",
+      "spot_status": "TESTING"
+    },
+    "EURUSDm": {
+      "reason": "PF=0.62, -124 ZAR loss on Exness",
+      "pf": 0.62
+    },
+    "USDJPYm": {
+      "reason": "PF=0.65, -73 ZAR loss on Exness",
+      "pf": 0.65
+    },
+    "USDCADm": {
+      "reason": "PF=0.65, -73 ZAR loss on Exness",
+      "pf": 0.65
+    },
+    "NZDUSDm": {
+      "reason": "PF=0.68, -67 ZAR loss on Exness",
+      "pf": 0.68
+    },
+    "AUDUSDm": {
+      "reason": "PF=0.68, -67 ZAR loss on Exness",
+      "pf": 0.68
+    },
+    "UKOILm": {
+      "reason": "PF=0.70, -47 ZAR loss on Exness",
+      "pf": 0.70
+    },
+    "USOILm": {
+      "reason": "PF=0.72, -40 ZAR loss on Exness",
+      "pf": 0.72
+    },
+    "US30m": {
+      "reason": "PF=0.75, -23 ZAR loss on Exness",
+      "pf": 0.75
+    },
+    "SOLUSDT": {
+      "reason": "Crypto unprofitable",
+      "pf": 0.25
+    },
+    "SOLBNB": {
+      "reason": "Crypto pair unprofitable",
+      "pf": 0.25
+    },
+    "LTCUSDT": {
+      "reason": "Crypto unprofitable",
+      "pf": 0.30
+    },
+    "SOLUSDm": {
+      "reason": "Crypto unprofitable",
+      "pf": 0.25
+    },
+    "BNBUSDm": {
+      "reason": "Crypto unprofitable",
+      "pf": 0.30
+    },
+    "ETHBTC": {
+      "reason": "Crypto pair unprofitable",
+      "pf": 0.20
+    }
+  },
+  
+  "notes": {
+    "binance_spot_testing": "BTCUSDT and ETHUSDT allowed on Binance SPOT for client validation. Demo showed profits, need 30+ live trades to confirm.",
+    "exness_protection": "All unprofitable symbols blocked on Exness. Focus on GBPUSDm (PF=1.15, +99 ZAR) and XAUUSDm.",
+    "binance_futures": "All crypto blocked on Futures due to -$55 loss (PF=0.44). Funding fees and liquidation risk too high.",
+    "client_strategy": "Test Spot first with own money, then offer to clients if profitable. No 10x multiplier for clients initially."
+  }
+}

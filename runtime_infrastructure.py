@@ -22,7 +22,7 @@ def _load_local_dotenv() -> None:
 
         env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
         if os.path.exists(env_file):
-            load_dotenv(env_file)
+            load_dotenv(env_file, override=True)
     except ImportError:
         pass
 
@@ -110,11 +110,15 @@ def get_redis_client():
 
 
 def get_runtime_infrastructure_summary() -> Dict[str, Any]:
+    postgres_mode = using_postgres()
+    database_url = get_database_url()
+    sqlite_path = get_database_path()
     return {
         'database_backend': get_database_backend(),
-        'database_path': get_database_path(),
-        'database_url_configured': bool(get_database_url()),
-        'postgres_mode': using_postgres(),
+        'active_database_target': database_url if postgres_mode else sqlite_path,
+        'database_path': sqlite_path,
+        'database_url_configured': bool(database_url),
+        'postgres_mode': postgres_mode,
         'sqlalchemy_ready': get_sqlalchemy_engine() is not None,
         'redis_url_configured': bool(os.getenv('REDIS_URL', '').strip()),
         'redis_ready': get_redis_client() is not None,

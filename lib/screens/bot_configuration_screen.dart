@@ -594,7 +594,13 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   Future<void> _persistTradingMode(String mode) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('trading_mode', mode.trim().toUpperCase());
+    final normalizedMode = mode.trim().toUpperCase();
+    await prefs.setString('trading_mode', normalizedMode);
+    await prefs.setBool('is_live_mode', normalizedMode == 'LIVE');
+    await prefs.setString(
+      'dashboard_balance_mode',
+      normalizedMode == 'LIVE' ? 'live' : 'demo',
+    );
   }
 
   // Dialog to input account number
