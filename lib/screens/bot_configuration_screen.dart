@@ -53,6 +53,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   bool _volatilityFilterEnabled = true;
   // Intelligent scanner: auto-scan all markets & reallocate to best opportunities
   bool _intelligentScanner = true;
+  // Top-movers scanner: follow Binance USDT pairs with highest 24h momentum
+  bool _topMoversEnabled = true;
   static const List<double> _tradeAmountPresets = [
     20,
     50,
@@ -2346,6 +2348,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           signalThresholdMode == 'manual' ? signalThreshold : null;
         _allowedVolatility = allowedVolatility;
         _intelligentScanner = config['intelligentScanner'] == true;
+        _topMoversEnabled = config['topMoversEnabled'] != false;
         _enableProfitProtection =
             (profitProtection['enabled'] ?? _enableProfitProtection) == true;
         _profitProtectionActivationPercent =
@@ -3287,6 +3290,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'enabled': !_isEditMode,
       'volatilityFilterEnabled': _volatilityFilterEnabled,
       'intelligentScanner': autoScanner,
+      'topMoversEnabled': _topMoversEnabled,
       'copyTradingEnabled': _copyTradingEnabled,
       'copyTradingSourceMode': _copyTradingEnabled
           ? _copyTradingSourceMode
@@ -5108,6 +5112,63 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
+
+                    // Top-Movers Scanner Toggle
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: _topMoversEnabled
+                              ? [
+                                  Colors.orange.withOpacity(0.15),
+                                  Colors.amber.withOpacity(0.10),
+                                ]
+                              : [
+                                  Colors.grey.withOpacity(0.1),
+                                  Colors.grey.withOpacity(0.1),
+                                ],
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _topMoversEnabled
+                              ? Colors.orange.withOpacity(0.6)
+                              : Colors.grey.withOpacity(0.3),
+                        ),
+                      ),
+                      child: SwitchListTile(
+                        value: _topMoversEnabled,
+                        onChanged: (val) {
+                          setState(() => _topMoversEnabled = val);
+                        },
+                        title: Row(
+                          children: [
+                            Icon(
+                              Icons.trending_up,
+                              color: _topMoversEnabled
+                                  ? Colors.orange
+                                  : Colors.grey,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            const Text('Top Movers Scanner'),
+                          ],
+                        ),
+                        subtitle: Text(
+                          _topMoversEnabled
+                              ? 'ON — Bot automatically tracks the top-performing USDT pairs every 2 minutes and adds them to the scan universe, following new pumps and drops as they happen.'
+                              : 'OFF — Bot only scans the symbols you configured above.',
+                          style: TextStyle(
+                            color: _topMoversEnabled
+                                ? Colors.orange.withOpacity(0.8)
+                                : Colors.grey,
+                            fontSize: 12,
+                          ),
+                        ),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
                     // Currency Selection
                     Builder(
                       builder: (context) {
