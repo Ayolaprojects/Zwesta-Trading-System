@@ -1,6 +1,6 @@
 from typing import Iterable, Optional
 
-from runtime_infrastructure import get_sqlalchemy_engine
+from runtime_infrastructure import get_database_url, get_sqlalchemy_engine
 
 
 POSTGRES_SCHEMA_SQL = [
@@ -554,7 +554,7 @@ POSTGRES_SCHEMA_SQL = [
         stop_price DOUBLE PRECISION,
         tp_price DOUBLE PRECISION,
         sl_price DOUBLE PRECISION,
-        trailing BOOLEAN DEFAULT FALSE,
+        "trailing" BOOLEAN DEFAULT FALSE,
         trailing_pips BIGINT,
         status TEXT DEFAULT 'pending',
         created_at TEXT,
@@ -624,12 +624,31 @@ POSTGRES_SCHEMA_SQL = [
 
 def create_postgres_schema(sql_statements: Iterable[str] = POSTGRES_SCHEMA_SQL, database_url: Optional[str] = None) -> None:
     engine = get_sqlalchemy_engine(database_url)
-    if engine is None:
+    if engine is not None:
+        with engine.begin() as connection:
+            for statement in sql_statements:
+                connection.exec_driver_sql(statement)
+        return
+
+    resolved_database_url = (database_url or get_database_url()).strip()
+    if not resolved_database_url:
         raise RuntimeError('DATABASE_URL is not configured or SQLAlchemy could not create a PostgreSQL engine.')
 
-    with engine.begin() as connection:
+    try:
+        import psycopg2
+    except ImportError as exc:
+        raise RuntimeError(
+            'DATABASE_URL is configured, but neither SQLAlchemy nor psycopg2 is available to initialize the PostgreSQL schema.'
+        ) from exc
+
+    conn = psycopg2.connect(resolved_database_url)
+    try:
+        cursor = conn.cursor()
         for statement in sql_statements:
-            connection.exec_driver_sql(statement)
+            cursor.execute(statement)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == '__main__':

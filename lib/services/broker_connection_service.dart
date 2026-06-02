@@ -11,10 +11,31 @@ import '../utils/environment_config.dart';
 import 'connection_analytics_service.dart';
 
 class BrokerConnectionService {
-  static String? _defaultMt5TerminalPath(String broker, {required bool isLive}) {
+  static const Map<String, String> _exnessKnownLiveServers = {
+    '223689940': 'MT5Real30',
+    '295677214': 'Exness-MT5Real27',
+  };
+
+  static const Map<String, String> _exnessKnownServerPaths = {
+    'MT5Real30': r'C:\MT5\Exness-Live\Max terminal64.exe\terminal64.exe',
+    'Exness-MT5Real27': r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe',
+    'Exness-MT5Trial9': r'C:\Program Files\MetaTrader 5\terminal64.exe',
+  };
+
+  static String? _defaultMt5TerminalPath(
+    String broker, {
+    required bool isLive,
+    String? server,
+    String? accountNumber,
+  }) {
     final normalizedBroker = broker.trim().toLowerCase();
     if (normalizedBroker == 'exness') {
-      return isLive ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo';
+      final resolvedServer = (server ?? '').trim().isNotEmpty
+          ? server!.trim()
+          : (isLive
+              ? (_exnessKnownLiveServers[(accountNumber ?? '').trim()] ?? 'Exness-MT5Real27')
+              : 'Exness-MT5Trial9');
+      return _exnessKnownServerPaths[resolvedServer] ?? (isLive ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo');
     }
     return null;
   }
@@ -170,7 +191,12 @@ class BrokerConnectionService {
         final resolvedMt5TerminalPath =
             mt5TerminalPath?.trim().isNotEmpty == true
                 ? mt5TerminalPath!.trim()
-                : _defaultMt5TerminalPath(broker, isLive: isLive);
+                : _defaultMt5TerminalPath(
+                    broker,
+                    isLive: isLive,
+                    server: server,
+                    accountNumber: accountNumber,
+                  );
         if (resolvedMt5TerminalPath != null && resolvedMt5TerminalPath.isNotEmpty) {
           payload['mt5_terminal_path'] = resolvedMt5TerminalPath;
         }

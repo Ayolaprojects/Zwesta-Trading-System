@@ -439,7 +439,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   List<Map<String, dynamic>> _activeBotsFor([String? mode]) {
     return _filteredBots(mode)
-        .where((bot) => bot['enabled'] == true || bot['status'] == 'Active')
+        .where((bot) {
+          if (bot['enabled'] == true) {
+            return true;
+          }
+          final status = (bot['status'] ?? '').toString().trim().toUpperCase();
+          return status == 'ACTIVE' || status == 'STARTING' || status == 'RUNNING';
+        })
         .cast<Map<String, dynamic>>()
         .toList();
   }
@@ -609,7 +615,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _loadPreferredBrokerDisplay() async {
     final prefs = await SharedPreferences.getInstance();
-    final selected = prefs.getString('preferred_broker_display') ?? prefs.getString('broker') ?? 'Exness';
+    final userId = (prefs.getString('user_id') ?? '').trim();
+    final scopedPreferredBrokerKey = userId.isEmpty ? 'preferred_broker_display' : 'preferred_broker_display_$userId';
+    final scopedBrokerKey = userId.isEmpty ? 'broker' : 'broker_$userId';
+    final selected = prefs.getString(scopedPreferredBrokerKey) ?? prefs.getString(scopedBrokerKey) ?? 'Exness';
     final savedReportingCurrency = _normalizeCurrency(prefs.getString('reporting_currency') ?? 'USD');
     final savedBalanceMode = (prefs.getString('dashboard_balance_mode') ?? 'live').trim().toLowerCase();
     final normalizedBalanceMode = {'all', 'live', 'demo'}.contains(savedBalanceMode) ? savedBalanceMode : 'live';
@@ -647,7 +656,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<Map<String, dynamic>?> _loadLocalBrokerSnapshot() async {
     final prefs = await SharedPreferences.getInstance();
-    final rawSnapshot = prefs.getString('verified_broker_snapshot');
+    final userId = (prefs.getString('user_id') ?? '').trim();
+    final scopedSnapshotKey = userId.isEmpty ? 'verified_broker_snapshot' : 'verified_broker_snapshot_$userId';
+    final scopedConnectedKey = userId.isEmpty ? 'broker_connected' : 'broker_connected_$userId';
+    final scopedPreferredBrokerKey = userId.isEmpty ? 'preferred_broker_display' : 'preferred_broker_display_$userId';
+    final scopedBrokerNameKey = userId.isEmpty ? 'broker_name' : 'broker_name_$userId';
+    final scopedBrokerKey = userId.isEmpty ? 'broker' : 'broker_$userId';
+    final scopedFxcmAccountKey = userId.isEmpty ? 'fxcm_account_number' : 'fxcm_account_number_$userId';
+    final scopedAccountKey = userId.isEmpty ? 'account_number' : 'account_number_$userId';
+    final scopedMt5AccountKey = userId.isEmpty ? 'mt5_account' : 'mt5_account_$userId';
+    final scopedIsLiveModeKey = userId.isEmpty ? 'is_live_mode' : 'is_live_mode_$userId';
+    final scopedBalanceKey = userId.isEmpty ? 'account_balance' : 'account_balance_$userId';
+    final scopedEquityKey = userId.isEmpty ? 'account_equity' : 'account_equity_$userId';
+    final scopedFreeMarginKey = userId.isEmpty ? 'account_free_margin' : 'account_free_margin_$userId';
+    final scopedMarginKey = userId.isEmpty ? 'account_margin' : 'account_margin_$userId';
+    final scopedMarginLevelKey = userId.isEmpty ? 'account_margin_level' : 'account_margin_level_$userId';
+    final scopedProfitKey = userId.isEmpty ? 'account_profit' : 'account_profit_$userId';
+    final scopedCurrencyKey = userId.isEmpty ? 'account_currency' : 'account_currency_$userId';
+    final scopedConnectionTimeKey = userId.isEmpty ? 'connection_time' : 'connection_time_$userId';
+
+    final rawSnapshot = prefs.getString(scopedSnapshotKey);
     if (rawSnapshot != null && rawSnapshot.trim().isNotEmpty) {
       try {
         final decoded = jsonDecode(rawSnapshot);
@@ -657,34 +685,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
       } catch (_) {}
     }
 
-    final isConnected = prefs.getBool('broker_connected') == true;
+    final isConnected = prefs.getBool(scopedConnectedKey) == true;
     if (!isConnected) {
       return null;
     }
 
     final broker = _normalizeBrokerDisplayName(
-      prefs.getString('preferred_broker_display') ??
-          prefs.getString('broker_name') ??
-          prefs.getString('broker') ??
+      prefs.getString(scopedPreferredBrokerKey) ??
+          prefs.getString(scopedBrokerNameKey) ??
+          prefs.getString(scopedBrokerKey) ??
           '',
     );
     final fallbackAccount = broker.toLowerCase() == 'fxcm'
-        ? (prefs.getString('fxcm_account_number') ?? '')
-        : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '');
+        ? (prefs.getString(scopedFxcmAccountKey) ?? '')
+        : (prefs.getString(scopedAccountKey) ?? prefs.getString(scopedMt5AccountKey) ?? '');
     final accountNumber = fallbackAccount.trim();
     if (broker.isEmpty || accountNumber.isEmpty) {
       return null;
     }
 
-    final isLive = prefs.getBool('is_live_mode') == true;
-    final balance = prefs.getDouble('account_balance') ?? 0.0;
-    final equity = prefs.getDouble('account_equity') ?? balance;
-    final freeMargin = prefs.getDouble('account_free_margin') ?? 0.0;
-    final margin = prefs.getDouble('account_margin') ?? 0.0;
-    final marginLevel = prefs.getDouble('account_margin_level') ?? 0.0;
-    final profit = prefs.getDouble('account_profit') ?? 0.0;
-    final currency = _normalizeCurrency(prefs.getString('account_currency') ?? 'USD');
-    final lastUpdate = prefs.getString('connection_time');
+    final isLive = prefs.getBool(scopedIsLiveModeKey) == true;
+    final balance = prefs.getDouble(scopedBalanceKey) ?? 0.0;
+    final equity = prefs.getDouble(scopedEquityKey) ?? balance;
+    final freeMargin = prefs.getDouble(scopedFreeMarginKey) ?? 0.0;
+    final margin = prefs.getDouble(scopedMarginKey) ?? 0.0;
+    final marginLevel = prefs.getDouble(scopedMarginLevelKey) ?? 0.0;
+    final profit = prefs.getDouble(scopedProfitKey) ?? 0.0;
+    final currency = _normalizeCurrency(prefs.getString(scopedCurrencyKey) ?? 'USD');
+    final lastUpdate = prefs.getString(scopedConnectionTimeKey);
 
     return {
       'broker': broker,
@@ -975,8 +1003,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  void _pushScreen(Widget screen) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+  Future<void> _pushScreen(Widget screen) async {
+    final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+    if (!mounted) {
+      return;
+    }
+    if (screen is BotConfigurationRoute && result == true) {
+      await _loadPreferredBrokerDisplay();
+      await _performRefresh();
+    }
   }
 
   void _openFinancials() {
@@ -4403,12 +4438,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             subtitle: const Text('Strategies, symbols & risk setup', style: TextStyle(color: Colors.white38, fontSize: 11)),
             onTap: () {
               Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const BotConfigurationRoute(),
-                ),
-              );
+              _pushScreen(const BotConfigurationRoute());
             },
           ),
           ListTile(

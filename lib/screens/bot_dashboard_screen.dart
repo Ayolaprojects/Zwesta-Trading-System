@@ -63,6 +63,16 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     botService.fetchActiveBots(tradingMode: newMode, force: true);
   }
 
+  Future<void> _openBotConfigurationRoute(BotConfigurationRoute route) async {
+    final updated = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => route),
+    );
+    if (updated == true && mounted) {
+      await _loadTradingMode();
+    }
+  }
+
   @override
   void dispose() {
     context.read<BotService>().stopPolling();
@@ -102,6 +112,14 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       return true;
     }
     return bot['is_live'] == true;
+  }
+
+  bool _isActiveBot(Map<String, dynamic> bot) {
+    if (bot['enabled'] == true) {
+      return true;
+    }
+    final status = (bot['status'] ?? '').toString().trim().toUpperCase();
+    return status == 'ACTIVE' || status == 'STARTING' || status == 'RUNNING';
   }
 
   /// Classifies bots by broker. Returns 'Binance' / 'Exness' / 'FXCM' / 'Other'.
@@ -494,14 +512,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           }
           final inferredLive = bot['is_live'] == true;
           return expectedMode == 'LIVE' ? inferredLive : !inferredLive;
-        }).where((bot) {
-          final promotionStatus = (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
-          final botMode = (bot['mode'] ?? '').toString().trim().toUpperCase();
-          final isDemoBot = botMode == 'DEMO' || (botMode.isEmpty && bot['is_live'] != true);
-          if (!isDemoBot) {
-            return true;
-          }
-          return promotionStatus != 'expired';
         }).toList();
 
         // Apply search + status filter
@@ -513,7 +523,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               botId.contains(_searchQuery.toLowerCase()) ||
               symbol.contains(_searchQuery.toLowerCase()) ||
               strategy.contains(_searchQuery.toLowerCase());
-          final isEnabled = bot['enabled'] == true || bot['status'] == 'Active';
+            final isEnabled = _isActiveBot(bot);
           final matchesFilter = _filterStatus == 'all' ||
               (_filterStatus == 'active' && isEnabled) ||
               (_filterStatus == 'inactive' && !isEnabled);
@@ -528,7 +538,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           return bTime.compareTo(aTime);
         });
 
-        final activeBots = allBots.where((b) => b['enabled'] == true || b['status'] == 'Active').length;
+        final activeBots = allBots.where(_isActiveBot).length;
         final totalProfit = allBots.fold<double>(
           0,
           (sum, b) => sum + _botAmount(b, ['allTimeProfit', 'totalProfit', 'profit']),
@@ -715,7 +725,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       else
                         ..._buildBrokerSections(bots, currencyProvider),
                       GestureDetector(
-                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BotConfigurationRoute())),
+                        onTap: () => _openBotConfigurationRoute(const BotConfigurationRoute()),
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           decoration: BoxDecoration(
@@ -746,12 +756,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       const SizedBox(height: 12),
 
                       GestureDetector(
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const BotConfigurationRoute(
-                              focusTestedTemplates: true,
-                            ),
+                        onTap: () => _openBotConfigurationRoute(
+                          const BotConfigurationRoute(
+                            focusTestedTemplates: true,
                           ),
                         ),
                         child: Container(
@@ -1836,10 +1843,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ),
                     );
                     if (updated == true && mounted) {
-                      await context.read<BotService>().fetchActiveBots(
-                        tradingMode: _tradingMode,
-                        force: true,
-                      );
+                      await _loadTradingMode();
                     }
                   } else if (value == 'clone') {
                     final cloned = await Navigator.push<bool>(
@@ -1851,10 +1855,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ),
                     );
                     if (cloned == true && mounted) {
-                      await context.read<BotService>().fetchActiveBots(
-                        tradingMode: _tradingMode,
-                        force: true,
-                      );
+                      await _loadTradingMode();
                     }
                   } else if (value == 'promote') {
                     if (!isPromotionEligible) {
@@ -1880,7 +1881,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ),
                     );
                     if (promoted == true && mounted) {
-                      _onModeChanged('LIVE');
+                      await _loadTradingMode();
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text('Live bot created from demo settings.'),

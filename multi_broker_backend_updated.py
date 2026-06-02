@@ -9,6 +9,7 @@ Production Status: READY
 
 from __future__ import annotations
 import os
+import importlib.util
 import json
 import time
 import copy
@@ -48,13 +49,80 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from enum import Enum
 import sys
 import atexit
+
+
+def _find_preferred_python_executable() -> Optional[str]:
+    candidate_paths = []
+    configured_python = str(os.getenv('ZWESTA_PREFERRED_PYTHON', '') or '').strip()
+    if configured_python:
+        candidate_paths.append(configured_python)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate_paths.extend([
+        os.path.join(script_dir, '.venv', 'Scripts', 'python.exe'),
+        os.path.join(os.path.dirname(script_dir), 'zwesta-trader', '.venv', 'Scripts', 'python.exe'),
+        r'C:\zwesta-trader\.venv\Scripts\python.exe',
+    ])
+
+    current_python = os.path.normcase(os.path.abspath(sys.executable))
+    seen = set()
+    for candidate in candidate_paths:
+        normalized = os.path.normcase(os.path.abspath(candidate))
+        if normalized in seen or normalized == current_python:
+            continue
+        seen.add(normalized)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _missing_required_runtime_modules() -> List[str]:
+    missing = []
+    for module_name in ('psycopg2', 'sqlalchemy'):
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            missing.append(module_name)
+    return missing
+
+
+def _maybe_reexec_with_preferred_python() -> None:
+    if str(os.getenv('ZWESTA_SKIP_PYTHON_REEXEC', '') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+        return
+
+    preferred_python = _find_preferred_python_executable()
+    if not preferred_python:
+        return
+
+    current_python = os.path.normcase(os.path.abspath(sys.executable))
+    preferred_python_normalized = os.path.normcase(os.path.abspath(preferred_python))
+    if current_python == preferred_python_normalized:
+        return
+
+    missing_modules = _missing_required_runtime_modules()
+    reason = (
+        f"Missing runtime modules in {sys.executable}: {', '.join(missing_modules)}."
+        if missing_modules
+        else f"Backend launched with non-preferred interpreter {sys.executable}."
+    )
+
+    print(
+        f"[BOOTSTRAP] {reason} Relaunching with {preferred_python}"
+    )
+    os.environ['ZWESTA_SKIP_PYTHON_REEXEC'] = '1'
+    os.execv(preferred_python, [preferred_python, os.path.abspath(__file__), *sys.argv[1:]])
+
+
+_maybe_reexec_with_preferred_python()
+
 from system.backup_and_recovery import BackupManager, RecoveryManager
 from worker_manager import WorkerPoolManager
 from metaapi_client import MetaApiClient, MetaApiTradingBridge, get_metaapi_client, is_metaapi_enabled
 from rest_price_feed import RestPriceFeed, get_price_feed
 from trade_router import TradeRouter, init_trade_router, get_trade_router, ExecutionMode
 from mt5_socket_bridge import SocketBridgeManager, MT5SocketBridge, init_socket_bridges
-from runtime_infrastructure import build_sqlite_connection as _orig_build_sqlite_connection, get_database_path, get_runtime_infrastructure_summary, using_postgres
+from runtime_infrastructure import build_sqlite_connection as _orig_build_sqlite_connection, get_database_path, get_database_url, get_runtime_infrastructure_summary, using_postgres
+from postgres_schema import create_postgres_schema
 from credential_crypto import (
     encrypt_secret,
     decrypt_secret,
@@ -77,6 +145,258 @@ def build_sqlite_connection(*args, **kwargs):
     except Exception:
         pass
     return conn
+
+
+_POSTGRES_BOOLEAN_COLUMNS = {'is_active', 'enabled', 'is_live'}
+
+
+class _PostgresCompatRow(dict):
+    __slots__ = ('_cols', '_vals')
+
+    def __init__(self, cols, vals):
+        decrypted_vals = []
+        for value in vals:
+            if isinstance(value, str) and value.startswith('enc:v1:'):
+                try:
+                    value = decrypt_secret(value)
+                except Exception:
+                    pass
+            decrypted_vals.append(value)
+        super().__init__(zip(cols, decrypted_vals))
+        self._cols = cols
+        self._vals = tuple(decrypted_vals)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        return super().__getitem__(key)
+
+    def keys(self):
+        return self._cols
+
+
+def _rewrite_postgres_insert_boolean_placeholders(sql: str) -> str:
+    match = re.match(
+        r'(?is)^(\s*INSERT\s+INTO\s+[^\s(]+\s*\()(?P<cols>.*?)(\)\s*VALUES\s*\()(?P<vals>.*?)(\)\s*)(?P<tail>.*)$',
+        sql,
+    )
+    if not match:
+        return sql
+
+    columns = [col.strip().strip('"').lower() for col in match.group('cols').split(',')]
+    values = [value.strip() for value in match.group('vals').split(',')]
+    if len(columns) != len(values):
+        return sql
+
+    rewritten_values = []
+    for column, value in zip(columns, values):
+        if column in _POSTGRES_BOOLEAN_COLUMNS and value == '?':
+            rewritten_values.append('CAST(? AS boolean)')
+        else:
+            rewritten_values.append(value)
+
+    return (
+        sql[:match.start('vals')]
+        + ', '.join(rewritten_values)
+        + sql[match.end('vals'):]
+    )
+
+
+def _translate_sqlite_query_to_postgres(sql: str) -> str:
+    translated = str(sql or '')
+    translated = re.sub(r'(?i)\bBEGIN\s+IMMEDIATE\b', 'BEGIN', translated)
+    translated = re.sub(r'(?i)\bBEGIN\s+EXCLUSIVE\b', 'BEGIN', translated)
+    translated = _rewrite_postgres_insert_boolean_placeholders(translated)
+
+    for column in _POSTGRES_BOOLEAN_COLUMNS:
+        translated = re.sub(
+            rf'(?i)((?:\b\w+\.)?{column}\b\s*=\s*)1\b',
+            r'\1TRUE',
+            translated,
+        )
+        translated = re.sub(
+            rf'(?i)((?:\b\w+\.)?{column}\b\s*=\s*)0\b',
+            r'\1FALSE',
+            translated,
+        )
+        translated = re.sub(
+            rf'(?i)((?:\b\w+\.)?{column}\b\s*(?:=|!=|<>)\s*)\?',
+            r'\1CAST(? AS boolean)',
+            translated,
+        )
+
+    return translated.replace('?', '%s')
+
+
+class _PostgresCompatCursor:
+    def __init__(self, cursor, *, row_factory: bool):
+        self._cursor = cursor
+        self._row_factory = row_factory
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def lastrowid(self):
+        return None
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def execute(self, sql, params=None):
+        translated = _translate_sqlite_query_to_postgres(sql)
+        self._cursor.execute(translated, tuple(params or ()))
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        translated = _translate_sqlite_query_to_postgres(sql)
+        self._cursor.executemany(translated, [tuple(params or ()) for params in seq_of_params])
+        return self
+
+    def _wrap_row(self, row):
+        if not self._row_factory or row is None or self._cursor.description is None:
+            return row
+        cols = [desc[0] for desc in self._cursor.description]
+        return _PostgresCompatRow(cols, row)
+
+    def fetchone(self):
+        return self._wrap_row(self._cursor.fetchone())
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if not self._row_factory or self._cursor.description is None:
+            return rows
+        cols = [desc[0] for desc in self._cursor.description]
+        return [_PostgresCompatRow(cols, row) for row in rows]
+
+    def close(self):
+        self._cursor.close()
+
+
+class _PostgresCompatConnection:
+    def __init__(self, *, timeout: float = 30.0, row_factory: bool = False):
+        database_url = get_database_url()
+        if not database_url:
+            raise RuntimeError('DATABASE_URL is required when PostgreSQL mode is enabled')
+        try:
+            import psycopg2
+        except ImportError as exc:
+            raise RuntimeError('psycopg2 is required when PostgreSQL mode is enabled') from exc
+        self._conn = psycopg2.connect(database_url, connect_timeout=max(1, int(math.ceil(timeout))))
+        self._row_factory = row_factory
+
+    def cursor(self):
+        return _PostgresCompatCursor(self._conn.cursor(), row_factory=self._row_factory)
+
+    def execute(self, sql, params=None):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
+class _PostgresBackupManager:
+    def __init__(self):
+        self.is_running = False
+        self.db_path = 'postgresql'
+
+    def create_backup(self):
+        logger.warning('PostgreSQL mode: built-in SQLite file backup is disabled. Use pg_dump or managed PostgreSQL backups.')
+        return None
+
+    def restore_backup(self, backup_filename):
+        logger.warning(
+            'PostgreSQL mode: SQLite backup restore is disabled. Restore PostgreSQL using native database tooling instead. '
+            f'Requested backup={backup_filename}'
+        )
+        return False
+
+    def list_backups(self):
+        return []
+
+    def start_auto_backup(self):
+        self.is_running = False
+        logger.info('PostgreSQL mode: internal SQLite auto-backup loop disabled.')
+
+    def stop_auto_backup(self):
+        self.is_running = False
+
+
+class _PostgresRecoveryManager:
+    def __init__(self):
+        self.db_path = 'postgresql'
+
+    def _connect(self):
+        database_url = get_database_url()
+        if not database_url:
+            raise RuntimeError('DATABASE_URL is required when PostgreSQL mode is enabled')
+        try:
+            import psycopg2
+        except ImportError as exc:
+            raise RuntimeError('psycopg2 is required when PostgreSQL mode is enabled') from exc
+        return psycopg2.connect(database_url, connect_timeout=10)
+
+    def check_database_integrity(self):
+        try:
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('SELECT 1')
+                cursor.fetchone()
+            finally:
+                conn.close()
+            logger.info('✅ PostgreSQL connectivity check passed')
+            return True
+        except Exception as exc:
+            logger.error(f'❌ PostgreSQL connectivity check failed: {exc}')
+            return False
+
+    def auto_recover_on_startup(self):
+        logger.info('ℹ️ PostgreSQL mode: skipping SQLite auto-recovery; rely on PostgreSQL durability and external backups.')
+        return self.check_database_integrity()
+
+    def attempt_runtime_repair(self, reason: str, allow_restore: bool = False):
+        logger.warning(
+            'PostgreSQL mode: runtime SQLite repair is disabled. '
+            f'Reason={reason}, allow_restore={allow_restore}'
+        )
+        return False
+
+    def verify_all_user_data(self):
+        try:
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM users')
+                user_count = int(cursor.fetchone()[0] or 0)
+                cursor.execute('SELECT COUNT(*) FROM user_bots')
+                bot_count = int(cursor.fetchone()[0] or 0)
+                cursor.execute('SELECT COUNT(*) FROM broker_credentials')
+                credential_count = int(cursor.fetchone()[0] or 0)
+            finally:
+                conn.close()
+
+            logger.info('📊 PostgreSQL data verification:')
+            logger.info(f'   Users: {user_count}')
+            logger.info(f'   Bots: {bot_count}')
+            logger.info(f'   Credentials: {credential_count}')
+
+            return {
+                'users': user_count,
+                'bots': bot_count,
+                'credentials': credential_count,
+            }
+        except Exception as exc:
+            logger.error(f'❌ PostgreSQL verification failed: {exc}')
+            return None
 
 # Load environment variables from .env file
 try:
@@ -826,7 +1146,7 @@ def get_failed_auth_status(account_id):
 
 def broker_uses_single_mode_slot(broker_name: str) -> bool:
     """Return True when a broker should have only one active credential per mode per user."""
-    return canonicalize_broker_name(broker_name) == 'Exness'
+    return False
 
 
 def _broker_credential_completeness_score(row: Dict[str, Any]) -> int:
@@ -1609,7 +1929,7 @@ trade_router = init_trade_router(
 )
 
 
-# --- Exness Single Live & Demo Account Only ---
+# --- Exness default live/demo account config ---
 EXNESS_DEMO = {
     'broker': 'Exness',
     'account': int(os.getenv('EXNESS_DEMO_ACCOUNT', '298997455').strip()),
@@ -1626,16 +1946,119 @@ EXNESS_LIVE = {
 }
 
 
-def get_exness_mt5_config(is_live: Optional[bool] = None) -> Dict:
+def _parse_env_key_value_map(raw_value: str) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for chunk in str(raw_value or '').replace('\r', ';').replace('\n', ';').split(';'):
+        entry = str(chunk or '').strip()
+        if not entry or '=' not in entry:
+            continue
+        key, value = entry.split('=', 1)
+        normalized_key = str(key or '').strip()
+        normalized_value = str(value or '').strip().strip('"')
+        if normalized_key and normalized_value:
+            parsed[normalized_key] = normalized_value
+    return parsed
+
+
+def _normalize_exness_account_number(account_number: Any) -> str:
+    return str(account_number or '').strip()
+
+
+EXNESS_ACCOUNT_SERVER_MAP = _parse_env_key_value_map(os.getenv('EXNESS_ACCOUNT_SERVER_MAP', ''))
+EXNESS_ACCOUNT_PATH_MAP = _parse_env_key_value_map(os.getenv('EXNESS_ACCOUNT_PATH_MAP', ''))
+EXNESS_SERVER_PATH_MAP = _parse_env_key_value_map(os.getenv('EXNESS_SERVER_PATH_MAP', ''))
+
+
+def _resolve_exness_server(account_number: Any = None, is_live: bool = False, server: str = None) -> str:
+    provided_server = str(server or '').strip()
+    invalid_mt5_aliases = {
+        'rest-api',
+        'rest_api',
+        'metaapi',
+        'meta-api',
+        'socket',
+        'socket-bridge',
+        'socket_bridge',
+    }
+    if provided_server and provided_server.lower() not in invalid_mt5_aliases:
+        return provided_server
+
+    normalized_account = _normalize_exness_account_number(account_number)
+    mapped_server = EXNESS_ACCOUNT_SERVER_MAP.get(normalized_account, '').strip()
+    if mapped_server:
+        return mapped_server
+
+    if is_live:
+        return str(EXNESS_LIVE.get('server') or 'Exness-MT5Real27').strip()
+    return str(EXNESS_DEMO.get('server') or 'Exness-MT5Trial9').strip()
+
+
+def _normalize_exness_path_candidate(path: str) -> Optional[str]:
+    candidate = str(path or '').strip().strip('"')
+    if not candidate:
+        return None
+    candidate = os.path.expandvars(candidate)
+    if candidate.lower().endswith('.exe'):
+        return candidate
+    trimmed_candidate = candidate.rstrip('\\/')
+    terminal_candidate = os.path.join(trimmed_candidate, 'terminal64.exe')
+    if os.path.isfile(terminal_candidate):
+        return terminal_candidate
+    return trimmed_candidate
+
+
+def _resolve_exness_terminal_path(
+    configured_path: str = None,
+    is_live: Optional[bool] = None,
+    server: str = None,
+    account_number: Any = None,
+) -> Optional[str]:
+    normalized_account = _normalize_exness_account_number(account_number)
+    resolved_server = _resolve_exness_server(account_number, bool(is_live), server)
+    default_live_path = str(globals().get('EXNESS_LIVE_PATH') or os.getenv('EXNESS_LIVE_PATH', r'C:\MT5\Exness-Live')).strip()
+    default_demo_path = str(globals().get('EXNESS_DEMO_PATH') or os.getenv('EXNESS_DEMO_PATH', r'C:\MT5\Exness-Demo')).strip()
+
+    candidate_paths: List[str] = []
+    if configured_path:
+        candidate_paths.append(str(configured_path).strip())
+
+    account_path = EXNESS_ACCOUNT_PATH_MAP.get(normalized_account, '').strip()
+    if account_path:
+        candidate_paths.insert(0, account_path)
+
+    server_path = EXNESS_SERVER_PATH_MAP.get(resolved_server, '').strip()
+    if server_path:
+        candidate_paths.insert(0, server_path)
+
+    if is_live is True and default_live_path:
+        candidate_paths.append(default_live_path)
+    elif is_live is False and default_demo_path:
+        candidate_paths.append(default_demo_path)
+
+    for path in candidate_paths:
+        normalized_candidate = _normalize_exness_path_candidate(path)
+        if normalized_candidate and os.path.isfile(normalized_candidate):
+            return normalized_candidate
+        if normalized_candidate:
+            return normalized_candidate
+
+    return None
+
+
+def get_exness_mt5_config(is_live: Optional[bool] = None, server: str = None, account_number: Any = None) -> Dict:
     """Return a fresh Exness MT5 config derived from the resolved environment mode."""
     target_is_live = ENVIRONMENT == 'LIVE' if is_live is None else bool(is_live)
     base_config = EXNESS_LIVE if target_is_live else EXNESS_DEMO
     config = dict(base_config)
-    configured_path = globals().get('EXNESS_LIVE_PATH') if target_is_live else globals().get('EXNESS_DEMO_PATH')
-    # Allow configured terminal paths in VPS mode too — required for dual-terminal setups
-    # where LIVE and DEMO accounts run in separate MT5 terminals on the same VPS.
-    if configured_path:
-        config['path'] = configured_path
+    resolved_account = _normalize_exness_account_number(account_number or config.get('account'))
+    config['server'] = _resolve_exness_server(resolved_account, target_is_live, server or config.get('server'))
+    resolved_path = _resolve_exness_terminal_path(
+        is_live=target_is_live,
+        server=config['server'],
+        account_number=resolved_account,
+    )
+    if resolved_path:
+        config['path'] = resolved_path
     return config
 
 # Only these two will be used for Exness
@@ -2191,7 +2614,13 @@ logger.info(f"[DUAL MT5] Resolved Exness DEMO executable: {EXNESS_DEMO_RESOLVED_
 logger.info(f"[DUAL MT5] Resolved Exness LIVE executable: {EXNESS_LIVE_RESOLVED_PATH or 'missing'}")
 
 
-def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_live: bool = None) -> Optional[str]:
+def find_mt5_terminal_path(
+    broker_name: str,
+    configured_path: str = None,
+    is_live: bool = None,
+    server: str = None,
+    account_number: Any = None,
+) -> Optional[str]:
     """Resolve a broker-specific terminal path even on VPS/local mixed setups.
     For Exness: uses separate DEMO/LIVE terminals when is_live is specified."""
     if DEPLOYMENT_MODE == 'VPS':
@@ -2205,12 +2634,18 @@ def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_liv
             if normalized_configured_path:
                 return normalized_configured_path
         normalized = canonicalize_broker_name(broker_name)
-        if normalized == 'Exness' and is_live is not None:
-            preferred = EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH
+        if normalized == 'Exness':
+            preferred = _resolve_exness_terminal_path(
+                configured_path=configured_path,
+                is_live=is_live,
+                server=server,
+                account_number=account_number,
+            )
             if preferred:
                 resolved = resolve_mt5_terminal_executable_path(preferred)
                 if resolved and os.path.isfile(resolved):
                     return resolved
+                return preferred
         fallback_resolved = find_known_mt5_terminal_path(broker_name, is_live=is_live)
         if fallback_resolved:
             return fallback_resolved
@@ -2223,11 +2658,15 @@ def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_liv
 
     # For Exness: prefer the dedicated demo/live terminal path
     normalized = canonicalize_broker_name(broker_name)
-    if normalized == 'Exness' and is_live is not None:
-        if is_live and EXNESS_LIVE_PATH:
-            candidate_paths.insert(0, EXNESS_LIVE_PATH)
-        elif not is_live and EXNESS_DEMO_PATH:
-            candidate_paths.insert(0, EXNESS_DEMO_PATH)
+    if normalized == 'Exness':
+        preferred_exness_path = _resolve_exness_terminal_path(
+            configured_path=configured_path,
+            is_live=is_live,
+            server=server,
+            account_number=account_number,
+        )
+        if preferred_exness_path:
+            candidate_paths.insert(0, preferred_exness_path)
 
     env_path = os.getenv(f"{normalized.upper().replace(' ', '_')}_PATH", '').strip()
     if env_path:
@@ -2243,7 +2682,7 @@ def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_liv
     return None
 
 
-def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = None) -> str:
+def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = None, account_number: Any = None) -> str:
     normalized = canonicalize_broker_name(broker_name)
     # Allow explicit server override for MT5 brokers when provided by user.
     provided_server = (server or '').strip()
@@ -2260,7 +2699,7 @@ def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = Non
         return provided_server
 
     if normalized == 'Exness':
-        return 'Exness-MT5Real27' if is_live else 'Exness-MT5Trial9'
+        return _resolve_exness_server(account_number, is_live, server)
     return 'MetaTrader 5'
 
 
@@ -3826,10 +4265,13 @@ def get_runtime_infrastructure_status():
     if api_key != API_KEY:
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
+    runtime_summary = get_runtime_infrastructure_summary()
+
     return jsonify({
         'success': True,
-        'runtime_infrastructure': get_runtime_infrastructure_summary(),
-        'database_path': DATABASE_PATH,
+        'runtime_infrastructure': runtime_summary,
+        'database_path': runtime_summary.get('active_database_target'),
+        'sqlite_database_path': DATABASE_PATH,
     })
 
 
@@ -4012,7 +4454,8 @@ def get_bot_daily_loss_debug():
         'userId': bot_config.get('user_id'),
         'enabled': bool(bot_config.get('enabled', True)),
         'status': bot_config.get('status'),
-        'databasePath': DATABASE_PATH,
+        'databasePath': get_runtime_infrastructure_summary().get('active_database_target'),
+        'sqliteDatabasePath': DATABASE_PATH,
         'diagnostics': _build_bot_daily_loss_diagnostics(bot_config),
     })
 
@@ -4274,7 +4717,9 @@ def resume_user_bots():
 def init_database():
     """Initialize SQLite database with referral and commission tables"""
     if using_postgres():
-        logger.warning('PostgreSQL mode is configured, but init_database still initializes SQLite tables only. Run the migration plan before switching production writes.')
+        create_postgres_schema(database_url=get_database_url())
+        logger.info('PostgreSQL schema initialized')
+        return
 
     conn = build_sqlite_connection(timeout=30.0)
     cursor = conn.cursor()
@@ -5188,7 +5633,7 @@ def init_database():
             stop_price REAL,
             tp_price REAL,
             sl_price REAL,
-            trailing BOOLEAN DEFAULT 0,
+            "trailing" BOOLEAN DEFAULT 0,
             trailing_pips INTEGER,
             status TEXT DEFAULT 'pending',
             created_at TEXT,
@@ -5269,6 +5714,11 @@ def init_database():
 
 def get_db_connection():
     """Get database connection with WAL mode for concurrent writes"""
+    if using_postgres():
+        return _PostgresCompatConnection(
+            timeout=SQLITE_CONNECTION_TIMEOUT_SECONDS,
+            row_factory=True,
+        )
     return build_sqlite_connection(
         database_path=DATABASE_PATH,
         timeout=SQLITE_CONNECTION_TIMEOUT_SECONDS,
@@ -5345,6 +5795,13 @@ if __name__ == "__main__":
 
 def init_backup_system(app):
     """Initialize automatic backup and recovery system"""
+    if using_postgres():
+        backup_mgr = _PostgresBackupManager()
+        recovery_mgr = _PostgresRecoveryManager()
+        logger.info('ℹ️ PostgreSQL mode: SQLite backup/recovery is disabled; using PostgreSQL runtime verification only')
+        data_status = recovery_mgr.verify_all_user_data()
+        logger.info(f"✅ Database verified: {data_status}")
+        return backup_mgr, recovery_mgr
     
     db_path = DATABASE_PATH
     backup_mgr = BackupManager(db_path=db_path)
@@ -5386,6 +5843,11 @@ BOT_CREATE_DB_BUSY_TIMEOUT_MS = int(os.getenv('BOT_CREATE_DB_BUSY_TIMEOUT_MS', '
 
 
 def get_bot_create_db_connection(*, row_factory: bool = True):
+    if using_postgres():
+        return _PostgresCompatConnection(
+            timeout=BOT_CREATE_DB_TIMEOUT_SECONDS,
+            row_factory=row_factory,
+        )
     return build_sqlite_connection(
         database_path=DATABASE_PATH,
         timeout=BOT_CREATE_DB_TIMEOUT_SECONDS,
@@ -5685,14 +6147,18 @@ class MT5Connection(BrokerConnection):
             import MetaTrader5 as mt5
             self.mt5 = mt5
             broker_cfg = get_mt5_config_for_broker(self.mt5_broker)
+            account_number = credentials.get('account') or credentials.get('account_number') or broker_cfg.get('account')
             resolved_server = credentials.get('server') or broker_cfg.get('server')
             # Prefer explicit credential path, then broker-specific config path.
             # Pass is_live to select the correct terminal for dual-terminal setups
             is_live = normalize_mt5_is_live_flag(self.mt5_broker, credentials.get('is_live', False), resolved_server)
+            resolved_server = normalize_mt5_server_name(self.mt5_broker, is_live, resolved_server, account_number)
             self.mt5_path = find_mt5_terminal_path(
                 self.mt5_broker,
                 credentials.get('path') or broker_cfg.get('path'),
-                is_live=is_live
+                is_live=is_live,
+                server=resolved_server,
+                account_number=account_number,
             )
             self.mt5_path = resolve_mt5_terminal_executable_path(self.mt5_path) or self.mt5_path
             self._ensure_mt5_terminal_started()
@@ -5873,7 +6339,7 @@ class MT5Connection(BrokerConnection):
             if account and not self.credentials.get('account_number'):
                 self.credentials['account_number'] = account
             
-            server = normalize_mt5_server_name(broker_name, is_live, server)
+            server = normalize_mt5_server_name(broker_name, is_live, server, account)
             self.credentials['server'] = server
 
             route_diagnostic = log_mt5_route_diagnostic(
@@ -23028,7 +23494,7 @@ def build_mt5_route_diagnostic(
     configured_path = normalized.get('path')
     is_mt5 = is_mt5_broker_name(broker_name)
 
-    selected_server = normalize_mt5_server_name(broker_name, is_live, configured_server)
+    selected_server = normalize_mt5_server_name(broker_name, is_live, configured_server, account_str)
 
     selected_path = None
     if is_mt5:
@@ -23036,6 +23502,8 @@ def build_mt5_route_diagnostic(
             broker_name,
             configured_path,
             is_live=is_live,
+            server=selected_server,
+            account_number=account_str,
         )
 
     return {
@@ -27686,7 +28154,7 @@ def save_broker_credentials():
                     'error': 'Exness requires: account_number, password, server'
                 }), 400
             if not server:
-                server = 'Exness-MT5Real27' if is_live else 'Exness-MT5Trial9'
+                server = normalize_mt5_server_name('Exness', is_live, server, account_number)
         else:
             return jsonify({
                 'success': False,
@@ -28360,7 +28828,12 @@ def test_broker_connection():
                     logger.warning(f'Could not check Exness user cap: {_cap_err}')
 
                 if not mt5_terminal_path:
-                    mt5_terminal_path = find_mt5_terminal_path(broker, is_live=is_live)
+                    mt5_terminal_path = find_mt5_terminal_path(
+                        broker,
+                        is_live=is_live,
+                        server=server,
+                        account_number=account,
+                    )
 
             defer_exness_verification = broker.lower() == 'exness'
             actual_balance = 10000.00  # Default fallback
@@ -28401,7 +28874,7 @@ def test_broker_connection():
                 if broker_l in ['xm', 'xm global']:
                     expected_server = normalize_mt5_server_name('XM Global', is_live, server)
                 elif broker_l == 'exness':
-                    expected_server = normalize_mt5_server_name('Exness', is_live, server)
+                    expected_server = normalize_mt5_server_name('Exness', is_live, server, account)
                 elif broker_l in ['pxbt', 'prime xbt', 'primexbt']:
                     expected_server = normalize_mt5_server_name('PXBT', is_live, server)
                 else:
@@ -28575,7 +29048,12 @@ def test_broker_connection():
                                 terminal_path = (
                                     resolve_mt5_terminal_executable_path(mt5_terminal_path)
                                     or mt5_terminal_path
-                                    or find_mt5_terminal_path(broker, is_live=is_live)
+                                    or find_mt5_terminal_path(
+                                        broker,
+                                        is_live=is_live,
+                                        server=server,
+                                        account_number=account,
+                                    )
                                 )
                                 init_ok = False
                                 if terminal_path:
@@ -36145,7 +36623,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             bot_credentials = {
                                 'account': cred_dict.get('account_number', ''),
                                 'password': cred_dict.get('password', ''),
-                                'server': cred_dict.get('server', 'Exness-MT5Real27'),
+                                'server': normalize_mt5_server_name(
+                                    'Exness',
+                                    bool(cred_dict.get('is_live', False)),
+                                    cred_dict.get('server'),
+                                    cred_dict.get('account_number'),
+                                ),
                                 'broker': resolved_broker_name,
                                 'is_live': bool(cred_dict.get('is_live', False))
                             }
@@ -36165,7 +36648,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
             bot_credentials = {
                 'account': '',
                 'password': '',
-                'server': 'Exness-MT5Real27',
+                'server': normalize_mt5_server_name('Exness', False, None, ''),
                 'broker': 'Exness',
                 'is_live': False
             }
@@ -48298,6 +48781,12 @@ def stripe_webhook():
 def manual_backup():
     """Manually create a backup (admin only)"""
     try:
+        if using_postgres():
+            return jsonify({
+                'success': False,
+                'error': 'PostgreSQL mode uses external backups. Use pg_dump or your managed PostgreSQL backup tooling.',
+            }), 409
+
         user_id = request.user_id
         
         # Verify user exists
@@ -48333,6 +48822,15 @@ def manual_backup():
 def list_backups():
     """Get list of all available backups"""
     try:
+        if using_postgres():
+            return jsonify({
+                'success': True,
+                'backups': [],
+                'total_count': 0,
+                'mode': 'external_postgres',
+                'message': 'PostgreSQL mode uses external backups; built-in SQLite backup listings are disabled.',
+            }), 200
+
         user_id = request.user_id
         
         # Verify user exists
@@ -48370,6 +48868,12 @@ def list_backups():
 def restore_from_backup():
     """Restore database from a specific backup (admin only, DANGEROUS)"""
     try:
+        if using_postgres():
+            return jsonify({
+                'success': False,
+                'error': 'PostgreSQL restore is disabled from this endpoint. Use native PostgreSQL restore tooling.',
+            }), 409
+
         user_id = request.user_id
         
         # Verify user exists
@@ -48451,12 +48955,14 @@ def system_health():
                 'users': data_status.get('users', 0),
                 'bots': data_status.get('bots', 0),
                 'credentials': data_status.get('credentials', 0),
+                'backend': 'postgres' if using_postgres() else 'sqlite',
             },
             'backup_system': {
                 'enabled': backup_manager.is_running,
                 'latest_backup': latest_backup['filename'] if latest_backup else None,
                 'latest_backup_time': latest_backup['created'].isoformat() if latest_backup else None,
                 'total_backups': len(backups),
+                'mode': 'external_postgres' if using_postgres() else 'sqlite_internal',
             },
         }), 200
         
@@ -48651,8 +49157,12 @@ def exness_onboard_wizard():
             at_capacity = (_exness_slots_used >= EXNESS_MAX_USERS) and not _existing_cred
 
             # Determine MT5 server and terminal path
-            expected_server = normalize_mt5_server_name('Exness', is_live, None)
-            terminal_path = EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH
+            expected_server = normalize_mt5_server_name('Exness', is_live, None, account_number)
+            terminal_path = _resolve_exness_terminal_path(
+                is_live=is_live,
+                server=expected_server,
+                account_number=account_number,
+            )
             terminal_available = bool(terminal_path and os.path.exists(str(terminal_path)))
 
             return jsonify({
@@ -48718,8 +49228,13 @@ def exness_onboard_wizard():
                     'capacity_limit': True,
                 }), 429
 
-            server = normalize_mt5_server_name('Exness', is_live, None)
-            terminal_path = mt5_terminal_path or (EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH)
+            server = normalize_mt5_server_name('Exness', is_live, None, account_number)
+            terminal_path = _resolve_exness_terminal_path(
+                configured_path=mt5_terminal_path,
+                is_live=is_live,
+                server=server,
+                account_number=account_number,
+            )
             if terminal_path:
                 terminal_path = resolve_mt5_terminal_executable_path(terminal_path) or str(terminal_path).strip()
             terminal_path_str = str(terminal_path) if terminal_path else None
@@ -50337,7 +50852,7 @@ def place_advanced_order(broker):
             order_id = str(uuid.uuid4())
             cursor.execute('''
                 INSERT INTO pxbt_orders 
-                (order_id, user_id, symbol, direction, quantity, order_type, limit_price, stop_price, tp_price, sl_price, trailing, trailing_pips, created_at)
+                (order_id, user_id, symbol, direction, quantity, order_type, limit_price, stop_price, tp_price, sl_price, "trailing", trailing_pips, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (order_id, user_id, symbol, direction.lower(), quantity, order_type, limit_price, stop_price, tp_price, sl_price, trailing, trailing_pips, datetime.now().isoformat()))
             
@@ -50734,7 +51249,8 @@ def shutdown_backup():
             rest_price_feed.stop()
         if trade_router:
             trade_router.shutdown()
-        backup_manager.create_backup()
+        if not using_postgres():
+            backup_manager.create_backup()
         backup_manager.stop_auto_backup()
         logger.info("✅ Final backup complete. System shutdown.")
     except Exception as e:
@@ -50895,7 +51411,14 @@ if __name__ == '__main__':
                 mt5_path=str(MT5_CONFIG['path']),
                 account=int(MT5_CONFIG['account']),
                 password=str(MT5_CONFIG['password']),
-                server=str(normalize_mt5_server_name('Exness', bool(MT5_CONFIG.get('is_live')), MT5_CONFIG['server'])),
+                server=str(
+                    normalize_mt5_server_name(
+                        'Exness',
+                        bool(MT5_CONFIG.get('is_live')),
+                        MT5_CONFIG['server'],
+                        MT5_CONFIG.get('account'),
+                    )
+                ),
                 broker_name='Exness',
                 timeout_seconds=30,
             )
