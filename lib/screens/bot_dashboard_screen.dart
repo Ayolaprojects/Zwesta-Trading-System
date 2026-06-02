@@ -503,7 +503,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       builder: (context, botService, currencyProvider, _) {
         final allBots = List<Map<String, dynamic>>.from(botService.activeBots);
 
-        // Apply search + status filter
+        // Apply search + status + mode filter
         final bots = allBots.where((bot) {
           final botId = (bot['botId'] ?? '').toString().toLowerCase();
           final symbol = (bot['symbol'] ?? bot['symbols'] ?? '').toString().toLowerCase();
@@ -512,11 +512,14 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               botId.contains(_searchQuery.toLowerCase()) ||
               symbol.contains(_searchQuery.toLowerCase()) ||
               strategy.contains(_searchQuery.toLowerCase());
-            final isEnabled = _isActiveBot(bot);
+          final isEnabled = _isActiveBot(bot);
           final matchesFilter = _filterStatus == 'all' ||
               (_filterStatus == 'active' && isEnabled) ||
               (_filterStatus == 'inactive' && !isEnabled);
-          return matchesSearch && matchesFilter;
+          final matchesMode = _tradingMode == 'DEMO'
+              ? !_isLiveBot(bot)
+              : _isLiveBot(bot);
+          return matchesSearch && matchesFilter && matchesMode;
         }).toList();
 
         // Top 5 newest bots (by creation time or just last 5)
@@ -527,8 +530,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           return bTime.compareTo(aTime);
         });
 
-        final activeBots = allBots.where(_isActiveBot).length;
-        final totalProfit = allBots.fold<double>(
+        final activeBots = bots.where(_isActiveBot).length;
+        final totalProfit = bots.fold<double>(
           0,
           (sum, b) => sum + _botAmount(b, ['allTimeProfit', 'totalProfit', 'profit']),
         );
@@ -1473,7 +1476,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ],
                     ),
                   ],
-                  if (accountEquity > 0 && accountEquity != accountBalance) ...[
+                  if (accountEquity > 0) ...[
                     const SizedBox(height: 4),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,

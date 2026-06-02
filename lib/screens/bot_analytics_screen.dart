@@ -236,10 +236,12 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   DateTime? _tradeTimestamp(Map<String, dynamic> trade) {
     final timeRaw =
         trade['closedAt'] ??
+        trade['exitTime'] ??
         trade['time'] ??
         trade['closeTime'] ??
         trade['time_close'] ??
         trade['openedAt'] ??
+        trade['entryTime'] ??
         trade['time_open'] ??
         trade['openTime'];
     if (timeRaw == null) {
@@ -286,10 +288,12 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
 
     for (final key in const [
       'closedAt',
+      'exitTime',
       'time',
       'closeTime',
       'time_close',
       'openedAt',
+      'entryTime',
       'time_open',
       'openTime',
       'ticket',
@@ -332,7 +336,7 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
 
     if (resolved.isEmpty) {
       for (final trade in _tradeHistoryRecords()) {
-        final timeRaw = trade['time'] ?? trade['closeTime'] ?? trade['time_close'] ?? trade['openedAt'];
+        final timeRaw = trade['exitTime'] ?? trade['time'] ?? trade['closeTime'] ?? trade['time_close'] ?? trade['openedAt'];
         final parsed = DateTime.tryParse(timeRaw?.toString() ?? '');
         if (parsed == null) {
           continue;

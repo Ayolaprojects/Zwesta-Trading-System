@@ -2213,11 +2213,17 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   Future<void> _alignActiveCredentialWithTradingMode({
     String? desiredMode,
   }) async {
+    final activeCredential = _brokerService.activeCredential;
+
+    if (desiredMode == null && activeCredential != null) {
+      await _persistTradingMode(activeCredential.isLive ? 'LIVE' : 'DEMO');
+      return;
+    }
+
     final tradingMode = (desiredMode ?? await _currentTradingMode())
         .trim()
         .toUpperCase();
     final expectsLive = tradingMode == 'LIVE';
-    final activeCredential = _brokerService.activeCredential;
 
     if (activeCredential != null && activeCredential.isLive == expectsLive) {
       return;
@@ -2226,6 +2232,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     for (final credential in _brokerService.credentials) {
       if (credential.isLive == expectsLive) {
         _brokerService.setActiveCredential(credential);
+        await _persistTradingMode(expectsLive ? 'LIVE' : 'DEMO');
         return;
       }
     }

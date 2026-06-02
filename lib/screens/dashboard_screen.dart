@@ -582,7 +582,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _totalBrokerBalance = 0;
 
   // Demo/Live balance toggle
-  String _balanceMode = 'live'; // 'all', 'live', 'demo'
+  String _balanceMode = 'all'; // 'all', 'live', 'demo'
   String _portfolioBrokerFilter = 'All';
 
   // Balance tracking for increases/decreases
@@ -626,8 +626,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final scopedBrokerKey = userId.isEmpty ? 'broker' : 'broker_$userId';
     final selected = prefs.getString(scopedPreferredBrokerKey) ?? prefs.getString(scopedBrokerKey) ?? 'Exness';
     final savedReportingCurrency = _normalizeCurrency(prefs.getString('reporting_currency') ?? 'USD');
-    final savedBalanceMode = (prefs.getString('dashboard_balance_mode') ?? 'live').trim().toLowerCase();
-    final normalizedBalanceMode = {'all', 'live', 'demo'}.contains(savedBalanceMode) ? savedBalanceMode : 'live';
+    final savedBalanceMode = (prefs.getString('dashboard_balance_mode') ?? 'all').trim().toLowerCase();
+    final normalizedBalanceMode = {'all', 'live', 'demo'}.contains(savedBalanceMode) ? savedBalanceMode : 'all';
     if (!mounted) {
       return;
     }
@@ -637,13 +637,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _reportingCurrency = savedReportingCurrency == 'ZAR' ? 'ZAR' : 'USD';
       _balanceMode = normalizedBalanceMode;
     });
-    if (normalizedBalanceMode != 'live') {
-      _fetchBrokerBalances();
-    }
+    _fetchBrokerBalances();
   }
 
   Future<void> _setBalanceMode(String mode) async {
-    final normalizedMode = {'all', 'live', 'demo'}.contains(mode) ? mode : 'live';
+    final normalizedMode = {'all', 'live', 'demo'}.contains(mode) ? mode : 'all';
     if (normalizedMode == _balanceMode) {
       return;
     }
