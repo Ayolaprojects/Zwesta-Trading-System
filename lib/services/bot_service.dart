@@ -48,7 +48,7 @@ class BotService extends ChangeNotifier {
   void startPolling({String? tradingMode, Duration interval = const Duration(seconds: 15)}) {
     final mode = tradingMode ?? _lastTradingMode;
     _pollTimer?.cancel();
-    if (mode == null || mode.isEmpty || _authPollingDisabled) {
+    if (_authPollingDisabled) {
       return;
     }
     _pollTimer = Timer.periodic(interval, (_) {
@@ -179,7 +179,9 @@ class BotService extends ChangeNotifier {
         return;
       }
 
-      var url = '$_apiUrl/api/bot/summary?mode=${mode.toUpperCase()}';
+      // Use mode=ALL so bots of any mode (LIVE/DEMO/Binance live) are always
+      // returned, regardless of the locally stored trading_mode preference.
+      var url = '$_apiUrl/api/bot/summary?mode=ALL';
       if (includeHistory) {
         url += '&include_history=true';
       }
@@ -263,6 +265,8 @@ class BotService extends ChangeNotifier {
       final prefs = await _getPrefs();
       final sessionToken = prefs.getString('auth_token');
       final userId = prefs.getString('user_id');
+        final tradingMode =
+          (prefs.getString('trading_mode') ?? 'DEMO').trim().toUpperCase();
 
       debugPrint('🔐 DEBUG: CreateBot - Checking session...');
       debugPrint('  All keys in SharedPreferences: ${prefs.getKeys()}');
@@ -294,6 +298,7 @@ class BotService extends ChangeNotifier {
         'botId': botId,
         'user_id': userId,
         'credentialId': accountId,
+        'mode': tradingMode == 'LIVE' ? 'live' : 'demo',
         'symbols': symbols,
         'strategy': strategy,
         'riskPerTrade': riskPerTrade,
@@ -322,7 +327,8 @@ class BotService extends ChangeNotifier {
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final responseData = jsonDecode(response.body);
         if (responseData['success'] == true) {
-          final createdMode = ((requestBody['mode'] ?? 'demo').toString()).toUpperCase();
+          final createdMode =
+              ((requestBody['mode'] ?? 'demo').toString()).toUpperCase();
           await prefs.setString('trading_mode', createdMode);
           await prefs.setBool('is_live_mode', createdMode == 'LIVE');
           await prefs.setString(

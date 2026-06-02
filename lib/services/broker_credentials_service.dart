@@ -152,15 +152,12 @@ class BrokerCredentialsService extends ChangeNotifier {
     }
 
     if (preferredCredentialId != null && preferredCredentialId.isNotEmpty) {
-      final normalizedModeForIdCheck = preferredTradingMode?.trim().toUpperCase();
       for (final credential in list) {
         if (credential.credentialId == preferredCredentialId) {
-          // Only use the stored ID if it matches the expected mode (or no mode specified)
-          if (normalizedModeForIdCheck == null ||
-              (normalizedModeForIdCheck == 'LIVE') == credential.isLive) {
-            return credential;
-          }
-          break; // ID found but wrong mode — fall through to mode-based selection
+          // An explicitly selected credential should win over a stale trading-mode
+          // preference. This prevents live selections from being silently replaced
+          // with demo credentials during bot creation.
+          return credential;
         }
       }
     }
@@ -169,7 +166,14 @@ class BrokerCredentialsService extends ChangeNotifier {
     final modeMatched = normalizedMode == null
         ? list
         : list.where((credential) => normalizedMode == 'LIVE' ? credential.isLive : !credential.isLive).toList();
-    final rankedPool = _rankCredentials(modeMatched.isNotEmpty ? modeMatched : list);
+    // When an explicit trading mode is requested, never fall back to the opposite
+    // mode even if no healthy credential exists for the requested mode. This
+    // prevents a demo credential from silently being selected when the live
+    // account is not yet connected / has no cached balance.
+    if (normalizedMode != null && modeMatched.isEmpty) {
+      return null;
+    }
+    final rankedPool = _rankCredentials(modeMatched);
 
     for (final brokerName in _brokerPriority) {
       for (final credential in rankedPool) {

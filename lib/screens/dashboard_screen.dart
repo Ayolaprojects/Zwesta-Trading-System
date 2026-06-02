@@ -252,8 +252,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   List<Map<String, dynamic>> _connectedAccountsFor([String? mode]) {
+    // Show all accounts that have data (connected or cached/offline), not only
+    // actively-connected ones. This ensures all 3 Exness portals are visible
+    // even when only 1 is actively connected via MT5.
     return _filteredBrokerAccounts(mode)
-        .where((account) => account['connected'] == true)
+        .where((account) =>
+            account['connected'] == true ||
+            (account['accountNumber'] != null &&
+             (account['accountNumber'] as String).isNotEmpty))
         .cast<Map<String, dynamic>>()
         .toList();
   }
