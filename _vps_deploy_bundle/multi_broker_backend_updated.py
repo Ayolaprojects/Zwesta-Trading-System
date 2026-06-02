@@ -31817,6 +31817,96 @@ def _fetch_binance_top_movers(spot: bool = True) -> List[str]:
         return list(_TOP_MOVERS_CACHE.get('symbols') or [])
 
 
+# Separate cache that stores full ticker data for direct-trading function
+_TOP_MOVERS_DATA_CACHE: Dict[str, Any] = {'data': {}, 'fetched_at': 0.0}
+
+
+def _fetch_binance_top_movers_with_data(spot: bool = True) -> Dict[str, Dict[str, Any]]:
+    """Return ticker data for top movers: {symbol: {pct_change, volume, direction, last_price}}.
+
+    direction is 'BUY' (positive move) or 'SELL' (negative move).
+    Uses same TTL cache as the symbol-only version.
+    """
+    import time as _time
+    now = _time.time()
+    if now - _TOP_MOVERS_DATA_CACHE['fetched_at'] < _TOP_MOVERS_TTL_SECONDS and _TOP_MOVERS_DATA_CACHE['data']:
+        return dict(_TOP_MOVERS_DATA_CACHE['data'])
+    try:
+        import urllib.request as _req
+        import json as _json
+        _url = 'https://api.binance.com/api/v3/ticker/24hr' if spot else 'https://fapi.binance.com/fapi/v1/ticker/24hr'
+        with _req.urlopen(_url, timeout=8) as _resp:  # noqa: S310
+            _tickers = _json.loads(_resp.read())
+        candidates: list = []
+        for t in _tickers:
+            sym = str(t.get('symbol') or '').upper()
+            if not sym.endswith('USDT'):
+                continue
+            base = sym[:-4]
+            if base in _TOP_MOVERS_EXCLUDE_BASES:
+                continue
+            try:
+                raw_pct = float(t.get('priceChangePercent') or 0)
+                pct = abs(raw_pct)
+                vol = float(t.get('quoteVolume') or 0)
+                last_price = float(t.get('lastPrice') or 0)
+            except (TypeError, ValueError):
+                continue
+            if pct < _TOP_MOVERS_MIN_CHANGE_PCT or vol < _TOP_MOVERS_MIN_VOLUME_USDT:
+                continue
+            candidates.append((sym, raw_pct, pct, vol, last_price))
+        candidates.sort(key=lambda x: (x[2], x[3]), reverse=True)
+        result: Dict[str, Dict[str, Any]] = {}
+        for sym, raw_pct, pct, vol, last_price in candidates[:_TOP_MOVERS_MAX_SYMBOLS]:
+            result[sym] = {
+                'pct_change': raw_pct,
+                'abs_pct': pct,
+                'volume_usdt': vol,
+                'last_price': last_price,
+                'direction': 'SELL' if raw_pct < 0 else 'BUY',
+            }
+        _TOP_MOVERS_DATA_CACHE['data'] = result
+        _TOP_MOVERS_DATA_CACHE['fetched_at'] = now
+        return result
+    except Exception as _exc:
+        logger.debug(f"[TopMovers] Failed to fetch top movers data: {_exc}")
+        return dict(_TOP_MOVERS_DATA_CACHE.get('data') or {})
+
+
+def _get_top_movers_direct_trade_candidates(
+    bot_config: Dict[str, Any],
+    spot: bool = True,
+) -> List[Dict[str, Any]]:
+    """Return tradeable top-mover candidates for direct momentum trading.
+
+    Each candidate: {symbol, direction, pct_change, volume_usdt, last_price}
+    Filters out symbols that already have an open position in this bot.
+    Only returns candidates when topMoversDirectTrading is enabled on the bot.
+    """
+    if not bot_config.get('topMoversDirectTrading', False):
+        return []
+    movers = _fetch_binance_top_movers_with_data(spot=spot)
+    if not movers:
+        return []
+    open_positions = bot_config.get('open_positions') or {}
+    open_symbols = {str(p.get('symbol') or '').upper() for p in open_positions.values()} if isinstance(open_positions, dict) else set()
+    min_pct = float(bot_config.get('topMoverMinChangePct', 4.0))  # configurable, default 4%
+    candidates = []
+    for sym, data in movers.items():
+        if sym.upper() in open_symbols:
+            continue  # already holding this symbol
+        if data['abs_pct'] < min_pct:
+            continue
+        candidates.append({
+            'symbol': sym,
+            'direction': data['direction'],
+            'pct_change': data['pct_change'],
+            'volume_usdt': data['volume_usdt'],
+            'last_price': data['last_price'],
+        })
+    return candidates
+
+
 DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'enabled': True,
     'activationPercent': 3.0,
@@ -38054,6 +38144,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             continue
 
                         order_type = trade_params['type']
+                        # Top-movers direct trading: override direction from momentum signal
+                        _dm_dir = bot_config.pop('_topMoverDirectDirection', None)
+                        _dm_sym = bot_config.pop('_topMoverDirectSymbol', None)
+                        if _dm_dir and _dm_sym and str(_dm_sym).upper() == str(symbol).upper():
+                            order_type = _dm_dir
+                            logger.info(f"[TopMovers-Direct] Bot {bot_id}: direction overridden to {order_type} for {symbol} (momentum trade)")
                         if fixed_trade_amount and is_mt5 and mt5_api is not None:
                             fixed_trade_volume, volume_details = estimate_mt5_stop_loss_risk_volume(
                                 float(fixed_trade_amount),
@@ -40895,8 +40991,29 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 if _new_movers:
                                     logger.debug(f"🔥 Bot {bot_id}: Top-movers added to scan universe: {_new_movers}")
 
+                        # --- Top-Movers DIRECT trading (momentum trades, bypasses signal engine) ---
+                        if _is_binance and bot_config.get('topMoversDirectTrading', False):
+                            _is_futures_dm = str(bot_config.get('marketType') or bot_config.get('market') or '').lower() == 'futures'
+                            _dm_candidates = _get_top_movers_direct_trade_candidates(bot_config, spot=not _is_futures_dm)
+                            _eff_max_pos_dm = int(bot_config.get('effectiveMaxOpenPositions') or bot_config.get('maxOpenPositions') or 0)
+                            _cur_open_dm = len(bot_config.get('open_positions') or {})
+                            for _dm in _dm_candidates:
+                                if _eff_max_pos_dm > 0 and _cur_open_dm >= _eff_max_pos_dm:
+                                    logger.debug(f"[TopMovers-Direct] Bot {bot_id}: position limit full ({_cur_open_dm}/{_eff_max_pos_dm}), skipping {_dm['symbol']}")
+                                    break
+                                logger.info(
+                                    f"[TopMovers-Direct] Bot {bot_id}: momentum signal → {_dm['direction']} {_dm['symbol']} "
+                                    f"({_dm['pct_change']:+.1f}% 24h, vol ${_dm['volume_usdt']/1e6:.1f}M)"
+                                )
+                                # Inject a synthetic best_signal so the normal trade execution path fires
+                                best_signal_strength = signal_threshold  # meets threshold exactly
+                                best_signal_symbol = _dm['symbol']
+                                # Store the direction hint so the trade cycle uses it
+                                bot_config['_topMoverDirectDirection'] = _dm['direction']
+                                bot_config['_topMoverDirectSymbol'] = _dm['symbol']
+                                break  # one trade per poll cycle
 
-                            if poll_elapsed >= next_heartbeat_at and poll_elapsed < trading_interval:
+
                                 logger.info(
                                     f"💓 Bot {bot_id}: Scanner idle - no eligible symbols under current session/weekend policy"
                                 )

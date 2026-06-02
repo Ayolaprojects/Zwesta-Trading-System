@@ -20,7 +20,7 @@ if %errorlevel% neq 0 (
 )
 
 set BACKEND_DIR=C:\backend
-set START_SCRIPT=start_zwesta_backend.ps1
+set START_SCRIPT=start_watchdog.bat
 set TASK_NAME=ZwestaBackendAutoRestart
 
 echo Creating task to auto-start backend...
@@ -32,14 +32,14 @@ schtasks /delete /tn "%TASK_NAME%" /f >nul 2>&1
 REM Validate start script
 if not exist "%BACKEND_DIR%\%START_SCRIPT%" (
     echo ERROR: %BACKEND_DIR%\%START_SCRIPT% was not found.
-    echo Deploy start_zwesta_backend.ps1 before creating the scheduled task.
+    echo Deploy start_watchdog.bat before creating the scheduled task.
     pause
     exit /b 1
 )
 
-REM Create task that starts the unified backend launcher on boot.
+REM Create task that starts the watchdog batch wrapper on boot.
 echo Creating scheduled task "%TASK_NAME%"...
-schtasks /create /tn "%TASK_NAME%" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File \"%BACKEND_DIR%\%START_SCRIPT%\"" /sc onstart /rl highest /f
+schtasks /create /tn "%TASK_NAME%" /tr "cmd.exe /c \"%BACKEND_DIR%\%START_SCRIPT%\"" /sc onstart /rl highest /f
 
 if %errorlevel% equ 0 (
     echo.
@@ -48,7 +48,7 @@ if %errorlevel% equ 0 (
     echo Task Details:
     echo - Name: %TASK_NAME%
     echo - Trigger: At system startup
-    echo - Action: Start unified backend launcher
+    echo - Action: Start watchdog launcher batch file
     echo - Privilege: Highest ^(Admin^)
     echo.
     echo The backend launcher will now start automatically when Windows boots,

@@ -9,7 +9,24 @@ $pythonExe = 'c:\zwesta-trader\.venv\Scripts\python.exe'
 $serviceNames = @('postgresql-x64-18', 'postgresql-x64-17')
 
 function Get-PostgresService {
-    return Get-Service -Name $serviceNames -ErrorAction SilentlyContinue | Select-Object -First 1
+    $services = Get-Service -Name $serviceNames -ErrorAction SilentlyContinue
+    if (-not $services) {
+        return $null
+    }
+
+    $runningService = $services | Where-Object { $_.Status -eq 'Running' } | Select-Object -First 1
+    if ($runningService) {
+        return $runningService
+    }
+
+    foreach ($serviceName in $serviceNames) {
+        $service = $services | Where-Object { $_.Name -eq $serviceName } | Select-Object -First 1
+        if ($service) {
+            return $service
+        }
+    }
+
+    return $services | Select-Object -First 1
 }
 
 function Ensure-PostgresRunning {
