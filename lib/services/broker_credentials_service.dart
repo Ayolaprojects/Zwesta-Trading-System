@@ -128,9 +128,15 @@ class BrokerCredentialsService extends ChangeNotifier {
     }
 
     if (preferredCredentialId != null && preferredCredentialId.isNotEmpty) {
+      final normalizedModeForIdCheck = preferredTradingMode?.trim().toUpperCase();
       for (final credential in list) {
         if (credential.credentialId == preferredCredentialId) {
-          return credential;
+          // Only use the stored ID if it matches the expected mode (or no mode specified)
+          if (normalizedModeForIdCheck == null ||
+              (normalizedModeForIdCheck == 'LIVE') == credential.isLive) {
+            return credential;
+          }
+          break; // ID found but wrong mode — fall through to mode-based selection
         }
       }
     }

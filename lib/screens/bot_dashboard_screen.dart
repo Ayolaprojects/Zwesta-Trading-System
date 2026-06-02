@@ -501,18 +501,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   Widget build(BuildContext context) {
     final content = Consumer2<BotService, CurrencyProvider>(
       builder: (context, botService, currencyProvider, _) {
-        final expectedMode = _tradingMode.trim().toUpperCase();
-        final allBots = List<Map<String, dynamic>>.from(botService.activeBots).where((bot) {
-          final botMode = (bot['mode'] ?? '').toString().trim().toUpperCase();
-          if (expectedMode != 'LIVE' && expectedMode != 'DEMO') {
-            return true;
-          }
-          if (botMode.isNotEmpty) {
-            return botMode == expectedMode;
-          }
-          final inferredLive = bot['is_live'] == true;
-          return expectedMode == 'LIVE' ? inferredLive : !inferredLive;
-        }).toList();
+        final allBots = List<Map<String, dynamic>>.from(botService.activeBots);
 
         // Apply search + status filter
         final bots = allBots.where((bot) {

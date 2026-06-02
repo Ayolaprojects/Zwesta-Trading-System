@@ -179,7 +179,7 @@ class BotService extends ChangeNotifier {
         return;
       }
 
-      var url = '$_apiUrl/api/bot/summary?mode=$mode';
+      var url = '$_apiUrl/api/bot/summary?mode=${mode.toUpperCase()}';
       if (includeHistory) {
         url += '&include_history=true';
       }

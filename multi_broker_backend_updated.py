@@ -6471,6 +6471,25 @@ class MT5Connection(BrokerConnection):
                                 logger.warning(f"  ⚠️ Fast login succeeded but account verification failed — falling back to initialize()")
                         else:
                             err = self.mt5.last_error()
+                            err_code = err[0] if isinstance(err, tuple) and len(err) > 0 else -1
+                            err_msg = str(err).lower()
+                            # Transient IPC errors (-10014 = future not completed, -10005/-10004 = IPC busy):
+                            # retry fast login once with a short wait before falling back to initialize().
+                            if err_code in (-10014, -10005, -10004) or 'future not completed' in err_msg or 'ipc' in err_msg:
+                                logger.warning(f"  ⚠️ Transient IPC error during fast login ({err}) — waiting 2s and retrying once")
+                                time.sleep(2)
+                                login_ok = self.mt5.login(int(account), password=str(password), server=str(server))
+                                if login_ok:
+                                    time.sleep(1)
+                                    acct_check = self.mt5.account_info()
+                                    if acct_check and acct_check.login == int(account):
+                                        self.connected = True
+                                        logger.info(f"✅ Fast-switched (IPC retry) to MT5 account {account}")
+                                        with mt5_account_lock:
+                                            mt5_current_account = int(account)
+                                        self.get_account_info()
+                                        self._subscribe_symbols()
+                                        return True
                             logger.warning(f"  ⚠️ Fast mt5.login() failed: {err} — falling back to initialize()")
                             if is_manual_test and self._is_auth_error(err):
                                 self._set_last_error('Invalid Exness account number, password, or server.', 'AUTH_FAILED')
@@ -6480,9 +6499,11 @@ class MT5Connection(BrokerConnection):
             except Exception as fe:
                 logger.debug(f"  (Fast-path mt5.login() not attempted: {fe})")
             
-            # Retry logic: balance checks get 1 attempt (fast fail), trading gets 3
+            # Retry logic: balance checks get 1 attempt (fast fail), manual tests get 2
+            # (allows one recovery from transient 'future not completed' IPC errors),
+            # background trading gets 3.
             is_balance_check = self.credentials.get('is_balance_check', False)
-            max_retries = 1 if (is_balance_check or is_manual_test) else 3
+            max_retries = 1 if is_balance_check else (2 if is_manual_test else 3)
             for attempt in range(1, max_retries + 1):
                 logger.info(f"MT5 connection attempt {attempt}/{max_retries}: Account={account}, Server={server}")
                 
@@ -6673,8 +6694,9 @@ class MT5Connection(BrokerConnection):
                             break  # Stop retrying immediately on auth failure
                         # Check for IPC timeout during initialization
                         error_code = init_error[0] if isinstance(init_error, tuple) else -1
-                        if error_code in [-10005, -10004]:  # IPC timeout or No IPC connection
-                            logger.warning(f"  ⚠️  IPC CONNECTION ISSUE - will wait longer before retry")
+                        err_desc = str(init_error).lower()
+                        if error_code in [-10005, -10004, -10014] or 'future not completed' in err_desc:  # IPC timeout, No IPC connection, or Future not completed
+                            logger.warning(f"  ⚠️  IPC CONNECTION ISSUE (code {error_code}) - will wait longer before retry")
                             ensure_mt5_terminal_running(self.mt5_path, broker_name)
                         logger.debug(f"    (Terminal process may still be starting...)")
                 
@@ -33308,6 +33330,53 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             ):
                 close_reason = 'FOREX_EARLY_SIGNAL_REVERSAL_LOSS'
 
+        # ── MOMENTUM STAGNATION EXIT: close flat positions on dead/no-movement symbols ──
+        # Fires when the signal has gone neutral/flat and the position is going nowhere.
+        # Applies to ALL selected symbols — not just movers. Prevents capital being tied
+        # up in symbols that have stopped moving, freeing the bot to find better setups.
+        _stagnation_min_hold = 20.0 if is_exness_forex_position else 12.0
+        _stagnation_signal_cap = 35.0   # signal strength below this = symbol has no momentum
+        if not close_reason:
+            if (
+                not tracked.get('isPyramidAddon')
+                and (protection_hold_satisfied or time_in_position >= _stagnation_min_hold)
+                and peak_profit <= meaningful_profit_peak   # never meaningfully profitable
+                and current_profit < 0                     # position is losing (not flat positive)
+                and current_profit > stale_loss_threshold  # not yet at stale-loss threshold (that already fires)
+                and (current_signal == 'NEUTRAL' or current_signal_strength < _stagnation_signal_cap)
+                and not _recent_close_request(tracked)
+            ):
+                close_reason = 'MOMENTUM_STAGNATION_EXIT'
+                logger.info(
+                    f"[MOMENTUM] Bot {bot_id}: position {ticket} on {symbol} "
+                    f"has stagnated (signal={current_signal} strength={current_signal_strength:.0f}, "
+                    f"profit={current_profit:.2f} {_currency_label} after {time_in_position:.0f}m) — closing flat position"
+                )
+
+        # ── MOMENTUM DECLINE EXIT: close faster when signal actively opposes the trade ──
+        # Unlike STALE_LOSS_EXIT (waits for full threshold) or FOREX_EARLY_SIGNAL_REVERSAL_LOSS
+        # (requires stale_loss_threshold to be hit), this fires as soon as the signal reverses
+        # against a losing position that never reached meaningful profit.
+        # Covers all selected symbols and top-mover adds equally.
+        _decline_min_hold = 8.0 if is_exness_forex_position else 5.0
+        _decline_loss_trigger = stale_loss_threshold * 0.5  # half of stale threshold — fires earlier
+        if not close_reason:
+            if (
+                not tracked.get('isPyramidAddon')
+                and (protection_hold_satisfied or time_in_position >= _decline_min_hold)
+                and peak_profit <= 0                       # never in profit
+                and current_profit <= _decline_loss_trigger  # at least half the stale-loss threshold
+                and _signal_reversed_for_position(tracked.get('type', ''), current_signal)
+                and current_signal_strength >= 50.0        # signal is clear, not just noise
+                and not _recent_close_request(tracked)
+            ):
+                close_reason = 'MOMENTUM_DECLINE_EXIT'
+                logger.info(
+                    f"[MOMENTUM] Bot {bot_id}: position {ticket} on {symbol} "
+                    f"declining with reversed signal ({current_signal} {current_signal_strength:.0f}, "
+                    f"profit={current_profit:.2f} {_currency_label} after {time_in_position:.0f}m) — exiting early"
+                )
+
         if not close_reason and tracked.get('isPyramidAddon'):
             if (
                 time_in_position >= pyramid_max_hold_minutes
@@ -33383,6 +33452,9 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
                     cooldown_minutes = max(cooldown_minutes, 720.0)
                 elif close_reason == 'STALL_RETRACE_TAKE_PROFIT':
                     cooldown_minutes = max(cooldown_minutes, 15.0)
+                elif close_reason in {'MOMENTUM_STAGNATION_EXIT', 'MOMENTUM_DECLINE_EXIT'}:
+                    # Give the symbol 20 mins to regain momentum before re-entering
+                    cooldown_minutes = max(cooldown_minutes, 20.0)
                 cooldown_until = _set_symbol_reentry_cooldown(
                     bot_config,
                     tracked.get('symbol', ''),
