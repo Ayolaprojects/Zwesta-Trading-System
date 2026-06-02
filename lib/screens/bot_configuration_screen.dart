@@ -55,6 +55,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   bool _intelligentScanner = true;
   // Top-movers scanner: follow Binance USDT pairs with highest 24h momentum
   bool _topMoversEnabled = true;
+  // Top-movers direct trading: bypass signal engine and trade momentum directly
+  bool _topMoversDirectTrading = false;
   static const List<double> _tradeAmountPresets = [
     20,
     50,
@@ -2349,6 +2351,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         _allowedVolatility = allowedVolatility;
         _intelligentScanner = config['intelligentScanner'] == true;
         _topMoversEnabled = config['topMoversEnabled'] != false;
+        _topMoversDirectTrading = config['topMoversDirectTrading'] == true;
         _enableProfitProtection =
             (profitProtection['enabled'] ?? _enableProfitProtection) == true;
         _profitProtectionActivationPercent =
@@ -3291,6 +3294,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'volatilityFilterEnabled': _volatilityFilterEnabled,
       'intelligentScanner': autoScanner,
       'topMoversEnabled': _topMoversEnabled,
+      'topMoversDirectTrading': _topMoversDirectTrading,
       'copyTradingEnabled': _copyTradingEnabled,
       'copyTradingSourceMode': _copyTradingEnabled
           ? _copyTradingSourceMode
@@ -5160,6 +5164,62 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                           style: TextStyle(
                             color: _topMoversEnabled
                                 ? Colors.orange.withOpacity(0.8)
+                                : Colors.grey,
+                            fontSize: 12,
+                          ),
+                        ),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Top-Movers Direct Trading Toggle
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: _topMoversDirectTrading
+                              ? [
+                                  Colors.deepOrange.withOpacity(0.15),
+                                  Colors.orange.withOpacity(0.08),
+                                ]
+                              : [
+                                  Colors.grey.withOpacity(0.1),
+                                  Colors.grey.withOpacity(0.1),
+                                ],
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _topMoversDirectTrading
+                              ? Colors.deepOrange.withOpacity(0.6)
+                              : Colors.grey.withOpacity(0.3),
+                        ),
+                      ),
+                      child: SwitchListTile(
+                        value: _topMoversDirectTrading,
+                        onChanged: (val) {
+                          setState(() => _topMoversDirectTrading = val);
+                        },
+                        title: Row(
+                          children: [
+                            Icon(
+                              Icons.bolt,
+                              color: _topMoversDirectTrading
+                                  ? Colors.deepOrange
+                                  : Colors.grey,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            const Text('Top Movers Direct Trading'),
+                          ],
+                        ),
+                        subtitle: Text(
+                          _topMoversDirectTrading
+                              ? 'ON — Bot executes momentum trades directly when a top mover is detected, bypassing the signal engine. Requires Top Movers Scanner.'
+                              : 'OFF — Top movers are only added to the scan list; the signal engine decides entries.',
+                          style: TextStyle(
+                            color: _topMoversDirectTrading
+                                ? Colors.deepOrange.withOpacity(0.8)
                                 : Colors.grey,
                             fontSize: 12,
                           ),

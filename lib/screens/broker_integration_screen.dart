@@ -125,15 +125,52 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   Future<void> _persistPreferredBrokerChoice(String broker) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('preferred_broker_display', _sanitizeSelectedBroker(broker));
+    final userId = prefs.getString('user_id') ?? '';
+    await prefs.setString(
+      _userScopedPrefKey('preferred_broker_display', userId),
+      _sanitizeSelectedBroker(broker),
+    );
   }
 
   double _doubleValue(dynamic value) =>
       value is num ? value.toDouble() : double.tryParse(value?.toString() ?? '0') ?? 0.0;
 
+  static const Map<String, String> _exnessKnownLiveServers = {
+    '223689940': 'MT5Real30',
+    '295677214': 'Exness-MT5Real27',
+  };
+
+  static const Map<String, String> _exnessKnownServerPaths = {
+    'MT5Real30': r'C:\MT5\Exness-Live\Max terminal64.exe\terminal64.exe',
+    'Exness-MT5Real27': r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe',
+    'Exness-MT5Trial9': r'C:\Program Files\MetaTrader 5\terminal64.exe',
+  };
+
+  String _resolveExnessServer({
+    bool? isLiveOverride,
+    String? accountNumber,
+    String? fallbackServer,
+  }) {
+    final isLive = isLiveOverride ?? _isLiveMode;
+    final providedServer = (fallbackServer ?? '').trim();
+    if (providedServer.isNotEmpty) {
+      return providedServer;
+    }
+    if (!isLive) {
+      return 'Exness-MT5Trial9';
+    }
+    final normalizedAccount = (accountNumber ?? _accountController.text).trim();
+    return _exnessKnownLiveServers[normalizedAccount] ?? 'Exness-MT5Real27';
+  }
+
   String? _preferredMt5TerminalPath() {
     if (_isExnessBroker) {
-      return _isLiveMode ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo';
+      final resolvedServer = _resolveExnessServer(
+        isLiveOverride: _isLiveMode,
+        accountNumber: _accountController.text,
+        fallbackServer: _serverController.text,
+      );
+      return _exnessKnownServerPaths[resolvedServer] ?? (_isLiveMode ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo');
     }
     return null;
   }
@@ -156,7 +193,51 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   String _formatMarginLevel(double value) => value > 0 ? '${value.toStringAsFixed(2)}%' : '-';
 
-  String _modePrefKey(String baseKey, bool isLive) => '${baseKey}_${isLive ? 'live' : 'demo'}';
+  String _userScopedPrefKey(String baseKey, String userId) {
+    final normalizedUserId = userId.trim();
+    if (normalizedUserId.isEmpty) {
+      return baseKey;
+    }
+    return '${baseKey}_$normalizedUserId';
+  }
+
+  String _modePrefKey(String baseKey, bool isLive, {String userId = ''}) {
+    final modeKey = '${baseKey}_${isLive ? 'live' : 'demo'}';
+    return _userScopedPrefKey(modeKey, userId);
+  }
+
+  String? _scopedString(SharedPreferences prefs, String baseKey, {String userId = '', bool allowLegacyFallback = false}) {
+    final scopedValue = prefs.getString(_userScopedPrefKey(baseKey, userId));
+    if (scopedValue != null) {
+      return scopedValue;
+    }
+    if (allowLegacyFallback || userId.trim().isEmpty) {
+      return prefs.getString(baseKey);
+    }
+    return null;
+  }
+
+  bool? _scopedBool(SharedPreferences prefs, String baseKey, {String userId = '', bool allowLegacyFallback = false}) {
+    final scopedKey = _userScopedPrefKey(baseKey, userId);
+    if (prefs.containsKey(scopedKey)) {
+      return prefs.getBool(scopedKey);
+    }
+    if (allowLegacyFallback || userId.trim().isEmpty) {
+      return prefs.getBool(baseKey);
+    }
+    return null;
+  }
+
+  double? _scopedDouble(SharedPreferences prefs, String baseKey, {String userId = '', bool allowLegacyFallback = false}) {
+    final scopedKey = _userScopedPrefKey(baseKey, userId);
+    if (prefs.containsKey(scopedKey)) {
+      return prefs.getDouble(scopedKey);
+    }
+    if (allowLegacyFallback || userId.trim().isEmpty) {
+      return prefs.getDouble(baseKey);
+    }
+    return null;
+  }
 
   String _effectiveAccountNumber() {
     if (_isBinanceBroker) {
@@ -170,54 +251,57 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   Future<void> _persistModeScopedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id') ?? '';
     if (_isBinanceBroker) {
-      await prefs.setString(_modePrefKey('binance_api_key', _isLiveMode), _apiKeyController.text);
-      await prefs.setString(_modePrefKey('binance_api_secret', _isLiveMode), _passwordController.text);
-      await prefs.setString(_modePrefKey('binance_market', _isLiveMode), _serverController.text);
+      await prefs.setString(_modePrefKey('binance_api_key', _isLiveMode, userId: userId), _apiKeyController.text);
+      await prefs.setString(_modePrefKey('binance_api_secret', _isLiveMode, userId: userId), _passwordController.text);
+      await prefs.setString(_modePrefKey('binance_market', _isLiveMode, userId: userId), _serverController.text);
       return;
     }
 
-    await prefs.setString(_modePrefKey('mt5_account', _isLiveMode), _accountController.text);
-    await prefs.setString(_modePrefKey('mt5_password', _isLiveMode), _passwordController.text);
-    await prefs.setString(_modePrefKey('mt5_server', _isLiveMode), _serverController.text);
+    await prefs.setString(_modePrefKey('mt5_account', _isLiveMode, userId: userId), _accountController.text);
+    await prefs.setString(_modePrefKey('mt5_password', _isLiveMode, userId: userId), _passwordController.text);
+    await prefs.setString(_modePrefKey('mt5_server', _isLiveMode, userId: userId), _serverController.text);
     if (_isFxcmBroker) {
-      await prefs.setString(_modePrefKey('fxcm_account', _isLiveMode), _accountController.text);
-      await prefs.setString(_modePrefKey('fxcm_password', _isLiveMode), _passwordController.text);
-      await prefs.setString(_modePrefKey('fxcm_server', _isLiveMode), _serverController.text);
+      await prefs.setString(_modePrefKey('fxcm_account', _isLiveMode, userId: userId), _accountController.text);
+      await prefs.setString(_modePrefKey('fxcm_password', _isLiveMode, userId: userId), _passwordController.text);
+      await prefs.setString(_modePrefKey('fxcm_server', _isLiveMode, userId: userId), _serverController.text);
     }
   }
 
   Future<void> _persistCurrentInputDraft() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('broker', _selectedBroker);
-    await prefs.setBool('is_live_mode', _isLiveMode);
+    final userId = prefs.getString('user_id') ?? '';
+    await prefs.setString(_userScopedPrefKey('broker', userId), _selectedBroker);
+    await prefs.setBool(_userScopedPrefKey('is_live_mode', userId), _isLiveMode);
     if (_isBinanceBroker) {
-      await prefs.setString('broker_api_key', _apiKeyController.text);
-      await prefs.setString('binance_api_secret', _passwordController.text);
-      await prefs.setString('binance_market', _serverController.text);
-      await prefs.remove('account_number');
+      await prefs.setString(_userScopedPrefKey('broker_api_key', userId), _apiKeyController.text);
+      await prefs.setString(_userScopedPrefKey('binance_api_secret', userId), _passwordController.text);
+      await prefs.setString(_userScopedPrefKey('binance_market', userId), _serverController.text);
+      await prefs.remove(_userScopedPrefKey('account_number', userId));
     } else if (_isFxcmBroker) {
-      await prefs.setString('fxcm_account_number', _accountController.text);
-      await prefs.setString('fxcm_password', _passwordController.text);
-      await prefs.setString('fxcm_server', _serverController.text);
+      await prefs.setString(_userScopedPrefKey('fxcm_account_number', userId), _accountController.text);
+      await prefs.setString(_userScopedPrefKey('fxcm_password', userId), _passwordController.text);
+      await prefs.setString(_userScopedPrefKey('fxcm_server', userId), _serverController.text);
     } else {
-      await prefs.setString('account_number', _accountController.text);
-      await prefs.setString('mt5_account', _accountController.text);
-      await prefs.setString('mt5_password', _passwordController.text);
-      await prefs.setString('mt5_server', _serverController.text);
+      await prefs.setString(_userScopedPrefKey('account_number', userId), _accountController.text);
+      await prefs.setString(_userScopedPrefKey('mt5_account', userId), _accountController.text);
+      await prefs.setString(_userScopedPrefKey('mt5_password', userId), _passwordController.text);
+      await prefs.setString(_userScopedPrefKey('mt5_server', userId), _serverController.text);
     }
-    await prefs.setString('broker_api_key', _apiKeyController.text);
-    await prefs.setString('broker_username', _usernameController.text);
+    await prefs.setString(_userScopedPrefKey('broker_api_key', userId), _apiKeyController.text);
+    await prefs.setString(_userScopedPrefKey('broker_username', userId), _usernameController.text);
     await _persistModeScopedCredentials();
   }
 
   Future<void> _restoreModeScopedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id') ?? '';
     if (_isBinanceBroker) {
-      final modeApiKey = prefs.getString(_modePrefKey('binance_api_key', _isLiveMode));
-      final modeApiSecret = prefs.getString(_modePrefKey('binance_api_secret', _isLiveMode));
-      final modeMarket = prefs.getString(_modePrefKey('binance_market', _isLiveMode));
-      final fallbackMarket = prefs.getString('binance_market') ?? '';
+      final modeApiKey = prefs.getString(_modePrefKey('binance_api_key', _isLiveMode, userId: userId));
+      final modeApiSecret = prefs.getString(_modePrefKey('binance_api_secret', _isLiveMode, userId: userId));
+      final modeMarket = prefs.getString(_modePrefKey('binance_market', _isLiveMode, userId: userId));
+      final fallbackMarket = _scopedString(prefs, 'binance_market', userId: userId) ?? '';
       final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
 
       setState(() {
@@ -234,40 +318,49 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     }
 
     final modeAccount = _isFxcmBroker
-      ? prefs.getString(_modePrefKey('fxcm_account', _isLiveMode))
-      : prefs.getString(_modePrefKey('mt5_account', _isLiveMode));
+      ? prefs.getString(_modePrefKey('fxcm_account', _isLiveMode, userId: userId))
+      : prefs.getString(_modePrefKey('mt5_account', _isLiveMode, userId: userId));
     final modePassword = _isFxcmBroker
-      ? prefs.getString(_modePrefKey('fxcm_password', _isLiveMode))
-      : prefs.getString(_modePrefKey('mt5_password', _isLiveMode));
+      ? prefs.getString(_modePrefKey('fxcm_password', _isLiveMode, userId: userId))
+      : prefs.getString(_modePrefKey('mt5_password', _isLiveMode, userId: userId));
     final modeServer = _isFxcmBroker
-      ? prefs.getString(_modePrefKey('fxcm_server', _isLiveMode))
-      : prefs.getString(_modePrefKey('mt5_server', _isLiveMode));
+      ? prefs.getString(_modePrefKey('fxcm_server', _isLiveMode, userId: userId))
+      : prefs.getString(_modePrefKey('mt5_server', _isLiveMode, userId: userId));
     final fallbackAccount = _isFxcmBroker
-      ? (prefs.getString('fxcm_account_number') ?? '')
-      : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '');
+      ? (_scopedString(prefs, 'fxcm_account_number', userId: userId) ?? '')
+      : (_scopedString(prefs, 'account_number', userId: userId) ?? _scopedString(prefs, 'mt5_account', userId: userId) ?? '');
     final fallbackPassword = _isFxcmBroker
-      ? (prefs.getString('fxcm_password') ?? '')
-      : (prefs.getString('mt5_password') ?? '');
+      ? (_scopedString(prefs, 'fxcm_password', userId: userId) ?? '')
+      : (_scopedString(prefs, 'mt5_password', userId: userId) ?? '');
     final fallbackServer = _isFxcmBroker
-      ? (prefs.getString('fxcm_server') ?? '')
-      : (prefs.getString('mt5_server') ?? '');
-    final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
+      ? (_scopedString(prefs, 'fxcm_server', userId: userId) ?? '')
+      : (_scopedString(prefs, 'mt5_server', userId: userId) ?? '');
+    final resolvedAccount = (modeAccount ?? fallbackAccount).trim();
+    final computedServer = _defaultServerForSelectedBroker(
+      isLiveOverride: _isLiveMode,
+      accountNumber: resolvedAccount,
+      fallbackServer: (modeServer != null && modeServer.isNotEmpty) ? modeServer : fallbackServer,
+    );
 
     setState(() {
       _accountController.text = modeAccount ?? fallbackAccount;
       _passwordController.text = modePassword ?? fallbackPassword;
       _serverController.text = (modeServer != null && modeServer.isNotEmpty)
           ? modeServer
-          : ((fallbackServer.isNotEmpty && !_isExnessBroker) ? fallbackServer : computedServer);
+          : (fallbackServer.isNotEmpty ? fallbackServer : computedServer);
       _isConnected = false;
       _activeAccount = null;
     });
   }
 
-  String _defaultServerForSelectedBroker({bool? isLiveOverride}) {
+  String _defaultServerForSelectedBroker({bool? isLiveOverride, String? accountNumber, String? fallbackServer}) {
     final isLive = isLiveOverride ?? _isLiveMode;
     if (_selectedBroker.toLowerCase() == 'exness') {
-      return isLive ? 'Exness-MT5Real27' : 'Exness-MT5Trial9';
+      return _resolveExnessServer(
+        isLiveOverride: isLive,
+        accountNumber: accountNumber,
+        fallbackServer: fallbackServer,
+      );
     }
     if (_isFxcmBroker) {
       return isLive ? 'real' : 'demo';
@@ -284,63 +377,70 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
   void _loadSavedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedBroker = prefs.getString('broker') ?? 'Exness';
+    final userId = prefs.getString('user_id') ?? '';
+    final savedBroker = _scopedString(prefs, 'broker', userId: userId) ?? 'Exness';
     final normalizedSavedBroker = _sanitizeSelectedBroker(
       savedBroker.toLowerCase().contains('xm') ? 'Exness' : savedBroker,
     );
-    final savedMode = prefs.getBool('is_live_mode') ?? false;
+    final savedMode = _scopedBool(prefs, 'is_live_mode', userId: userId) ?? false;
     final isBinanceSavedBroker = normalizedSavedBroker.toLowerCase() == 'binance';
     final isFxcmSavedBroker = normalizedSavedBroker.toLowerCase() == 'fxcm';
     final modeAccount = isFxcmSavedBroker
-      ? prefs.getString(_modePrefKey('fxcm_account', savedMode))
+      ? prefs.getString(_modePrefKey('fxcm_account', savedMode, userId: userId))
       : (isBinanceSavedBroker
-          ? prefs.getString(_modePrefKey('binance_account', savedMode))
-          : prefs.getString(_modePrefKey('mt5_account', savedMode)));
+          ? prefs.getString(_modePrefKey('binance_account', savedMode, userId: userId))
+          : prefs.getString(_modePrefKey('mt5_account', savedMode, userId: userId)));
     final modePassword = isFxcmSavedBroker
-      ? prefs.getString(_modePrefKey('fxcm_password', savedMode))
+      ? prefs.getString(_modePrefKey('fxcm_password', savedMode, userId: userId))
       : (isBinanceSavedBroker
-          ? prefs.getString(_modePrefKey('binance_api_secret', savedMode))
-          : prefs.getString(_modePrefKey('mt5_password', savedMode)));
+          ? prefs.getString(_modePrefKey('binance_api_secret', savedMode, userId: userId))
+          : prefs.getString(_modePrefKey('mt5_password', savedMode, userId: userId)));
     final modeServer = isFxcmSavedBroker
-      ? prefs.getString(_modePrefKey('fxcm_server', savedMode))
+      ? prefs.getString(_modePrefKey('fxcm_server', savedMode, userId: userId))
       : (isBinanceSavedBroker
-          ? prefs.getString(_modePrefKey('binance_market', savedMode))
-          : prefs.getString(_modePrefKey('mt5_server', savedMode)));
+          ? prefs.getString(_modePrefKey('binance_market', savedMode, userId: userId))
+          : prefs.getString(_modePrefKey('mt5_server', savedMode, userId: userId)));
+    final savedAccount = isBinanceSavedBroker
+      ? ''
+      : (modeAccount ?? (isFxcmSavedBroker
+          ? (_scopedString(prefs, 'fxcm_account_number', userId: userId) ?? '')
+          : (_scopedString(prefs, 'account_number', userId: userId) ?? _scopedString(prefs, 'mt5_account', userId: userId) ?? '')));
+    final savedServer = modeServer ?? (isFxcmSavedBroker
+      ? (_scopedString(prefs, 'fxcm_server', userId: userId) ?? '')
+      : (isBinanceSavedBroker
+          ? (_scopedString(prefs, 'binance_market', userId: userId) ?? '')
+          : (_scopedString(prefs, 'mt5_server', userId: userId) ?? '')));
     setState(() {
       _selectedBroker = normalizedSavedBroker;
       _isLiveMode = savedMode;  // Load saved mode
       _accountController.text = isBinanceSavedBroker
         ? ''
-        : (modeAccount ?? (isFxcmSavedBroker
-        ? (prefs.getString('fxcm_account_number') ?? '')
-        : (prefs.getString('account_number') ?? prefs.getString('mt5_account') ?? '')));
+        : savedAccount;
       _passwordController.text = modePassword ?? (isFxcmSavedBroker
-        ? (prefs.getString('fxcm_password') ?? '')
+        ? (_scopedString(prefs, 'fxcm_password', userId: userId) ?? '')
         : (isBinanceSavedBroker
-            ? (prefs.getString('binance_api_secret') ?? '')
-            : (prefs.getString('mt5_password') ?? '')));
-      _apiKeyController.text = prefs.getString('broker_api_key') ?? '';
-      _usernameController.text = prefs.getString('broker_username') ?? '';
-      _isConnected = prefs.getBool('broker_connected') ?? false;
-      _accountBalance = prefs.getDouble('account_balance') ?? 0;
-      _accountEquity = prefs.getDouble('account_equity') ?? 0;
-      _accountFreeMargin = prefs.getDouble('account_free_margin') ?? 0;
-      _accountMargin = prefs.getDouble('account_margin') ?? 0;
-      _accountMarginLevel = prefs.getDouble('account_margin_level') ?? 0;
-      _accountProfit = prefs.getDouble('account_profit') ?? 0;
-      _accountCurrency = prefs.getString('account_currency') ?? 'USD';
+            ? (_scopedString(prefs, 'binance_api_secret', userId: userId) ?? '')
+            : (_scopedString(prefs, 'mt5_password', userId: userId) ?? '')));
+      _apiKeyController.text = _scopedString(prefs, 'broker_api_key', userId: userId) ?? '';
+      _usernameController.text = _scopedString(prefs, 'broker_username', userId: userId) ?? '';
+      _isConnected = _scopedBool(prefs, 'broker_connected', userId: userId) ?? false;
+      _accountBalance = _scopedDouble(prefs, 'account_balance', userId: userId) ?? 0;
+      _accountEquity = _scopedDouble(prefs, 'account_equity', userId: userId) ?? 0;
+      _accountFreeMargin = _scopedDouble(prefs, 'account_free_margin', userId: userId) ?? 0;
+      _accountMargin = _scopedDouble(prefs, 'account_margin', userId: userId) ?? 0;
+      _accountMarginLevel = _scopedDouble(prefs, 'account_margin_level', userId: userId) ?? 0;
+      _accountProfit = _scopedDouble(prefs, 'account_profit', userId: userId) ?? 0;
+      _accountCurrency = _scopedString(prefs, 'account_currency', userId: userId) ?? 'USD';
       _autoReconnectEnabled = prefs.getBool('auto_reconnect_enabled') ?? false;
-        final savedServer = modeServer ?? (isFxcmSavedBroker
-          ? (prefs.getString('fxcm_server') ?? '')
-          : (isBinanceSavedBroker
-              ? (prefs.getString('binance_market') ?? '')
-              : (prefs.getString('mt5_server') ?? '')));
-      final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
-      final useSavedServer = !(_selectedBroker.toLowerCase() == 'exness' && savedServer != computedServer);
-      _serverController.text = useSavedServer && savedServer.isNotEmpty
+      final computedServer = _defaultServerForSelectedBroker(
+        isLiveOverride: _isLiveMode,
+        accountNumber: savedAccount,
+        fallbackServer: savedServer,
+      );
+      _serverController.text = savedServer.isNotEmpty
           ? savedServer
           : computedServer;
-      final connectionTimeStr = prefs.getString('connection_time');
+      final connectionTimeStr = _scopedString(prefs, 'connection_time', userId: userId);
       if (connectionTimeStr != null) {
         _lastConnectionTime = DateTime.parse(connectionTimeStr);
       }
@@ -387,26 +487,27 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     }
 
     final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id') ?? '';
     final mt5TerminalPath = _preferredMt5TerminalPath();
-    await prefs.setString('broker', _selectedBroker);
-    await prefs.setString('mt5_account', _accountController.text);
-    await prefs.setString('mt5_password', _passwordController.text);
-    await prefs.setString('mt5_server', _serverController.text);
-    await prefs.setString('broker_api_key', _apiKeyController.text);
-    await prefs.setString('broker_username', _usernameController.text);
+    await prefs.setString(_userScopedPrefKey('broker', userId), _selectedBroker);
+    await prefs.setString(_userScopedPrefKey('mt5_account', userId), _accountController.text);
+    await prefs.setString(_userScopedPrefKey('mt5_password', userId), _passwordController.text);
+    await prefs.setString(_userScopedPrefKey('mt5_server', userId), _serverController.text);
+    await prefs.setString(_userScopedPrefKey('broker_api_key', userId), _apiKeyController.text);
+    await prefs.setString(_userScopedPrefKey('broker_username', userId), _usernameController.text);
     if (mt5TerminalPath != null) {
-      await prefs.setString('mt5_terminal_path', mt5TerminalPath);
+      await prefs.setString(_userScopedPrefKey('mt5_terminal_path', userId), mt5TerminalPath);
     }
 
     if (_isConnected) {
-      await prefs.setBool('broker_connected', true);
-      await prefs.setString('connection_time', DateTime.now().toIso8601String());
-      await prefs.setDouble('account_balance', _accountBalance);
-      await prefs.setDouble('account_equity', _accountEquity);
-      await prefs.setDouble('account_free_margin', _accountFreeMargin);
-      await prefs.setDouble('account_margin', _accountMargin);
-      await prefs.setDouble('account_margin_level', _accountMarginLevel);
-      await prefs.setDouble('account_profit', _accountProfit);
+      await prefs.setBool(_userScopedPrefKey('broker_connected', userId), true);
+      await prefs.setString(_userScopedPrefKey('connection_time', userId), DateTime.now().toIso8601String());
+      await prefs.setDouble(_userScopedPrefKey('account_balance', userId), _accountBalance);
+      await prefs.setDouble(_userScopedPrefKey('account_equity', userId), _accountEquity);
+      await prefs.setDouble(_userScopedPrefKey('account_free_margin', userId), _accountFreeMargin);
+      await prefs.setDouble(_userScopedPrefKey('account_margin', userId), _accountMargin);
+      await prefs.setDouble(_userScopedPrefKey('account_margin_level', userId), _accountMarginLevel);
+      await prefs.setDouble(_userScopedPrefKey('account_profit', userId), _accountProfit);
     }
 
     await _persistModeScopedCredentials();
@@ -661,22 +762,23 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         });
 
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('broker_connected', isConnected);
+        final userId = prefs.getString('user_id') ?? '';
+        await prefs.setBool(_userScopedPrefKey('broker_connected', userId), isConnected);
         if (_lastConnectionTime != null) {
-          await prefs.setString('connection_time', _lastConnectionTime!.toIso8601String());
+          await prefs.setString(_userScopedPrefKey('connection_time', userId), _lastConnectionTime!.toIso8601String());
         } else {
-          await prefs.remove('connection_time');
+          await prefs.remove(_userScopedPrefKey('connection_time', userId));
         }
-        await prefs.setDouble('account_balance', _accountBalance);
-        await prefs.setDouble('account_equity', _accountEquity);
-        await prefs.setDouble('account_free_margin', _accountFreeMargin);
-        await prefs.setDouble('account_margin', _accountMargin);
-        await prefs.setDouble('account_margin_level', _accountMarginLevel);
-        await prefs.setDouble('account_profit', _accountProfit);
-        await prefs.setBool('is_live_mode', _isLiveMode);
-        await prefs.setString('account_currency', currency);
+        await prefs.setDouble(_userScopedPrefKey('account_balance', userId), _accountBalance);
+        await prefs.setDouble(_userScopedPrefKey('account_equity', userId), _accountEquity);
+        await prefs.setDouble(_userScopedPrefKey('account_free_margin', userId), _accountFreeMargin);
+        await prefs.setDouble(_userScopedPrefKey('account_margin', userId), _accountMargin);
+        await prefs.setDouble(_userScopedPrefKey('account_margin_level', userId), _accountMarginLevel);
+        await prefs.setDouble(_userScopedPrefKey('account_profit', userId), _accountProfit);
+        await prefs.setBool(_userScopedPrefKey('is_live_mode', userId), _isLiveMode);
+        await prefs.setString(_userScopedPrefKey('account_currency', userId), currency);
         await prefs.setString(
-          'verified_broker_snapshot',
+          _userScopedPrefKey('verified_broker_snapshot', userId),
           jsonEncode({
             'broker': _selectedBroker,
             'accountNumber': account.accountNumber,
@@ -696,18 +798,21 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
           }),
         );
         if (credentialId != null) {
-          await prefs.setString('credential_id', credentialId);
-          await prefs.setString('broker_name', _selectedBroker);
+          await prefs.setString(_userScopedPrefKey('credential_id', userId), credentialId);
+          await prefs.setString(_userScopedPrefKey('broker_name', userId), _selectedBroker);
           if (_isFxcmBroker) {
-            await prefs.setString('fxcm_account_number', account.accountNumber);
+            await prefs.setString(_userScopedPrefKey('fxcm_account_number', userId), account.accountNumber);
           } else {
-            await prefs.setString('account_number', account.accountNumber);
-            await prefs.setString('mt5_account', account.accountNumber);
+            await prefs.setString(_userScopedPrefKey('account_number', userId), account.accountNumber);
+            await prefs.setString(_userScopedPrefKey('mt5_account', userId), account.accountNumber);
           }
         }
 
         await _persistModeScopedCredentials();
-          await prefs.setString('preferred_broker_display', _normalizeBrokerDisplayName(_selectedBroker));
+          await prefs.setString(
+            _userScopedPrefKey('preferred_broker_display', userId),
+            _normalizeBrokerDisplayName(_selectedBroker),
+          );
 
         if (mounted) {
           final tradingService = Provider.of<TradingService>(context, listen: false);
@@ -1058,11 +1163,38 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 12),
+            if (_isExnessBroker) ...[
+              // Exness: quick-pick chips + free-text field
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final srv in [
+                    'Exness-MT5Real27',
+                    'Exness-MT5Real30',
+                    'MT5Real30',
+                    'Exness-MT5Real',
+                    'Exness-MT5Trial9',
+                    'Exness-MT5Trial',
+                  ])
+                    ChoiceChip(
+                      label: Text(srv, style: const TextStyle(fontSize: 12)),
+                      selected: _serverController.text == srv,
+                      onSelected: (_) => setState(() => _serverController.text = srv),
+                      selectedColor: Colors.orange.shade700,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
             TextField(
               controller: _serverController,
-              readOnly: true,
+              readOnly: false,
               decoration: InputDecoration(
                 labelText: 'Server',
+                hintText: _isExnessBroker
+                    ? 'e.g. Exness-MT5Real30  (check your Exness portal)'
+                    : 'e.g. MetaQuotes-Demo',
                 border: const OutlineInputBorder(),
                 prefixIcon: const Icon(Icons.storage),
                 filled: true,
