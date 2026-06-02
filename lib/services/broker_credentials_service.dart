@@ -30,19 +30,35 @@ class BrokerCredential {
     this.apiKey,
   });
 
-  factory BrokerCredential.fromJson(Map<String, dynamic> json) => BrokerCredential(
+  /// Derives the effective is_live flag from the MT5 server name.
+  /// Server names like "Exness-MT5Trial9" or "Exness-MT5Demo" → false.
+  /// Server names like "Exness-MT5Real27" or "Exness-MT5Live" → true.
+  /// Falls back to the backend-supplied [backendIsLive] if the server name
+  /// is empty or contains no known keyword.
+  static bool _resolveIsLive(String server, bool backendIsLive) {
+    final s = server.toLowerCase();
+    if (s.contains('trial') || s.contains('demo')) return false;
+    if (s.contains('real') || s.contains('live')) return true;
+    return backendIsLive;
+  }
+
+  factory BrokerCredential.fromJson(Map<String, dynamic> json) {
+    final server = (json['server'] ?? '').toString();
+    final backendIsLive = (json['is_live'] ?? false) as bool;
+    return BrokerCredential(
       credentialId: json['credential_id'] ?? '',
       broker: json['broker'] ?? '',
       accountNumber: json['account_number'] ?? '',
-      server: json['server'] ?? '',
+      server: server,
       accountCurrency: (json['account_currency'] ?? 'USD').toString().toUpperCase(),
-      isLive: json['is_live'] ?? false,
+      isLive: _resolveIsLive(server, backendIsLive),
       isActive: json['is_active'] ?? true,
       createdAt: DateTime.parse(json['created_at'] ?? DateTime.now().toString()),
       cachedBalance: (json['cached_balance'] ?? 0).toDouble(),
       hasCachedBalance: json['has_cached_balance'] ?? ((json['cached_balance'] ?? 0).toDouble() > 0),
       apiKey: json['api_key'],
     );
+  }
   final String credentialId;
   final String broker;
   final String accountNumber;
