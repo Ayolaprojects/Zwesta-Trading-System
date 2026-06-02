@@ -9,6 +9,7 @@ Production Status: READY
 
 from __future__ import annotations
 import os
+import importlib.util
 import json
 import time
 import copy
@@ -48,13 +49,80 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from enum import Enum
 import sys
 import atexit
+
+
+def _find_preferred_python_executable() -> Optional[str]:
+    candidate_paths = []
+    configured_python = str(os.getenv('ZWESTA_PREFERRED_PYTHON', '') or '').strip()
+    if configured_python:
+        candidate_paths.append(configured_python)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate_paths.extend([
+        os.path.join(script_dir, '.venv', 'Scripts', 'python.exe'),
+        os.path.join(os.path.dirname(script_dir), 'zwesta-trader', '.venv', 'Scripts', 'python.exe'),
+        r'C:\zwesta-trader\.venv\Scripts\python.exe',
+    ])
+
+    current_python = os.path.normcase(os.path.abspath(sys.executable))
+    seen = set()
+    for candidate in candidate_paths:
+        normalized = os.path.normcase(os.path.abspath(candidate))
+        if normalized in seen or normalized == current_python:
+            continue
+        seen.add(normalized)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _missing_required_runtime_modules() -> List[str]:
+    missing = []
+    for module_name in ('psycopg2', 'sqlalchemy'):
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            missing.append(module_name)
+    return missing
+
+
+def _maybe_reexec_with_preferred_python() -> None:
+    if str(os.getenv('ZWESTA_SKIP_PYTHON_REEXEC', '') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+        return
+
+    preferred_python = _find_preferred_python_executable()
+    if not preferred_python:
+        return
+
+    current_python = os.path.normcase(os.path.abspath(sys.executable))
+    preferred_python_normalized = os.path.normcase(os.path.abspath(preferred_python))
+    if current_python == preferred_python_normalized:
+        return
+
+    missing_modules = _missing_required_runtime_modules()
+    reason = (
+        f"Missing runtime modules in {sys.executable}: {', '.join(missing_modules)}."
+        if missing_modules
+        else f"Backend launched with non-preferred interpreter {sys.executable}."
+    )
+
+    print(
+        f"[BOOTSTRAP] {reason} Relaunching with {preferred_python}"
+    )
+    os.environ['ZWESTA_SKIP_PYTHON_REEXEC'] = '1'
+    os.execv(preferred_python, [preferred_python, os.path.abspath(__file__), *sys.argv[1:]])
+
+
+_maybe_reexec_with_preferred_python()
+
 from system.backup_and_recovery import BackupManager, RecoveryManager
 from worker_manager import WorkerPoolManager
 from metaapi_client import MetaApiClient, MetaApiTradingBridge, get_metaapi_client, is_metaapi_enabled
 from rest_price_feed import RestPriceFeed, get_price_feed
 from trade_router import TradeRouter, init_trade_router, get_trade_router, ExecutionMode
 from mt5_socket_bridge import SocketBridgeManager, MT5SocketBridge, init_socket_bridges
-from runtime_infrastructure import build_sqlite_connection as _orig_build_sqlite_connection, get_database_path, get_runtime_infrastructure_summary, using_postgres
+from runtime_infrastructure import build_sqlite_connection as _orig_build_sqlite_connection, get_database_path, get_database_url, get_runtime_infrastructure_summary, using_postgres
+from postgres_schema import create_postgres_schema
 from credential_crypto import (
     encrypt_secret,
     decrypt_secret,
@@ -77,6 +145,299 @@ def build_sqlite_connection(*args, **kwargs):
     except Exception:
         pass
     return conn
+
+
+_POSTGRES_BOOLEAN_COLUMNS = {'is_active', 'enabled', 'is_live'}
+
+
+class _PostgresCompatRow(dict):
+    __slots__ = ('_cols', '_vals')
+
+    def __init__(self, cols, vals):
+        decrypted_vals = []
+        for value in vals:
+            if isinstance(value, str) and value.startswith('enc:v1:'):
+                try:
+                    value = decrypt_secret(value)
+                except Exception:
+                    pass
+            decrypted_vals.append(value)
+        super().__init__(zip(cols, decrypted_vals))
+        self._cols = cols
+        self._vals = tuple(decrypted_vals)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        return super().__getitem__(key)
+
+    def keys(self):
+        return self._cols
+
+
+def _rewrite_insert_or_replace_for_postgres(sql: str) -> str:
+    """Convert SQLite's INSERT OR REPLACE INTO to PostgreSQL's INSERT ... ON CONFLICT DO UPDATE."""
+    stripped = sql.strip()
+    match = re.match(
+        r'(?is)^INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)\s*$',
+        stripped,
+    )
+    if not match:
+        # Couldn't fully parse; strip OR REPLACE so it becomes a plain INSERT
+        return re.sub(r'(?i)\bINSERT\s+OR\s+REPLACE\b', 'INSERT', sql)
+
+    table = match.group(1).strip()
+    columns = [c.strip() for c in match.group(2).split(',')]
+    values_part = match.group(3).strip()
+
+    if not columns:
+        return re.sub(r'(?i)\bINSERT\s+OR\s+REPLACE\b', 'INSERT', sql)
+
+    pk_col = columns[0]
+    update_cols = columns[1:]
+
+    if not update_cols:
+        return (
+            f'INSERT INTO {table} ({", ".join(columns)}) VALUES ({values_part}) '
+            f'ON CONFLICT ({pk_col}) DO NOTHING'
+        )
+
+    update_set = ', '.join(f'{c} = EXCLUDED.{c}' for c in update_cols)
+    return (
+        f'INSERT INTO {table} ({", ".join(columns)}) VALUES ({values_part}) '
+        f'ON CONFLICT ({pk_col}) DO UPDATE SET {update_set}'
+    )
+
+
+def _rewrite_postgres_insert_boolean_placeholders(sql: str) -> str:
+    match = re.match(
+        r'(?is)^(\s*INSERT\s+INTO\s+[^\s(]+\s*\()(?P<cols>.*?)(\)\s*VALUES\s*\()(?P<vals>.*?)(\)\s*)(?P<tail>.*)$',
+        sql,
+    )
+    if not match:
+        return sql
+
+    columns = [col.strip().strip('"').lower() for col in match.group('cols').split(',')]
+    values = [value.strip() for value in match.group('vals').split(',')]
+    if len(columns) != len(values):
+        return sql
+
+    rewritten_values = []
+    for column, value in zip(columns, values):
+        if column in _POSTGRES_BOOLEAN_COLUMNS and value == '?':
+            rewritten_values.append('CAST(? AS boolean)')
+        elif column in _POSTGRES_BOOLEAN_COLUMNS and value == '1':
+            rewritten_values.append('TRUE')
+        elif column in _POSTGRES_BOOLEAN_COLUMNS and value == '0':
+            rewritten_values.append('FALSE')
+        else:
+            rewritten_values.append(value)
+
+    return (
+        sql[:match.start('vals')]
+        + ', '.join(rewritten_values)
+        + sql[match.end('vals'):]
+    )
+
+
+def _translate_sqlite_query_to_postgres(sql: str) -> str:
+    translated = str(sql or '')
+    translated = re.sub(r'(?i)\bBEGIN\s+IMMEDIATE\b', 'BEGIN', translated)
+    translated = re.sub(r'(?i)\bBEGIN\s+EXCLUSIVE\b', 'BEGIN', translated)
+    # Convert INSERT OR REPLACE (SQLite) -> INSERT ... ON CONFLICT DO UPDATE (PostgreSQL)
+    if re.search(r'(?i)\bINSERT\s+OR\s+REPLACE\b', translated):
+        translated = _rewrite_insert_or_replace_for_postgres(translated)
+    translated = _rewrite_postgres_insert_boolean_placeholders(translated)
+
+    for column in _POSTGRES_BOOLEAN_COLUMNS:
+        translated = re.sub(
+            rf'(?i)((?:\b\w+\.)?{column}\b\s*=\s*)1\b',
+            r'\1TRUE',
+            translated,
+        )
+        translated = re.sub(
+            rf'(?i)((?:\b\w+\.)?{column}\b\s*=\s*)0\b',
+            r'\1FALSE',
+            translated,
+        )
+        translated = re.sub(
+            rf'(?i)((?:\b\w+\.)?{column}\b\s*(?:=|!=|<>)\s*)\?',
+            r'\1CAST(? AS boolean)',
+            translated,
+        )
+
+    return translated.replace('?', '%s')
+
+
+class _PostgresCompatCursor:
+    def __init__(self, cursor, *, row_factory: bool):
+        self._cursor = cursor
+        self._row_factory = row_factory
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def lastrowid(self):
+        return None
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def execute(self, sql, params=None):
+        translated = _translate_sqlite_query_to_postgres(sql)
+        self._cursor.execute(translated, tuple(params or ()))
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        translated = _translate_sqlite_query_to_postgres(sql)
+        self._cursor.executemany(translated, [tuple(params or ()) for params in seq_of_params])
+        return self
+
+    def _wrap_row(self, row):
+        if not self._row_factory or row is None or self._cursor.description is None:
+            return row
+        cols = [desc[0] for desc in self._cursor.description]
+        return _PostgresCompatRow(cols, row)
+
+    def fetchone(self):
+        return self._wrap_row(self._cursor.fetchone())
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if not self._row_factory or self._cursor.description is None:
+            return rows
+        cols = [desc[0] for desc in self._cursor.description]
+        return [_PostgresCompatRow(cols, row) for row in rows]
+
+    def close(self):
+        self._cursor.close()
+
+
+class _PostgresCompatConnection:
+    def __init__(self, *, timeout: float = 30.0, row_factory: bool = False):
+        database_url = get_database_url()
+        if not database_url:
+            raise RuntimeError('DATABASE_URL is required when PostgreSQL mode is enabled')
+        try:
+            import psycopg2
+        except ImportError as exc:
+            raise RuntimeError('psycopg2 is required when PostgreSQL mode is enabled') from exc
+        self._conn = psycopg2.connect(database_url, connect_timeout=max(1, int(math.ceil(timeout))))
+        self._row_factory = row_factory
+
+    def cursor(self):
+        return _PostgresCompatCursor(self._conn.cursor(), row_factory=self._row_factory)
+
+    def execute(self, sql, params=None):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
+class _PostgresBackupManager:
+    def __init__(self):
+        self.is_running = False
+        self.db_path = 'postgresql'
+
+    def create_backup(self):
+        logger.warning('PostgreSQL mode: built-in SQLite file backup is disabled. Use pg_dump or managed PostgreSQL backups.')
+        return None
+
+    def restore_backup(self, backup_filename):
+        logger.warning(
+            'PostgreSQL mode: SQLite backup restore is disabled. Restore PostgreSQL using native database tooling instead. '
+            f'Requested backup={backup_filename}'
+        )
+        return False
+
+    def list_backups(self):
+        return []
+
+    def start_auto_backup(self):
+        self.is_running = False
+        logger.info('PostgreSQL mode: internal SQLite auto-backup loop disabled.')
+
+    def stop_auto_backup(self):
+        self.is_running = False
+
+
+class _PostgresRecoveryManager:
+    def __init__(self):
+        self.db_path = 'postgresql'
+
+    def _connect(self):
+        database_url = get_database_url()
+        if not database_url:
+            raise RuntimeError('DATABASE_URL is required when PostgreSQL mode is enabled')
+        try:
+            import psycopg2
+        except ImportError as exc:
+            raise RuntimeError('psycopg2 is required when PostgreSQL mode is enabled') from exc
+        return psycopg2.connect(database_url, connect_timeout=10)
+
+    def check_database_integrity(self):
+        try:
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('SELECT 1')
+                cursor.fetchone()
+            finally:
+                conn.close()
+            logger.info('✅ PostgreSQL connectivity check passed')
+            return True
+        except Exception as exc:
+            logger.error(f'❌ PostgreSQL connectivity check failed: {exc}')
+            return False
+
+    def auto_recover_on_startup(self):
+        logger.info('ℹ️ PostgreSQL mode: skipping SQLite auto-recovery; rely on PostgreSQL durability and external backups.')
+        return self.check_database_integrity()
+
+    def attempt_runtime_repair(self, reason: str, allow_restore: bool = False):
+        logger.warning(
+            'PostgreSQL mode: runtime SQLite repair is disabled. '
+            f'Reason={reason}, allow_restore={allow_restore}'
+        )
+        return False
+
+    def verify_all_user_data(self):
+        try:
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM users')
+                user_count = int(cursor.fetchone()[0] or 0)
+                cursor.execute('SELECT COUNT(*) FROM user_bots')
+                bot_count = int(cursor.fetchone()[0] or 0)
+                cursor.execute('SELECT COUNT(*) FROM broker_credentials')
+                credential_count = int(cursor.fetchone()[0] or 0)
+            finally:
+                conn.close()
+
+            logger.info('📊 PostgreSQL data verification:')
+            logger.info(f'   Users: {user_count}')
+            logger.info(f'   Bots: {bot_count}')
+            logger.info(f'   Credentials: {credential_count}')
+
+            return {
+                'users': user_count,
+                'bots': bot_count,
+                'credentials': credential_count,
+            }
+        except Exception as exc:
+            logger.error(f'❌ PostgreSQL verification failed: {exc}')
+            return None
 
 # Load environment variables from .env file
 try:
@@ -826,7 +1187,7 @@ def get_failed_auth_status(account_id):
 
 def broker_uses_single_mode_slot(broker_name: str) -> bool:
     """Return True when a broker should have only one active credential per mode per user."""
-    return canonicalize_broker_name(broker_name) == 'Exness'
+    return False
 
 
 def _broker_credential_completeness_score(row: Dict[str, Any]) -> int:
@@ -1609,7 +1970,7 @@ trade_router = init_trade_router(
 )
 
 
-# --- Exness Single Live & Demo Account Only ---
+# --- Exness default live/demo account config ---
 EXNESS_DEMO = {
     'broker': 'Exness',
     'account': int(os.getenv('EXNESS_DEMO_ACCOUNT', '298997455').strip()),
@@ -1626,16 +1987,119 @@ EXNESS_LIVE = {
 }
 
 
-def get_exness_mt5_config(is_live: Optional[bool] = None) -> Dict:
+def _parse_env_key_value_map(raw_value: str) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for chunk in str(raw_value or '').replace('\r', ';').replace('\n', ';').split(';'):
+        entry = str(chunk or '').strip()
+        if not entry or '=' not in entry:
+            continue
+        key, value = entry.split('=', 1)
+        normalized_key = str(key or '').strip()
+        normalized_value = str(value or '').strip().strip('"')
+        if normalized_key and normalized_value:
+            parsed[normalized_key] = normalized_value
+    return parsed
+
+
+def _normalize_exness_account_number(account_number: Any) -> str:
+    return str(account_number or '').strip()
+
+
+EXNESS_ACCOUNT_SERVER_MAP = _parse_env_key_value_map(os.getenv('EXNESS_ACCOUNT_SERVER_MAP', ''))
+EXNESS_ACCOUNT_PATH_MAP = _parse_env_key_value_map(os.getenv('EXNESS_ACCOUNT_PATH_MAP', ''))
+EXNESS_SERVER_PATH_MAP = _parse_env_key_value_map(os.getenv('EXNESS_SERVER_PATH_MAP', ''))
+
+
+def _resolve_exness_server(account_number: Any = None, is_live: bool = False, server: str = None) -> str:
+    provided_server = str(server or '').strip()
+    invalid_mt5_aliases = {
+        'rest-api',
+        'rest_api',
+        'metaapi',
+        'meta-api',
+        'socket',
+        'socket-bridge',
+        'socket_bridge',
+    }
+    if provided_server and provided_server.lower() not in invalid_mt5_aliases:
+        return provided_server
+
+    normalized_account = _normalize_exness_account_number(account_number)
+    mapped_server = EXNESS_ACCOUNT_SERVER_MAP.get(normalized_account, '').strip()
+    if mapped_server:
+        return mapped_server
+
+    if is_live:
+        return str(EXNESS_LIVE.get('server') or 'Exness-MT5Real27').strip()
+    return str(EXNESS_DEMO.get('server') or 'Exness-MT5Trial9').strip()
+
+
+def _normalize_exness_path_candidate(path: str) -> Optional[str]:
+    candidate = str(path or '').strip().strip('"')
+    if not candidate:
+        return None
+    candidate = os.path.expandvars(candidate)
+    if candidate.lower().endswith('.exe'):
+        return candidate
+    trimmed_candidate = candidate.rstrip('\\/')
+    terminal_candidate = os.path.join(trimmed_candidate, 'terminal64.exe')
+    if os.path.isfile(terminal_candidate):
+        return terminal_candidate
+    return trimmed_candidate
+
+
+def _resolve_exness_terminal_path(
+    configured_path: str = None,
+    is_live: Optional[bool] = None,
+    server: str = None,
+    account_number: Any = None,
+) -> Optional[str]:
+    normalized_account = _normalize_exness_account_number(account_number)
+    resolved_server = _resolve_exness_server(account_number, bool(is_live), server)
+    default_live_path = str(globals().get('EXNESS_LIVE_PATH') or os.getenv('EXNESS_LIVE_PATH', r'C:\MT5\Exness-Live')).strip()
+    default_demo_path = str(globals().get('EXNESS_DEMO_PATH') or os.getenv('EXNESS_DEMO_PATH', r'C:\MT5\Exness-Demo')).strip()
+
+    candidate_paths: List[str] = []
+    if configured_path:
+        candidate_paths.append(str(configured_path).strip())
+
+    account_path = EXNESS_ACCOUNT_PATH_MAP.get(normalized_account, '').strip()
+    if account_path:
+        candidate_paths.insert(0, account_path)
+
+    server_path = EXNESS_SERVER_PATH_MAP.get(resolved_server, '').strip()
+    if server_path:
+        candidate_paths.insert(0, server_path)
+
+    if is_live is True and default_live_path:
+        candidate_paths.append(default_live_path)
+    elif is_live is False and default_demo_path:
+        candidate_paths.append(default_demo_path)
+
+    for path in candidate_paths:
+        normalized_candidate = _normalize_exness_path_candidate(path)
+        if normalized_candidate and os.path.isfile(normalized_candidate):
+            return normalized_candidate
+        if normalized_candidate:
+            return normalized_candidate
+
+    return None
+
+
+def get_exness_mt5_config(is_live: Optional[bool] = None, server: str = None, account_number: Any = None) -> Dict:
     """Return a fresh Exness MT5 config derived from the resolved environment mode."""
     target_is_live = ENVIRONMENT == 'LIVE' if is_live is None else bool(is_live)
     base_config = EXNESS_LIVE if target_is_live else EXNESS_DEMO
     config = dict(base_config)
-    configured_path = globals().get('EXNESS_LIVE_PATH') if target_is_live else globals().get('EXNESS_DEMO_PATH')
-    # Allow configured terminal paths in VPS mode too — required for dual-terminal setups
-    # where LIVE and DEMO accounts run in separate MT5 terminals on the same VPS.
-    if configured_path:
-        config['path'] = configured_path
+    resolved_account = _normalize_exness_account_number(account_number or config.get('account'))
+    config['server'] = _resolve_exness_server(resolved_account, target_is_live, server or config.get('server'))
+    resolved_path = _resolve_exness_terminal_path(
+        is_live=target_is_live,
+        server=config['server'],
+        account_number=resolved_account,
+    )
+    if resolved_path:
+        config['path'] = resolved_path
     return config
 
 # Only these two will be used for Exness
@@ -2191,10 +2655,34 @@ logger.info(f"[DUAL MT5] Resolved Exness DEMO executable: {EXNESS_DEMO_RESOLVED_
 logger.info(f"[DUAL MT5] Resolved Exness LIVE executable: {EXNESS_LIVE_RESOLVED_PATH or 'missing'}")
 
 
-def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_live: bool = None) -> Optional[str]:
+def find_mt5_terminal_path(
+    broker_name: str,
+    configured_path: str = None,
+    is_live: bool = None,
+    server: str = None,
+    account_number: Any = None,
+) -> Optional[str]:
     """Resolve a broker-specific terminal path even on VPS/local mixed setups.
     For Exness: uses separate DEMO/LIVE terminals when is_live is specified."""
     if DEPLOYMENT_MODE == 'VPS':
+        normalized = canonicalize_broker_name(broker_name)
+
+        # On VPS, Exness credentials can retain a stale per-account terminal path in
+        # broker_credentials.mt5_terminal_path. Prefer the server/account routed path
+        # from env first so the live terminal map can override outdated DB hints.
+        if normalized == 'Exness':
+            preferred = _resolve_exness_terminal_path(
+                configured_path=configured_path,
+                is_live=is_live,
+                server=server,
+                account_number=account_number,
+            )
+            if preferred:
+                resolved = resolve_mt5_terminal_executable_path(preferred)
+                if resolved and os.path.isfile(resolved):
+                    return resolved
+                return preferred
+
         # In VPS mode, allow explicitly configured per-account terminal paths so that
         # dual-terminal setups (separate LIVE and DEMO terminals on the same VPS) work correctly.
         if configured_path:
@@ -2204,13 +2692,6 @@ def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_liv
                 return resolved
             if normalized_configured_path:
                 return normalized_configured_path
-        normalized = canonicalize_broker_name(broker_name)
-        if normalized == 'Exness' and is_live is not None:
-            preferred = EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH
-            if preferred:
-                resolved = resolve_mt5_terminal_executable_path(preferred)
-                if resolved and os.path.isfile(resolved):
-                    return resolved
         fallback_resolved = find_known_mt5_terminal_path(broker_name, is_live=is_live)
         if fallback_resolved:
             return fallback_resolved
@@ -2223,11 +2704,15 @@ def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_liv
 
     # For Exness: prefer the dedicated demo/live terminal path
     normalized = canonicalize_broker_name(broker_name)
-    if normalized == 'Exness' and is_live is not None:
-        if is_live and EXNESS_LIVE_PATH:
-            candidate_paths.insert(0, EXNESS_LIVE_PATH)
-        elif not is_live and EXNESS_DEMO_PATH:
-            candidate_paths.insert(0, EXNESS_DEMO_PATH)
+    if normalized == 'Exness':
+        preferred_exness_path = _resolve_exness_terminal_path(
+            configured_path=configured_path,
+            is_live=is_live,
+            server=server,
+            account_number=account_number,
+        )
+        if preferred_exness_path:
+            candidate_paths.insert(0, preferred_exness_path)
 
     env_path = os.getenv(f"{normalized.upper().replace(' ', '_')}_PATH", '').strip()
     if env_path:
@@ -2243,7 +2728,7 @@ def find_mt5_terminal_path(broker_name: str, configured_path: str = None, is_liv
     return None
 
 
-def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = None) -> str:
+def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = None, account_number: Any = None) -> str:
     normalized = canonicalize_broker_name(broker_name)
     # Allow explicit server override for MT5 brokers when provided by user.
     provided_server = (server or '').strip()
@@ -2260,7 +2745,7 @@ def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = Non
         return provided_server
 
     if normalized == 'Exness':
-        return 'Exness-MT5Real27' if is_live else 'Exness-MT5Trial9'
+        return _resolve_exness_server(account_number, is_live, server)
     return 'MetaTrader 5'
 
 
@@ -3826,10 +4311,13 @@ def get_runtime_infrastructure_status():
     if api_key != API_KEY:
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
+    runtime_summary = get_runtime_infrastructure_summary()
+
     return jsonify({
         'success': True,
-        'runtime_infrastructure': get_runtime_infrastructure_summary(),
-        'database_path': DATABASE_PATH,
+        'runtime_infrastructure': runtime_summary,
+        'database_path': runtime_summary.get('active_database_target'),
+        'sqlite_database_path': DATABASE_PATH,
     })
 
 
@@ -4012,7 +4500,8 @@ def get_bot_daily_loss_debug():
         'userId': bot_config.get('user_id'),
         'enabled': bool(bot_config.get('enabled', True)),
         'status': bot_config.get('status'),
-        'databasePath': DATABASE_PATH,
+        'databasePath': get_runtime_infrastructure_summary().get('active_database_target'),
+        'sqliteDatabasePath': DATABASE_PATH,
         'diagnostics': _build_bot_daily_loss_diagnostics(bot_config),
     })
 
@@ -4274,7 +4763,9 @@ def resume_user_bots():
 def init_database():
     """Initialize SQLite database with referral and commission tables"""
     if using_postgres():
-        logger.warning('PostgreSQL mode is configured, but init_database still initializes SQLite tables only. Run the migration plan before switching production writes.')
+        create_postgres_schema(database_url=get_database_url())
+        logger.info('PostgreSQL schema initialized')
+        return
 
     conn = build_sqlite_connection(timeout=30.0)
     cursor = conn.cursor()
@@ -5188,7 +5679,7 @@ def init_database():
             stop_price REAL,
             tp_price REAL,
             sl_price REAL,
-            trailing BOOLEAN DEFAULT 0,
+            "trailing" BOOLEAN DEFAULT 0,
             trailing_pips INTEGER,
             status TEXT DEFAULT 'pending',
             created_at TEXT,
@@ -5269,6 +5760,11 @@ def init_database():
 
 def get_db_connection():
     """Get database connection with WAL mode for concurrent writes"""
+    if using_postgres():
+        return _PostgresCompatConnection(
+            timeout=SQLITE_CONNECTION_TIMEOUT_SECONDS,
+            row_factory=True,
+        )
     return build_sqlite_connection(
         database_path=DATABASE_PATH,
         timeout=SQLITE_CONNECTION_TIMEOUT_SECONDS,
@@ -5345,6 +5841,13 @@ if __name__ == "__main__":
 
 def init_backup_system(app):
     """Initialize automatic backup and recovery system"""
+    if using_postgres():
+        backup_mgr = _PostgresBackupManager()
+        recovery_mgr = _PostgresRecoveryManager()
+        logger.info('ℹ️ PostgreSQL mode: SQLite backup/recovery is disabled; using PostgreSQL runtime verification only')
+        data_status = recovery_mgr.verify_all_user_data()
+        logger.info(f"✅ Database verified: {data_status}")
+        return backup_mgr, recovery_mgr
     
     db_path = DATABASE_PATH
     backup_mgr = BackupManager(db_path=db_path)
@@ -5386,6 +5889,11 @@ BOT_CREATE_DB_BUSY_TIMEOUT_MS = int(os.getenv('BOT_CREATE_DB_BUSY_TIMEOUT_MS', '
 
 
 def get_bot_create_db_connection(*, row_factory: bool = True):
+    if using_postgres():
+        return _PostgresCompatConnection(
+            timeout=BOT_CREATE_DB_TIMEOUT_SECONDS,
+            row_factory=row_factory,
+        )
     return build_sqlite_connection(
         database_path=DATABASE_PATH,
         timeout=BOT_CREATE_DB_TIMEOUT_SECONDS,
@@ -5685,14 +6193,18 @@ class MT5Connection(BrokerConnection):
             import MetaTrader5 as mt5
             self.mt5 = mt5
             broker_cfg = get_mt5_config_for_broker(self.mt5_broker)
+            account_number = credentials.get('account') or credentials.get('account_number') or broker_cfg.get('account')
             resolved_server = credentials.get('server') or broker_cfg.get('server')
             # Prefer explicit credential path, then broker-specific config path.
             # Pass is_live to select the correct terminal for dual-terminal setups
             is_live = normalize_mt5_is_live_flag(self.mt5_broker, credentials.get('is_live', False), resolved_server)
+            resolved_server = normalize_mt5_server_name(self.mt5_broker, is_live, resolved_server, account_number)
             self.mt5_path = find_mt5_terminal_path(
                 self.mt5_broker,
                 credentials.get('path') or broker_cfg.get('path'),
-                is_live=is_live
+                is_live=is_live,
+                server=resolved_server,
+                account_number=account_number,
             )
             self.mt5_path = resolve_mt5_terminal_executable_path(self.mt5_path) or self.mt5_path
             self._ensure_mt5_terminal_started()
@@ -5873,7 +6385,7 @@ class MT5Connection(BrokerConnection):
             if account and not self.credentials.get('account_number'):
                 self.credentials['account_number'] = account
             
-            server = normalize_mt5_server_name(broker_name, is_live, server)
+            server = normalize_mt5_server_name(broker_name, is_live, server, account)
             self.credentials['server'] = server
 
             route_diagnostic = log_mt5_route_diagnostic(
@@ -17255,66 +17767,66 @@ SYMBOL_PARAMETERS = {
     # PRECIOUS METALS
     'XAUUSD': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 12,
-        'take_profit_pips': 25,
+        'stop_loss_pips': 500,   # 500 × $0.01 point = $5.00 SL floor for gold
+        'take_profit_pips': 1000,
         'max_slippage': 0.001,
-        'min_signal_strength': 65,
+        'min_signal_strength': 75,  # raised from 65 — gold needs strong signal
         'volatility_high': 1.5,
         'volatility_low': 0.3,
     },
     'XAGUSD': {
         'atr_multiplier': 1.7,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
+        'stop_loss_pips': 400,
+        'take_profit_pips': 800,
         'max_slippage': 0.001,
-        'min_signal_strength': 65,
+        'min_signal_strength': 75,
         'volatility_high': 2.0,
         'volatility_low': 0.4,
     },
     # ENERGY
     'USOIL': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
+        'stop_loss_pips': 50,   # 50 × point for oil SL floor
+        'take_profit_pips': 100,
         'max_slippage': 0.001,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65
         'volatility_high': 2.0,
         'volatility_low': 0.5,
     },
     'UKOIL': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
+        'stop_loss_pips': 50,
+        'take_profit_pips': 100,
         'max_slippage': 0.001,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,
         'volatility_high': 2.0,
         'volatility_low': 0.5,
     },
     # INDICES
     'US30': {
         'atr_multiplier': 1.5,
-        'stop_loss_pips': 20,
-        'take_profit_pips': 40,
+        'stop_loss_pips': 2000,  # Dow: 20-point hard floor
+        'take_profit_pips': 4000,
         'max_slippage': 0.001,
-        'min_signal_strength': 50,
+        'min_signal_strength': 70,  # raised from 50
         'volatility_high': 1.0,
         'volatility_low': 0.2,
     },
     'US500': {
         'atr_multiplier': 1.5,
-        'stop_loss_pips': 15,
-        'take_profit_pips': 30,
+        'stop_loss_pips': 700,  # 700 × 0.01 point = 7 index points hard floor
+        'take_profit_pips': 1500,
         'max_slippage': 0.001,
-        'min_signal_strength': 50,
+        'min_signal_strength': 70,  # raised from 50
         'volatility_high': 0.8,
         'volatility_low': 0.15,
     },
     'USTEC': {
         'atr_multiplier': 1.6,
-        'stop_loss_pips': 18,
-        'take_profit_pips': 36,
+        'stop_loss_pips': 700,
+        'take_profit_pips': 1500,
         'max_slippage': 0.001,
-        'min_signal_strength': 50,
+        'min_signal_strength': 70,
         'volatility_high': 1.2,
         'volatility_low': 0.2,
     },
@@ -17443,10 +17955,10 @@ SYMBOL_PARAMETERS = {
         'stop_loss_pips': 1500,
         'take_profit_pips': 4200,
         'max_slippage': 0.0015,
-        'min_signal_strength': 36,
+        'min_signal_strength': 70,   # Balanced: filters weak signals without blocking all trades
         'volatility_high': 4.5,
         'volatility_low': 0.8,
-        'max_hold_minutes': 120,
+        'max_hold_minutes': 240,     # Hold longer so gains justify fees
     },
     'ETHUSD': {
         'atr_multiplier': 1.8,
@@ -17463,29 +17975,39 @@ SYMBOL_PARAMETERS = {
         'stop_loss_pips': 220,
         'take_profit_pips': 620,
         'max_slippage': 0.0024,
-        'min_signal_strength': 38,
+        'min_signal_strength': 68,   # Balanced: quality gate without blocking all trades
         'volatility_high': 4.8,
         'volatility_low': 0.9,
-        'max_hold_minutes': 120,
-    },
-    'SOLUSD': {
-        'atr_multiplier': 2.4,
-        'stop_loss_pips': 22,
-        'take_profit_pips': 66,
-        'max_slippage': 0.003,
-        'min_signal_strength': 42,
-        'volatility_high': 6.0,
-        'volatility_low': 1.2,
-        'max_hold_minutes': 180,
+        'max_hold_minutes': 180,     # Hold longer so TP pays for fees comfortably
     },
     'SOLUSDT': {
         'atr_multiplier': 2.4,
         'stop_loss_pips': 22,
         'take_profit_pips': 66,
         'max_slippage': 0.003,
-        'min_signal_strength': 42,
+        'min_signal_strength': 68,   # Balanced
         'volatility_high': 6.0,
         'volatility_low': 1.2,
+        'max_hold_minutes': 180,
+    },
+    'XRPUSDT': {
+        'atr_multiplier': 2.2,
+        'stop_loss_pips': 5,
+        'take_profit_pips': 15,
+        'max_slippage': 0.003,
+        'min_signal_strength': 65,
+        'volatility_high': 5.0,
+        'volatility_low': 1.0,
+        'max_hold_minutes': 180,
+    },
+    'BCHUSDT': {
+        'atr_multiplier': 2.1,
+        'stop_loss_pips': 150,
+        'take_profit_pips': 420,
+        'max_slippage': 0.003,
+        'min_signal_strength': 65,
+        'volatility_high': 5.0,
+        'volatility_low': 1.0,
         'max_hold_minutes': 180,
     },
     # ZAR PAIRS - High volatility, wide spreads, trending behaviour — requires strong signal
@@ -21330,6 +21852,7 @@ BOT_PROFILE_SYNC_FIELDS = {
     'binanceFuturesBaseLeverage', 'binanceFuturesPeakLeverage', 'binanceFuturesMarginType',
     'maxPositionAgeHours', 'agedClosePnlFloor', 'binanceMarket',
     'dailyEquityControllerEnabled', 'dailyEquityTargetPercent',
+    'compoundProfits',
 }
 
 BOT_PROFILE_SYNC_ADAPTIVE_FIELDS = {
@@ -21469,6 +21992,7 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
         'selectedPreset': None,
         'presetName': None,
         'autoAdaptationEnabled': True,
+            'compoundProfits': True,
         'lastAdaptationAt': None,
         'lastAdaptationReason': None,
         'effectivePositionSizeMultiplier': 1.0,
@@ -23028,7 +23552,7 @@ def build_mt5_route_diagnostic(
     configured_path = normalized.get('path')
     is_mt5 = is_mt5_broker_name(broker_name)
 
-    selected_server = normalize_mt5_server_name(broker_name, is_live, configured_server)
+    selected_server = normalize_mt5_server_name(broker_name, is_live, configured_server, account_str)
 
     selected_path = None
     if is_mt5:
@@ -23036,6 +23560,8 @@ def build_mt5_route_diagnostic(
             broker_name,
             configured_path,
             is_live=is_live,
+            server=selected_server,
+            account_number=account_str,
         )
 
     return {
@@ -23527,6 +24053,7 @@ def get_bot_config(bot_id):
                 'managementMode': bot.get('managementMode', 'assisted'),
                 'managementProfile': bot.get('managementProfile', 'beginner'),
                 'autoAdaptationEnabled': _coerce_bool(bot.get('autoAdaptationEnabled', True), True),
+                    'compoundProfits': _coerce_bool(bot.get('compoundProfits'), True),
                 'lastAdaptationAt': bot.get('lastAdaptationAt'),
                 'lastAdaptationReason': bot.get('lastAdaptationReason'),
                 'tradingMode': bot.get('tradingMode', 'interval'),
@@ -23898,10 +24425,11 @@ def update_bot_config(bot_id):
             return jsonify({'success': False, 'error': 'credentialId required'}), 400
 
         conn = get_db_connection()
-        try:
-            conn.execute(f'PRAGMA busy_timeout = {int(SQLITE_BUSY_TIMEOUT_MS)}')
-        except Exception:
-            pass
+        if not using_postgres():
+            try:
+                conn.execute(f'PRAGMA busy_timeout = {int(SQLITE_BUSY_TIMEOUT_MS)}')
+            except Exception:
+                pass
         cursor = conn.cursor()
         cursor.execute('SELECT user_id FROM user_bots WHERE bot_id = ?', (bot_id,))
         db_bot = cursor.fetchone()
@@ -25090,10 +25618,35 @@ def _resolve_adaptive_trade_amount(
             'reason': 'base trade amount not set',
         }
 
+    # ── Compound profits: grow trade size proportionally as wallet balance grows ──
+    compound_enabled = _coerce_bool(bot_config.get('compoundProfits'), True)
+    compound_ratio = 1.0
+    compound_reason = ''
+    if compound_enabled:
+        _initial_bal = _safe_float(bot_config.get('initialBalance'), 0.0)
+        _current_bal = max(
+            _safe_float(bot_config.get('accountBalance'), 0.0),
+            _safe_float(bot_config.get('accountEquity'), 0.0),
+        )
+        if _initial_bal > 0 and _current_bal > 0:
+            compound_ratio = _current_bal / _initial_bal
+            # Cap upside at 4× to prevent runaway sizing; floor at 0.5× so we
+            # never drop below half the original size during a drawdown
+            compound_ratio = max(0.5, min(4.0, compound_ratio))
+            if abs(compound_ratio - 1.0) > 0.005:  # only apply if >0.5% change
+                safe_base_amount = round(safe_base_amount * compound_ratio, 4)
+                compound_reason = (
+                    f'compounding: balance {_current_bal:.2f} / initial {_initial_bal:.2f} '
+                    f'= {compound_ratio:.3f}× → base {safe_base_amount:.2f}'
+                )
+                logger.debug(f"Bot {bot_config.get('botId')}: {compound_reason}")
+
     performance_state = _build_performance_sizing_state(bot_config, volatility_level)
     multiplier = max(0.45, _safe_float(performance_state.get('multiplier'), 1.0))
     state = str(performance_state.get('state') or 'normal')
     reasons = []
+    if compound_reason:
+        reasons.append(compound_reason)
 
     today = datetime.now().strftime('%Y-%m-%d')
     daily_profits = bot_config.get('dailyProfits') if isinstance(bot_config.get('dailyProfits'), dict) else {}
@@ -25210,8 +25763,12 @@ def _resolve_adaptive_trade_amount(
             reasons.append('consecutive losses')
 
         if bot_config.get('managementState') == 'recovery':
-            multiplier *= 0.65
-            reasons.append('recovery mode')
+            # If overall P&L is net positive the bot has already recovered; apply
+            # a lighter touch (0.85×) instead of the full defensive cut (0.65×).
+            _net_pnl_rc = _safe_float(bot_config.get('totalProfit', bot_config.get('profit', 0.0)), 0.0)
+            _recovery_cut = 0.85 if _net_pnl_rc > 0 else 0.65
+            multiplier *= _recovery_cut
+            reasons.append(f'recovery mode ({"light" if _net_pnl_rc > 0 else "full"})')
 
     is_live = str(bot_config.get('mode') or bot_config.get('botMode') or 'demo').strip().lower() == 'live' or bool(bot_config.get('is_live'))
     max_boost = _resolve_scanner_capital_boost_cap(
@@ -26715,7 +27272,7 @@ def _update_post_close_risk_state(
     post_loss_symbol_cooldown_minutes = 0.0
     post_loss_reason = None
     if closed_symbol_base == 'XAGUSD':
-        post_loss_symbol_cooldown_minutes = 8.0
+        post_loss_symbol_cooldown_minutes = 30.0
         post_loss_reason = 'XAGUSD_POST_LOSS_COOLDOWN'
     elif broker_name == 'Exness' and closed_symbol_base in {'BTCUSD', 'ETHUSD', 'SOLUSD'}:
         post_loss_symbol_cooldown_minutes = 12.0
@@ -26723,8 +27280,10 @@ def _update_post_close_risk_state(
     elif broker_name == 'Exness' and _is_exness_forex_symbol(closed_symbol_base):
         post_loss_symbol_cooldown_minutes = 15.0
         post_loss_reason = 'EXNESS_FOREX_POST_LOSS_COOLDOWN'
-    elif broker_name == 'Exness' and closed_symbol_base in {'XAUUSD', 'US500', 'TSLA'}:
-        post_loss_symbol_cooldown_minutes = 15.0
+    elif broker_name == 'Exness' and closed_symbol_base in {
+        'XAUUSD', 'XAGUSD', 'US500', 'US30', 'USTEC', 'USOIL', 'UKOIL', 'TSLA', 'AUDUSD', 'NZDUSD',
+    }:
+        post_loss_symbol_cooldown_minutes = 30.0
         post_loss_reason = 'FAST_MARKET_POST_LOSS_COOLDOWN'
 
     if post_loss_symbol_cooldown_minutes > 0 and closed_symbol:
@@ -27686,7 +28245,7 @@ def save_broker_credentials():
                     'error': 'Exness requires: account_number, password, server'
                 }), 400
             if not server:
-                server = 'Exness-MT5Real27' if is_live else 'Exness-MT5Trial9'
+                server = normalize_mt5_server_name('Exness', is_live, server, account_number)
         else:
             return jsonify({
                 'success': False,
@@ -28016,10 +28575,11 @@ def test_broker_connection():
             conn = None
             try:
                 conn = get_db_connection()
-                try:
-                    conn.execute(f'PRAGMA busy_timeout = {int(LOGIN_SESSION_WRITE_TIMEOUT_MS)}')
-                except Exception:
-                    pass
+                if not using_postgres():
+                    try:
+                        conn.execute(f'PRAGMA busy_timeout = {int(LOGIN_SESSION_WRITE_TIMEOUT_MS)}')
+                    except Exception:
+                        pass
                 cursor = conn.cursor()
                 now_iso = datetime.now().isoformat()
                 existing = None
@@ -28360,7 +28920,12 @@ def test_broker_connection():
                     logger.warning(f'Could not check Exness user cap: {_cap_err}')
 
                 if not mt5_terminal_path:
-                    mt5_terminal_path = find_mt5_terminal_path(broker, is_live=is_live)
+                    mt5_terminal_path = find_mt5_terminal_path(
+                        broker,
+                        is_live=is_live,
+                        server=server,
+                        account_number=account,
+                    )
 
             defer_exness_verification = broker.lower() == 'exness'
             actual_balance = 10000.00  # Default fallback
@@ -28401,7 +28966,7 @@ def test_broker_connection():
                 if broker_l in ['xm', 'xm global']:
                     expected_server = normalize_mt5_server_name('XM Global', is_live, server)
                 elif broker_l == 'exness':
-                    expected_server = normalize_mt5_server_name('Exness', is_live, server)
+                    expected_server = normalize_mt5_server_name('Exness', is_live, server, account)
                 elif broker_l in ['pxbt', 'prime xbt', 'primexbt']:
                     expected_server = normalize_mt5_server_name('PXBT', is_live, server)
                 else:
@@ -28575,7 +29140,12 @@ def test_broker_connection():
                                 terminal_path = (
                                     resolve_mt5_terminal_executable_path(mt5_terminal_path)
                                     or mt5_terminal_path
-                                    or find_mt5_terminal_path(broker, is_live=is_live)
+                                    or find_mt5_terminal_path(
+                                        broker,
+                                        is_live=is_live,
+                                        server=server,
+                                        account_number=account,
+                                    )
                                 )
                                 init_ok = False
                                 if terminal_path:
@@ -30046,8 +30616,9 @@ SCANNER_CAPITAL_LIVE_MAX_BOOST = 10.0  # 🚀 Increased from 1.6 to 10.0 for agg
 SCANNER_CAPITAL_GUARDED_LIVE_MAX_BOOST = 10.0  # 🚀 Increased from 1.15 to 10.0
 SCANNER_CAPITAL_ABSOLUTE_MAX_BOOST = 100.0  # 🚀 Increased from 10.0 to 100.0 (only capital-limited)
 BINANCE_FUTURES_MAX_LEVERAGE = 125
-BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE = 10   # conservative baseline; auto-leverage raises to peak when profitable
-BINANCE_FUTURES_DEFAULT_PEAK_LEVERAGE = 20   # max when in hot/profitable regime
+BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE = 20   # baseline — defensive 50% halving = 10x minimum
+BINANCE_FUTURES_DEFAULT_PEAK_LEVERAGE = 25   # max when in hot/profitable regime
+BINANCE_FUTURES_MIN_LEVERAGE = 10            # hard floor — never go below this regardless of state
 UPSWING_SCALE_MIN_OPEN_PROFIT = 2.0
 UPSWING_SCALE_MIN_SIGNAL_STRENGTH = 72.0
 UPSWING_RETRACE_MIN_PEAK_PROFIT = 3.0
@@ -30250,7 +30821,9 @@ def _resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> Dict[
         current_total_profit = _safe_float(bot_config.get('totalProfit', bot_config.get('profit', 0.0)), 0.0)
 
         if state == 'defensive' or consecutive_losses >= 2:
-            target_leverage = max(1, min(base_leverage, int(round(base_leverage * 0.5))))
+            _defensive_lv = int(round(base_leverage * 0.5))
+            _min_lv = int(max(1, _safe_float(bot_config.get('binanceFuturesMinLeverage'), BINANCE_FUTURES_MIN_LEVERAGE)))
+            target_leverage = max(_min_lv, min(base_leverage, _defensive_lv))
             reason = 'defensive state or consecutive losses'
         elif state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
             target_leverage = peak_leverage
@@ -31184,6 +31757,66 @@ EXNESS_CURATED_SCANNER_SYMBOLS = [
 ]
 BINANCE_CURATED_SCANNER_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT']
 
+# ---------------------------------------------------------------------------
+# Binance USDT Top-Movers dynamic scanner
+# ---------------------------------------------------------------------------
+_TOP_MOVERS_CACHE: Dict[str, Any] = {'symbols': [], 'fetched_at': 0.0}
+_TOP_MOVERS_TTL_SECONDS = 120  # refresh every 2 minutes — catches new pumps quickly
+_TOP_MOVERS_MIN_CHANGE_PCT = 3.0    # at least 3% 24h move (up or down)
+_TOP_MOVERS_MIN_VOLUME_USDT = 5_000_000  # at least $5M 24h volume
+_TOP_MOVERS_MAX_SYMBOLS = 10         # cap to keep cycle time reasonable
+# Stablecoins, leveraged tokens, and very low-quality pairs to exclude
+_TOP_MOVERS_EXCLUDE_BASES = {
+    'USDC', 'BUSD', 'TUSD', 'DAI', 'FDUSD', 'USDP', 'GUSD', 'FRAX',
+    'BTCUP', 'BTCDOWN', 'ETHUP', 'ETHDOWN', 'BNBUP', 'BNBDOWN',
+    'LINKUP', 'LINKDOWN', 'DEFI', 'BEAR', 'BULL',
+}
+
+
+def _fetch_binance_top_movers(spot: bool = True) -> List[str]:
+    """Return up to _TOP_MOVERS_MAX_SYMBOLS USDT pairs ranked by absolute 24h % change.
+
+    Uses Binance public ticker endpoint — no API key required.
+    Results are cached for _TOP_MOVERS_TTL_SECONDS seconds.
+    """
+    import time as _time
+    now = _time.time()
+    if now - _TOP_MOVERS_CACHE['fetched_at'] < _TOP_MOVERS_TTL_SECONDS and _TOP_MOVERS_CACHE['symbols']:
+        return list(_TOP_MOVERS_CACHE['symbols'])
+    try:
+        import urllib.request as _req
+        import json as _json
+        _url = 'https://api.binance.com/api/v3/ticker/24hr' if spot else 'https://fapi.binance.com/fapi/v1/ticker/24hr'
+        with _req.urlopen(_url, timeout=8) as _resp:  # noqa: S310
+            _tickers = _json.loads(_resp.read())
+        candidates = []
+        for t in _tickers:
+            sym = str(t.get('symbol') or '').upper()
+            if not sym.endswith('USDT'):
+                continue
+            base = sym[:-4]  # strip USDT
+            if base in _TOP_MOVERS_EXCLUDE_BASES:
+                continue
+            try:
+                pct = abs(float(t.get('priceChangePercent') or 0))
+                vol = float(t.get('quoteVolume') or 0)  # already in USDT
+            except (TypeError, ValueError):
+                continue
+            if pct < _TOP_MOVERS_MIN_CHANGE_PCT or vol < _TOP_MOVERS_MIN_VOLUME_USDT:
+                continue
+            candidates.append((sym, pct, vol))
+        # Sort by % change descending, then by volume as tiebreaker
+        candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        result = [sym for sym, _, _ in candidates[:_TOP_MOVERS_MAX_SYMBOLS]]
+        _TOP_MOVERS_CACHE['symbols'] = result
+        _TOP_MOVERS_CACHE['fetched_at'] = now
+        logger.info(f"[TopMovers] Refreshed Binance top movers: {result}")
+        return result
+    except Exception as _exc:
+        logger.debug(f"[TopMovers] Failed to fetch top movers: {_exc}")
+        return list(_TOP_MOVERS_CACHE.get('symbols') or [])
+
+
 DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'enabled': True,
     'activationPercent': 3.0,
@@ -31334,7 +31967,10 @@ def _adaptive_signal_threshold_floor(bot_config: Dict[str, Any]) -> int:
     if broker_name == 'FXCM':
         return 10
     if broker_name == 'Binance':
-        return 1
+        # Floor at 40: prevents runaway decay to 1 while giving enough room
+        # for the adaptive threshold to ratchet down from the base (65-70) and
+        # find trades when signals are moderate.
+        return 40
 
     if broker_name == 'Exness':
         if is_live:
@@ -34707,24 +35343,35 @@ def apply_assisted_management_overrides(bot_config: Dict[str, Any]) -> Dict[str,
 
         # Recovery mode should protect, not stall indefinitely.
         if bot_config.get('managementState') == 'recovery':
-            latest_trade_dt = _extract_latest_trade_timestamp(recent_trades)
-            no_open_positions = not bool(bot_config.get('open_positions'))
-            if latest_trade_dt and no_open_positions:
-                idle_minutes = (datetime.now() - latest_trade_dt).total_seconds() / 60.0
-                if idle_minutes >= 30:
-                    bot_config['managementState'] = 'normal'
-                    relaxed_threshold = crypto_only_threshold if crypto_only_threshold is not None else broker_default_signal_threshold
-                    if guarded_small_live:
-                        relaxed_threshold = max(relaxed_threshold, relaxed_guarded_live_signal_threshold)
-                    effective['signalThreshold'] = min(effective['signalThreshold'], relaxed_threshold)
-                    if guarded_small_live:
-                        effective['allowedVolatility'] = ['Very Low', 'Low', 'Medium']
-                    else:
-                        effective['allowedVolatility'] = list(defaults['allowedVolatility'])
-                    logger.info(
-                        f"🧠 Bot {bot_config.get('botId', 'unknown')}: Recovery relaxed after {idle_minutes:.0f}m "
-                        f"without trades (threshold -> {effective['signalThreshold']})"
-                    )
+            # Exit recovery immediately if overall P&L is net positive and the
+            # most recent trades show no active loss streak — the bot has recovered.
+            _rc_net_pnl = _safe_float(bot_config.get('totalProfit', 0.0), 0.0)
+            _rc_streak = int(bot_config.get('consecutiveLosses') or 0)
+            if _rc_net_pnl > 0 and _rc_streak == 0:
+                bot_config['managementState'] = 'normal'
+                logger.info(
+                    f"🧐 Bot {bot_config.get('botId', 'unknown')}: Auto-clearing recovery mode — "
+                    f"net P&L +{_rc_net_pnl:.2f} with zero consecutive losses"
+                )
+            else:
+                latest_trade_dt = _extract_latest_trade_timestamp(recent_trades)
+                no_open_positions = not bool(bot_config.get('open_positions'))
+                if latest_trade_dt and no_open_positions:
+                    idle_minutes = (datetime.now() - latest_trade_dt).total_seconds() / 60.0
+                    if idle_minutes >= 30:
+                        bot_config['managementState'] = 'normal'
+                        relaxed_threshold = crypto_only_threshold if crypto_only_threshold is not None else broker_default_signal_threshold
+                        if guarded_small_live:
+                            relaxed_threshold = max(relaxed_threshold, relaxed_guarded_live_signal_threshold)
+                        effective['signalThreshold'] = min(effective['signalThreshold'], relaxed_threshold)
+                        if guarded_small_live:
+                            effective['allowedVolatility'] = ['Very Low', 'Low', 'Medium']
+                        else:
+                            effective['allowedVolatility'] = list(defaults['allowedVolatility'])
+                        logger.info(
+                            f"🧠 Bot {bot_config.get('botId', 'unknown')}: Recovery relaxed after {idle_minutes:.0f}m "
+                            f"without trades (threshold -> {effective['signalThreshold']})"
+                        )
     else:
         bot_config['managementState'] = 'manual'
 
@@ -36145,7 +36792,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             bot_credentials = {
                                 'account': cred_dict.get('account_number', ''),
                                 'password': cred_dict.get('password', ''),
-                                'server': cred_dict.get('server', 'Exness-MT5Real27'),
+                                'server': normalize_mt5_server_name(
+                                    'Exness',
+                                    bool(cred_dict.get('is_live', False)),
+                                    cred_dict.get('server'),
+                                    cred_dict.get('account_number'),
+                                ),
                                 'broker': resolved_broker_name,
                                 'is_live': bool(cred_dict.get('is_live', False))
                             }
@@ -36165,7 +36817,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
             bot_credentials = {
                 'account': '',
                 'password': '',
-                'server': 'Exness-MT5Real27',
+                'server': normalize_mt5_server_name('Exness', False, None, ''),
                 'broker': 'Exness',
                 'is_live': False
             }
@@ -37164,6 +37816,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         futures_controls = {'enabled': False}
                         binance_futures_min_margin_budget = 0.0
                         if canonicalize_broker_name(broker_type) == 'Binance' and binance_market_name == 'futures':
+                            # Futures trades use leverage so 25% of drawdown budget is too tight;
+                            # use 50% so a single symbol can absorb a meaningful notional.
+                            symbol_trade_amount_cap = _resolve_symbol_trade_amount_cap(
+                                bot_config, symbol=symbol, share=0.5
+                            )
                             futures_controls = _safe_resolve_binance_futures_order_controls(bot_config)
                             binance_futures_min_margin_budget = _resolve_binance_futures_min_margin_budget(
                                 active_conn,
@@ -38139,19 +38796,29 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         _tp_pips = trade_params.get('take_profit', 30)
                                         _sl_dist = _sl_pips * _pip
                                         _tp_dist = _tp_pips * _pip
-                                        # Absolute pip minimums to survive spread noise
+                                        # Absolute pip minimums + per-class spread multipliers
+                                        # Volatile instruments need much wider SL to survive noise
                                         _sym_u = symbol.upper()
                                         if any(c in _sym_u for c in ['XAU', 'XAG']):
-                                            _min_sl_pip = 15 * _pip
+                                            _min_sl_pip = max(15 * _pip, 5.0)    # Gold: $5 hard floor
+                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                        elif any(c in _sym_u for c in ['USOIL', 'UKOIL', 'WTI', 'BRENT']):
+                                            _min_sl_pip = max(15 * _pip, 0.50)   # Oil: $0.50 hard floor
+                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                        elif any(c in _sym_u for c in ['US500', 'US30', 'USTEC', 'SPX', 'NAS', 'GER']):
+                                            _min_sl_pip = max(15 * _pip, 7.0)    # Indices: 7-point hard floor
+                                            _sl_spread_mult, _tp_spread_mult = 20, 35
                                         elif any(c in _sym_u for c in ['GBP', 'JPY']):
                                             _min_sl_pip = 12 * _pip
+                                            _sl_spread_mult, _tp_spread_mult = 8, 14
                                         elif any(c in _sym_u for c in ['BTC', 'ETH']):
                                             _min_sl_pip = 0
+                                            _sl_spread_mult, _tp_spread_mult = 8, 14
                                         else:
                                             _min_sl_pip = 8 * _pip
-                                        # Spread floor: 8× spread for SL, 14× for TP
-                                        _sl_dist = max(_sl_dist, _spread * 8, _min_sl_pip)
-                                        _tp_dist = max(_tp_dist, _spread * 14)
+                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                        _sl_dist = max(_sl_dist, _spread * _sl_spread_mult, _min_sl_pip)
+                                        _tp_dist = max(_tp_dist, _spread * _tp_spread_mult)
                                         _digits = 5 if _pip < 0.01 else 2
                                         if order_type == 'BUY':
                                             sl_price = round(_ask - _sl_dist, _digits)
@@ -38175,19 +38842,29 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         _tp_pips = trade_params.get('take_profit', 30)
                                         _sl_dist = _sl_pips * _pip
                                         _tp_dist = _tp_pips * _pip
-                                        # Absolute pip minimums
+                                        # Absolute pip minimums + per-class spread multipliers
+                                        # Volatile instruments need much wider SL to survive noise
                                         _sym_u = symbol.upper()
                                         if any(c in _sym_u for c in ['XAU', 'XAG']):
-                                            _min_sl_pip = 15 * _pip
+                                            _min_sl_pip = max(15 * _pip, 5.0)    # Gold: $5 hard floor
+                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                        elif any(c in _sym_u for c in ['USOIL', 'UKOIL', 'WTI', 'BRENT']):
+                                            _min_sl_pip = max(15 * _pip, 0.50)   # Oil: $0.50 hard floor
+                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                        elif any(c in _sym_u for c in ['US500', 'US30', 'USTEC', 'SPX', 'NAS', 'GER']):
+                                            _min_sl_pip = max(15 * _pip, 7.0)    # Indices: 7-point hard floor
+                                            _sl_spread_mult, _tp_spread_mult = 20, 35
                                         elif any(c in _sym_u for c in ['GBP', 'JPY']):
                                             _min_sl_pip = 12 * _pip
+                                            _sl_spread_mult, _tp_spread_mult = 8, 14
                                         elif any(c in _sym_u for c in ['BTC', 'ETH']):
                                             _min_sl_pip = 0
+                                            _sl_spread_mult, _tp_spread_mult = 8, 14
                                         else:
                                             _min_sl_pip = 8 * _pip
-                                        # Spread floor: 8× spread for SL, 14× for TP
-                                        _sl_dist = max(_sl_dist, _spread * 8, _min_sl_pip)
-                                        _tp_dist = max(_tp_dist, _spread * 14)
+                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                        _sl_dist = max(_sl_dist, _spread * _sl_spread_mult, _min_sl_pip)
+                                        _tp_dist = max(_tp_dist, _spread * _tp_spread_mult)
                                         if order_type == 'BUY':
                                             sl_price = round(_tick.ask - _sl_dist, _sym_info.digits)
                                             tp_price = round(_tick.ask + _tp_dist, _sym_info.digits)
@@ -39869,9 +40546,74 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 try:
                     if active_conn:
                         account_info = active_conn.get_account_info()
-                        if account_info:
-                            bot_config['accountBalance'] = account_info.get('balance', account_info.get('equity', 0))
-                            bot_config['accountEquity'] = account_info.get('equity', account_info.get('balance', 0))
+                        _new_balance = _safe_float(
+                            (account_info or {}).get('balance', (account_info or {}).get('equity', 0)),
+                            0.0,
+                        )
+                        _new_equity = _safe_float(
+                            (account_info or {}).get('equity', (account_info or {}).get('balance', 0)),
+                            _new_balance,
+                        )
+                        if _new_balance > 0:
+                            # Record starting balance on first valid read — used to compute wallet growth
+                            if not bot_config.get('initialBalance'):
+                                bot_config['initialBalance'] = round(_new_balance, 4)
+                                logger.info(
+                                    f"Bot {bot_id}: initialBalance set to {_new_balance:.4f} "
+                                    f"({bot_config.get('displayCurrency', 'USDT')})"
+                                )
+                            bot_config['accountBalance'] = round(_new_balance, 4)
+                            bot_config['accountEquity'] = round(_new_equity, 4)
+                            # Wallet growth = actual exchange balance minus initial deposit
+                            _initial = _safe_float(bot_config.get('initialBalance'), _new_balance)
+                            bot_config['walletGrowth'] = round(_new_balance - _initial, 4)
+                        elif bot_config.get('accountBalance', 0) <= 0:
+                            # API returned 0 but we have no prior reading — keep previous
+                            pass
+                        # Fetch Binance futures funding fees (drain wallet silently every 8h)
+                        if (
+                            broker_type == 'Binance'
+                            and active_conn is not None
+                            and getattr(active_conn, 'market', 'spot') == 'futures'
+                        ):
+                            try:
+                                _last_ff_check = _safe_float(bot_config.get('_lastFundingFeeCheckTs'), 0.0)
+                                _now_ts = datetime.now().timestamp()
+                                if _now_ts - _last_ff_check >= 3600:  # check hourly
+                                    _ff_resp = active_conn._request_with_time_retry(
+                                        'GET',
+                                        f"{active_conn.fapi_url}/v1/income",
+                                        headers=active_conn._headers(),
+                                        params={
+                                            'incomeType': 'FUNDING_FEE',
+                                            'limit': 50,
+                                            'startTime': int((_now_ts - 86400 * 7) * 1000),  # last 7 days
+                                        },
+                                        timeout=8,
+                                    )
+                                    if _ff_resp and _ff_resp.status_code == 200:
+                                        _ff_entries = _ff_resp.json() or []
+                                        _last_known_ts = _safe_float(bot_config.get('_lastFundingFeeTs'), 0.0)
+                                        _new_ff_total = 0.0
+                                        _new_last_ts = _last_known_ts
+                                        for _ff in _ff_entries:
+                                            _ff_ts = _safe_float(_ff.get('time'), 0.0) / 1000.0
+                                            if _ff_ts > _last_known_ts:
+                                                _new_ff_total += _safe_float(_ff.get('income'), 0.0)
+                                                _new_last_ts = max(_new_last_ts, _ff_ts)
+                                        if _new_ff_total != 0.0:
+                                            bot_config['totalFundingFees'] = round(
+                                                _safe_float(bot_config.get('totalFundingFees'), 0.0) + _new_ff_total, 4
+                                            )
+                                            bot_config['_lastFundingFeeTs'] = _new_last_ts
+                                            logger.info(
+                                                f"Bot {bot_id}: Binance funding fees this period: "
+                                                f"{_new_ff_total:+.4f} USDT "
+                                                f"(total: {bot_config['totalFundingFees']:+.4f})"
+                                            )
+                                    bot_config['_lastFundingFeeCheckTs'] = _now_ts
+                            except Exception as _ff_err:
+                                logger.debug(f"Bot {bot_id}: Funding fee fetch skipped: {_ff_err}")
                 except Exception as e:
                     logger.warning(f"Bot {bot_id}: Could not update account balance: {e}")
 
@@ -40137,7 +40879,23 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         poll_strategy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
                         poll_symbol_universe = build_scanner_symbol_universe(bot_config, tradable_symbol_keys)
-                        if not poll_symbol_universe:
+
+                        # --- Top-Movers augmentation (Binance bots with topMoversEnabled) ---
+                        _is_binance = canonicalize_broker_name(
+                            bot_config.get('brokerName') or bot_config.get('broker_type') or ''
+                        ) == 'Binance'
+                        # Default ON for all Binance bots; set topMoversEnabled=False to opt out
+                        if _is_binance and bot_config.get('topMoversEnabled', True):
+                            _is_futures = str(bot_config.get('marketType') or bot_config.get('market') or '').lower() == 'futures'
+                            _movers = _fetch_binance_top_movers(spot=not _is_futures)
+                            if _movers:
+                                _existing = set(poll_symbol_universe)
+                                _new_movers = [s for s in _movers if s not in _existing]
+                                poll_symbol_universe = poll_symbol_universe + _new_movers
+                                if _new_movers:
+                                    logger.debug(f"🔥 Bot {bot_id}: Top-movers added to scan universe: {_new_movers}")
+
+
                             if poll_elapsed >= next_heartbeat_at and poll_elapsed < trading_interval:
                                 logger.info(
                                     f"💓 Bot {bot_id}: Scanner idle - no eligible symbols under current session/weekend policy"
@@ -40174,10 +40932,32 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 best_signal_symbol = symbol
 
                         if best_signal_strength >= signal_threshold and best_signal_symbol:
-                            logger.info(f"🔥 Bot {bot_id}: Qualified signal detected on {best_signal_symbol} - triggering immediate trade cycle")
-                            logger.info(f"   Signal Strength: {best_signal_strength:.0f}/100 (threshold: {signal_threshold})")
-                            logger.info("   Immediate cycle will still pass full risk and position checks before any order")
-                            break  # Break inner loop, execute trade next cycle
+                            # Guard: if position limit already full AND this symbol has no existing
+                            # open position (nothing to manage/close), skip the immediate cycle to
+                            # avoid spamming cycles that can never result in a trade.
+                            _eff_max_pos = int(
+                                bot_config.get('effectiveMaxOpenPositions')
+                                or bot_config.get('maxOpenPositions')
+                                or 0
+                            )
+                            _cur_open_pos = bot_config.get('open_positions') or {}
+                            _pos_limit_full = _eff_max_pos > 0 and len(_cur_open_pos) >= _eff_max_pos
+                            _signal_sym_has_pos = any(
+                                str(p.get('symbol') or '').upper() == best_signal_symbol.upper()
+                                for p in _cur_open_pos.values()
+                            ) if isinstance(_cur_open_pos, dict) else False
+                            if _pos_limit_full and not _signal_sym_has_pos:
+                                # Position limit full, signal symbol has nothing to manage — skip
+                                logger.debug(
+                                    f"⏸️ Bot {bot_id}: Immediate cycle suppressed for {best_signal_symbol} "
+                                    f"— position limit full ({len(_cur_open_pos)}/{_eff_max_pos}) "
+                                    f"and no existing position on {best_signal_symbol} to manage"
+                                )
+                            else:
+                                logger.info(f"🔥 Bot {bot_id}: Qualified signal detected on {best_signal_symbol} - triggering immediate trade cycle")
+                                logger.info(f"   Signal Strength: {best_signal_strength:.0f}/100 (threshold: {signal_threshold})")
+                                logger.info("   Immediate cycle will still pass full risk and position checks before any order")
+                                break  # Break inner loop, execute trade next cycle
                         elif poll_visibility_signal_strength > 0 and poll_visibility_symbol:
                             logger.debug(
                                 f"📊 Bot {bot_id}: Raw signal on {poll_visibility_symbol}: "
@@ -41299,6 +42079,9 @@ def bot_status():
                 'openPositions': normalized_open_positions,  # Currently open positions
                 'accountBalance': round(bot.get('accountBalance', 0), 2),  # Latest known balance
                 'accountEquity': round(bot.get('accountEquity', 0), 2),  # Latest known equity
+                'initialBalance': round(_safe_float(bot.get('initialBalance'), 0.0), 2),  # Balance when bot first read account
+                'walletGrowth': round(_safe_float(bot.get('walletGrowth'), 0.0), 2),  # accountBalance - initialBalance
+                'totalFundingFees': round(_safe_float(bot.get('totalFundingFees'), 0.0), 4),  # Cumulative Binance funding fees (negative = paid out)
                 'effectiveTradeAmount': round(_safe_float(bot.get('effectiveTradeAmount'), _safe_float(bot.get('tradeAmount'), 0.0)), 2),
                 'tradeAmountAdaptation': bot.get('tradeAmountAdaptation'),
                 'portfolioGuard': _evaluate_user_portfolio_profit_guard(bot),
@@ -42122,6 +42905,9 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
                 continue
 
             tracked['currentPrice'] = live_price
+            # Pop stale profit so _resolve_open_position_profit recomputes from
+            # live prices rather than returning the cached value unchanged.
+            tracked.pop('profit', None)
             tracked['profit'] = _resolve_open_position_profit(tracked)
             tracked['isWinning'] = tracked['profit'] > 0
             tracked_volume = _safe_float(tracked.get('volume'), 0.0)
@@ -42194,6 +42980,47 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
                 trigger_reason = 'TP_HIT'
             elif sl_price > 0 and live_price <= sl_price:
                 trigger_reason = 'SL_HIT'
+
+            # ── Trailing profit floor enforcement ────────────────────────────────────
+            # Always update peakProfit so the displayed floor figure stays accurate.
+            # If profit retraces from peak by more than retraceClosePercent, auto-close
+            # to bank the gain; the bot then re-enters on the next bullish signal.
+            if not trigger_reason:
+                try:
+                    _cur_profit = _safe_float(tracked.get('profit'), 0.0)
+                    _peak = max(_safe_float(tracked.get('peakProfit'), 0.0), _cur_profit)
+                    tracked['peakProfit'] = round(_peak, 4)
+
+                    _pp_cfg = bot_config.get('profitProtection') or {}
+                    _retrace_pct = _safe_float(_pp_cfg.get('retraceClosePercent'), 10.0)
+                    _activation = _safe_float(_pp_cfg.get('neverNegativeActivationProfit'), 1.0)
+                    _min_hold_min = _safe_float(_pp_cfg.get('minimumHoldMinutes'), 20.0)
+
+                    # Respect minimum hold time so we don't close in the first few minutes
+                    _held_ok = True
+                    _entry_iso_fl = str(tracked.get('entryTime') or tracked.get('time') or '').strip()
+                    if _entry_iso_fl and _min_hold_min > 0:
+                        try:
+                            _entry_dt_fl = datetime.fromisoformat(_entry_iso_fl.replace('Z', ''))
+                            _held_min = (datetime.now() - _entry_dt_fl).total_seconds() / 60.0
+                            _held_ok = _held_min >= _min_hold_min
+                        except Exception:
+                            _held_ok = True
+
+                    if _peak >= _activation and _held_ok:
+                        # Floor = peak minus the allowed retrace buffer
+                        _floor = round(_peak * (1.0 - _retrace_pct / 100.0), 4)
+                        tracked['lockedProfitFloor'] = _floor
+                        tracked['profitProtectionArmed'] = True
+                        if _cur_profit <= _floor:
+                            trigger_reason = 'PROFIT_FLOOR_HIT'
+                            logger.info(
+                                f"🔒 Bot {bot_id}: {tracked_symbol} PROFIT_FLOOR_HIT — "
+                                f"peak={_peak:.4f} floor={_floor:.4f} current={_cur_profit:.4f} "
+                                f"(retrace allowed={_retrace_pct}%)"
+                            )
+                except Exception as _floor_err:
+                    logger.debug(f"Bot {bot_id}: Trailing floor eval failed: {_floor_err}")
 
             # Position-age fallback: if BUY has been camping for longer than
             # `maxPositionAgeHours` and is at break-even or better, auto-SELL
@@ -42438,6 +43265,20 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
             else:
                 bot_config['totalLosses'] = bot_config.get('totalLosses', 0) + abs(realized_profit)
             bot_config['totalProfit'] = bot_config.get('totalProfit', 0) + realized_profit
+
+            # Track daily profit (was missing for Binance spot — only totalProfit was updated)
+            _today_key = datetime.now().strftime('%Y-%m-%d')
+            _daily_map = bot_config.setdefault('dailyProfits', {})
+            _daily_map[_today_key] = _safe_float(_daily_map.get(_today_key), 0.0) + realized_profit
+            bot_config['dailyProfit'] = _daily_map[_today_key]
+            bot_config['profit'] = bot_config['totalProfit']
+
+            # Distribute commissions on profitable Binance closes (mirrors MT5 path)
+            if realized_profit > 0:
+                try:
+                    distribute_trade_commissions(bot_id, user_id, realized_profit, source='BINANCE')
+                except Exception as _comm_e:
+                    logger.error(f"Bot {bot_id}: Binance commission distribution error: {_comm_e}")
 
             bot_config.get('open_positions', {}).pop(spot_ticket, None)
             spot_persist_needed = True
@@ -42831,9 +43672,9 @@ def _get_trades_table_stats_by_bot(bot_ids: List[str]) -> Dict[str, Dict[str, An
                 bot_id,
                 SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed_trades,
                 SUM(CASE WHEN status = 'closed' AND profit > 0 THEN 1 ELSE 0 END) AS winning_trades,
-                ROUND(SUM(CASE WHEN status = 'closed' THEN profit ELSE 0 END), 2) AS net_profit,
-                ROUND(SUM(CASE WHEN status = 'closed' AND profit < 0 THEN ABS(profit) ELSE 0 END), 2) AS total_losses,
-                ROUND(SUM(CASE WHEN status = 'closed' AND DATE(COALESCE(time_close, updated_at, created_at)) = ? THEN profit ELSE 0 END), 2) AS daily_profit_today,
+                ROUND(CAST(SUM(CASE WHEN status = 'closed' THEN profit ELSE 0 END) AS NUMERIC), 2) AS net_profit,
+                ROUND(CAST(SUM(CASE WHEN status = 'closed' AND profit < 0 THEN ABS(profit) ELSE 0 END) AS NUMERIC), 2) AS total_losses,
+                ROUND(CAST(SUM(CASE WHEN status = 'closed' AND DATE(COALESCE(time_close, updated_at, created_at)) = ? THEN profit ELSE 0 END) AS NUMERIC), 2) AS daily_profit_today,
                 SUM(CASE WHEN status = 'closed' AND DATE(COALESCE(time_close, updated_at, created_at)) = ? THEN 1 ELSE 0 END) AS closed_trades_today
             FROM trades
             WHERE bot_id IN ({placeholders})
@@ -45239,10 +46080,12 @@ def login_user():
 
         # Login should not stall behind long-running bot/cache writes. If SQLite is busy,
         # fall back quickly to the in-memory session cache and let validation accept it.
-        try:
-            conn.execute(f'PRAGMA busy_timeout = {int(LOGIN_SESSION_WRITE_TIMEOUT_MS)}')
-        except Exception:
-            pass
+        # PRAGMA is SQLite-only — skip entirely on PostgreSQL to avoid aborting the transaction.
+        if not using_postgres():
+            try:
+                conn.execute(f'PRAGMA busy_timeout = {int(LOGIN_SESSION_WRITE_TIMEOUT_MS)}')
+            except Exception:
+                pass
 
         created_at = datetime.now().isoformat()
         session_saved = False
@@ -45288,6 +46131,11 @@ def login_user():
     
     except Exception as e:
         logger.error(f"Error in login_user: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -46745,8 +47593,9 @@ def get_withdrawal_analytics():
             cr = cursor.fetchone()
             commission_generated = float(cr['total_generated'] if cr else 0)
             avg_commission_rate = float(cr['avg_rate'] if cr else 0)
-        except sqlite3.OperationalError as exc:
-            if 'no such table' not in str(exc).lower():
+        except Exception as exc:
+            _exc_msg = str(exc).lower()
+            if 'no such table' not in _exc_msg and 'does not exist' not in _exc_msg:
                 raise
             commission_generated = 0.0
             avg_commission_rate = 0.0
@@ -48298,6 +49147,12 @@ def stripe_webhook():
 def manual_backup():
     """Manually create a backup (admin only)"""
     try:
+        if using_postgres():
+            return jsonify({
+                'success': False,
+                'error': 'PostgreSQL mode uses external backups. Use pg_dump or your managed PostgreSQL backup tooling.',
+            }), 409
+
         user_id = request.user_id
         
         # Verify user exists
@@ -48333,6 +49188,15 @@ def manual_backup():
 def list_backups():
     """Get list of all available backups"""
     try:
+        if using_postgres():
+            return jsonify({
+                'success': True,
+                'backups': [],
+                'total_count': 0,
+                'mode': 'external_postgres',
+                'message': 'PostgreSQL mode uses external backups; built-in SQLite backup listings are disabled.',
+            }), 200
+
         user_id = request.user_id
         
         # Verify user exists
@@ -48370,6 +49234,12 @@ def list_backups():
 def restore_from_backup():
     """Restore database from a specific backup (admin only, DANGEROUS)"""
     try:
+        if using_postgres():
+            return jsonify({
+                'success': False,
+                'error': 'PostgreSQL restore is disabled from this endpoint. Use native PostgreSQL restore tooling.',
+            }), 409
+
         user_id = request.user_id
         
         # Verify user exists
@@ -48451,12 +49321,14 @@ def system_health():
                 'users': data_status.get('users', 0),
                 'bots': data_status.get('bots', 0),
                 'credentials': data_status.get('credentials', 0),
+                'backend': 'postgres' if using_postgres() else 'sqlite',
             },
             'backup_system': {
                 'enabled': backup_manager.is_running,
                 'latest_backup': latest_backup['filename'] if latest_backup else None,
                 'latest_backup_time': latest_backup['created'].isoformat() if latest_backup else None,
                 'total_backups': len(backups),
+                'mode': 'external_postgres' if using_postgres() else 'sqlite_internal',
             },
         }), 200
         
@@ -48651,8 +49523,12 @@ def exness_onboard_wizard():
             at_capacity = (_exness_slots_used >= EXNESS_MAX_USERS) and not _existing_cred
 
             # Determine MT5 server and terminal path
-            expected_server = normalize_mt5_server_name('Exness', is_live, None)
-            terminal_path = EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH
+            expected_server = normalize_mt5_server_name('Exness', is_live, None, account_number)
+            terminal_path = _resolve_exness_terminal_path(
+                is_live=is_live,
+                server=expected_server,
+                account_number=account_number,
+            )
             terminal_available = bool(terminal_path and os.path.exists(str(terminal_path)))
 
             return jsonify({
@@ -48718,8 +49594,13 @@ def exness_onboard_wizard():
                     'capacity_limit': True,
                 }), 429
 
-            server = normalize_mt5_server_name('Exness', is_live, None)
-            terminal_path = mt5_terminal_path or (EXNESS_LIVE_PATH if is_live else EXNESS_DEMO_PATH)
+            server = normalize_mt5_server_name('Exness', is_live, None, account_number)
+            terminal_path = _resolve_exness_terminal_path(
+                configured_path=mt5_terminal_path,
+                is_live=is_live,
+                server=server,
+                account_number=account_number,
+            )
             if terminal_path:
                 terminal_path = resolve_mt5_terminal_executable_path(terminal_path) or str(terminal_path).strip()
             terminal_path_str = str(terminal_path) if terminal_path else None
@@ -50337,7 +51218,7 @@ def place_advanced_order(broker):
             order_id = str(uuid.uuid4())
             cursor.execute('''
                 INSERT INTO pxbt_orders 
-                (order_id, user_id, symbol, direction, quantity, order_type, limit_price, stop_price, tp_price, sl_price, trailing, trailing_pips, created_at)
+                (order_id, user_id, symbol, direction, quantity, order_type, limit_price, stop_price, tp_price, sl_price, "trailing", trailing_pips, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (order_id, user_id, symbol, direction.lower(), quantity, order_type, limit_price, stop_price, tp_price, sl_price, trailing, trailing_pips, datetime.now().isoformat()))
             
@@ -50734,7 +51615,8 @@ def shutdown_backup():
             rest_price_feed.stop()
         if trade_router:
             trade_router.shutdown()
-        backup_manager.create_backup()
+        if not using_postgres():
+            backup_manager.create_backup()
         backup_manager.stop_auto_backup()
         logger.info("✅ Final backup complete. System shutdown.")
     except Exception as e:
@@ -50769,10 +51651,11 @@ def admin_fix_bot_link():
             return jsonify({'success': False, 'error': 'bot_id required'}), 400
 
         conn = get_db_connection()
-        try:
-            conn.execute(f'PRAGMA busy_timeout = {int(SQLITE_BUSY_TIMEOUT_MS)}')
-        except Exception:
-            pass
+        if not using_postgres():
+            try:
+                conn.execute(f'PRAGMA busy_timeout = {int(SQLITE_BUSY_TIMEOUT_MS)}')
+            except Exception:
+                pass
         cur = conn.cursor()
 
         cur.execute('SELECT user_id, runtime_state, is_live, broker_account_id FROM user_bots WHERE bot_id = ?', (bot_id,))
@@ -50895,7 +51778,14 @@ if __name__ == '__main__':
                 mt5_path=str(MT5_CONFIG['path']),
                 account=int(MT5_CONFIG['account']),
                 password=str(MT5_CONFIG['password']),
-                server=str(normalize_mt5_server_name('Exness', bool(MT5_CONFIG.get('is_live')), MT5_CONFIG['server'])),
+                server=str(
+                    normalize_mt5_server_name(
+                        'Exness',
+                        bool(MT5_CONFIG.get('is_live')),
+                        MT5_CONFIG['server'],
+                        MT5_CONFIG.get('account'),
+                    )
+                ),
                 broker_name='Exness',
                 timeout_seconds=30,
             )
