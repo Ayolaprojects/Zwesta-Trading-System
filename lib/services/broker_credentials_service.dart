@@ -30,28 +30,36 @@ class BrokerCredential {
     this.apiKey,
   });
 
-  /// Derives the effective is_live flag from the MT5 server name.
-  /// Server names like "Exness-MT5Trial9" or "Exness-MT5Demo" → false.
-  /// Server names like "Exness-MT5Real27" or "Exness-MT5Live" → true.
-  /// Falls back to the backend-supplied [backendIsLive] if the server name
-  /// is empty or contains no known keyword.
-  static bool _resolveIsLive(String server, bool backendIsLive) {
+  /// Derives the effective is_live flag, independent of what the VPS DB stores.
+  ///
+  /// Exness (MT5): checks server name — "Trial"/"Demo" → false, "Real"/"Live" → true.
+  /// Binance:      checks account_number — contains "DEMO" → false.
+  /// Fallback:     uses the backend-supplied [backendIsLive].
+  static bool _resolveIsLive(String server, String accountNumber, bool backendIsLive) {
+    // Exness / MT5: server name is the reliable indicator
     final s = server.toLowerCase();
     if (s.contains('trial') || s.contains('demo')) return false;
     if (s.contains('real') || s.contains('live')) return true;
+
+    // Binance: account_number contains "DEMO" for demo credentials
+    // e.g. "BINANCE-FUTURES-DEMO" vs "BINANCE-FUTURES-vIWjln1z"
+    final a = accountNumber.toUpperCase();
+    if (a.contains('DEMO') || a.contains('TESTNET') || a.contains('SANDBOX')) return false;
+
     return backendIsLive;
   }
 
   factory BrokerCredential.fromJson(Map<String, dynamic> json) {
     final server = (json['server'] ?? '').toString();
+    final accountNumber = (json['account_number'] ?? '').toString();
     final backendIsLive = (json['is_live'] ?? false) as bool;
     return BrokerCredential(
       credentialId: json['credential_id'] ?? '',
       broker: json['broker'] ?? '',
-      accountNumber: json['account_number'] ?? '',
+      accountNumber: accountNumber,
       server: server,
       accountCurrency: (json['account_currency'] ?? 'USD').toString().toUpperCase(),
-      isLive: _resolveIsLive(server, backendIsLive),
+      isLive: _resolveIsLive(server, accountNumber, backendIsLive),
       isActive: json['is_active'] ?? true,
       createdAt: DateTime.parse(json['created_at'] ?? DateTime.now().toString()),
       cachedBalance: (json['cached_balance'] ?? 0).toDouble(),
