@@ -21,6 +21,7 @@ import 'bot_analytics_screen.dart';
 import 'bot_configuration_route.dart';
 import 'consolidated_reports_screen.dart';
 import 'dashboard_screen.dart';
+import 'exness_setup_wizard_screen.dart';
 
 class BotDashboardScreen extends StatefulWidget {
   const BotDashboardScreen({Key? key, this.embedded = false}) : super(key: key);
@@ -136,7 +137,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       final s = raw?.toString().toLowerCase() ?? '';
       if (s.isEmpty) continue;
       if (s.contains('binance')) return 'Binance';
-      if (s.contains('exness') || s.startsWith('mt5_') || s.startsWith('exness_')) return 'Exness';
+      if (s.contains('exness') ||
+          s.startsWith('mt5_') ||
+          s.startsWith('exness_')) return 'Exness';
       if (s.contains('fxcm')) return 'FXCM';
     }
     return 'Other';
@@ -175,13 +178,29 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   /// Returns null if it cannot confidently identify the quote asset.
   String? _binanceQuoteFromSymbol(String? symbolRaw) {
     if (symbolRaw == null) return null;
-    final s = symbolRaw.toString().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    final s =
+        symbolRaw.toString().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
     if (s.isEmpty) return null;
     // Order matters: longest suffixes first so 'FDUSD' wins over 'USD'.
     const quotes = [
-      'FDUSD', 'TUSD', 'BUSD', 'USDT', 'USDC', 'DAI',
-      'USD', 'EUR', 'GBP', 'TRY', 'ZAR', 'AUD', 'BRL',
-      'BTC', 'ETH', 'BNB', 'SOL', 'XRP',
+      'FDUSD',
+      'TUSD',
+      'BUSD',
+      'USDT',
+      'USDC',
+      'DAI',
+      'USD',
+      'EUR',
+      'GBP',
+      'TRY',
+      'ZAR',
+      'AUD',
+      'BRL',
+      'BTC',
+      'ETH',
+      'BNB',
+      'SOL',
+      'XRP',
     ];
     for (final q in quotes) {
       if (s.endsWith(q) && s.length > q.length) return q;
@@ -197,7 +216,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final str = raw.toString();
     if (str.isEmpty || str.toLowerCase() == 'n/a') return null;
     // Allow "BTCUSDT, ETHUSDT" or "BTCUSDT|ETHUSDT".
-    final parts = str.split(RegExp(r'[,\s|/;]+')).where((p) => p.isNotEmpty).toList();
+    final parts =
+        str.split(RegExp(r'[,\s|/;]+')).where((p) => p.isNotEmpty).toList();
     return parts.isEmpty ? str : parts.first;
   }
 
@@ -211,7 +231,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       final quote = _binanceQuoteFromSymbol(_firstSymbol(bot));
       if (quote != null) return quote;
       // Fallback: explicit field, else USDT.
-      final raw = bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
+      final raw =
+          bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
       if (raw != null && raw.toString().trim().isNotEmpty) {
         return _normalizeCurrencyCode(raw);
       }
@@ -219,7 +240,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     }
 
     // Exness / FXCM / Other: use explicit field if set, else infer.
-    final raw = bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
+    final raw =
+        bot['displayCurrency'] ?? bot['accountCurrency'] ?? bot['currency'];
     if (raw != null && raw.toString().trim().isNotEmpty) {
       return _normalizeCurrencyCode(raw);
     }
@@ -257,7 +279,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     int decimals = 2,
     String? currencyCode,
   }) {
-    final code = _normalizeCurrencyCode(currencyCode ?? _currencyCode(currencyProvider.currency));
+    final code = _normalizeCurrencyCode(
+        currencyCode ?? _currencyCode(currencyProvider.currency));
     final symbol = _symbolForCode(code);
     // Crypto quote assets need more precision for small balances.
     int effDecimals = decimals;
@@ -329,7 +352,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         return raw
             .split(RegExp(r'[\s_-]+'))
             .where((part) => part.isNotEmpty)
-            .map((part) => part[0].toUpperCase() + part.substring(1).toLowerCase())
+            .map((part) =>
+                part[0].toUpperCase() + part.substring(1).toLowerCase())
             .join(' ');
     }
   }
@@ -351,9 +375,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final brokerLabel = _normalizeBrokerLabel(
       bot['brokerName'] ?? bot['broker_type'] ?? bot['broker'],
     );
-    final accountNumber = (bot['accountNumber'] ?? bot['account_number'] ?? '')
-        .toString()
-        .trim();
+    final accountNumber =
+        (bot['accountNumber'] ?? bot['account_number'] ?? '').toString().trim();
     final symbol = (bot['symbol'] ?? '').toString().trim().toUpperCase();
 
     if (symbol.isNotEmpty && symbol != 'MULTI' && symbol != 'N/A') {
@@ -385,8 +408,10 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   }
 
   Widget _buildPromotionChip(Map<String, dynamic> bot) {
-    final status = (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
-    final remainingMinutes = int.tryParse(bot['promotionTimeRemainingMinutes']?.toString() ?? '');
+    final status =
+        (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
+    final remainingMinutes =
+        int.tryParse(bot['promotionTimeRemainingMinutes']?.toString() ?? '');
 
     if (status.isEmpty || status == 'not_applicable') {
       return const SizedBox.shrink();
@@ -408,7 +433,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         if (remainingMinutes != null && remainingMinutes > 0) {
           final hours = remainingMinutes ~/ 60;
           final minutes = remainingMinutes % 60;
-          final timeText = hours > 0 ? '${hours}h ${minutes}m left' : '${minutes}m left';
+          final timeText =
+              hours > 0 ? '${hours}h ${minutes}m left' : '${minutes}m left';
           label = 'Evaluating • $timeText';
         } else {
           label = 'Evaluating';
@@ -442,10 +468,13 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
 
   Widget _buildAdaptationChip(Map<String, dynamic> bot) {
     final adaptationEnabled = bot['autoAdaptationEnabled'] != false;
-    final lastAdaptationReason = (bot['lastAdaptationReason'] ?? '').toString().trim();
-    final lastAdaptationAtRaw = (bot['lastAdaptationAt'] ?? '').toString().trim();
-    final lastAdaptationAt =
-        lastAdaptationAtRaw.isEmpty ? null : DateTime.tryParse(lastAdaptationAtRaw);
+    final lastAdaptationReason =
+        (bot['lastAdaptationReason'] ?? '').toString().trim();
+    final lastAdaptationAtRaw =
+        (bot['lastAdaptationAt'] ?? '').toString().trim();
+    final lastAdaptationAt = lastAdaptationAtRaw.isEmpty
+        ? null
+        : DateTime.tryParse(lastAdaptationAtRaw);
 
     if (!adaptationEnabled) {
       return _buildMetaChip('Adapt: Off', Colors.white54);
@@ -453,7 +482,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
 
     var label = 'Adapt: On';
     if (lastAdaptationAt != null) {
-      label = 'Adapted ${DateFormat('HH:mm').format(lastAdaptationAt.toLocal())}';
+      label =
+          'Adapted ${DateFormat('HH:mm').format(lastAdaptationAt.toLocal())}';
     }
     if (lastAdaptationReason.isNotEmpty) {
       final normalizedReason = lastAdaptationReason
@@ -491,9 +521,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     if (totals.isEmpty) {
       return _formatAmount(currencyProvider, 0, decimals: decimals);
     }
-    final entries = totals.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+    final entries = totals.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
     return entries
-        .map((entry) => _formatAmount(currencyProvider, entry.value, decimals: decimals, currencyCode: entry.key))
+        .map((entry) => _formatAmount(currencyProvider, entry.value,
+            decimals: decimals, currencyCode: entry.key))
         .join(' • ');
   }
 
@@ -506,7 +538,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         // Apply search + status + mode filter
         final bots = allBots.where((bot) {
           final botId = (bot['botId'] ?? '').toString().toLowerCase();
-          final symbol = (bot['symbol'] ?? bot['symbols'] ?? '').toString().toLowerCase();
+          final symbol =
+              (bot['symbol'] ?? bot['symbols'] ?? '').toString().toLowerCase();
           final strategy = (bot['strategy'] ?? '').toString().toLowerCase();
           final matchesSearch = _searchQuery.isEmpty ||
               botId.contains(_searchQuery.toLowerCase()) ||
@@ -516,24 +549,24 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           final matchesFilter = _filterStatus == 'all' ||
               (_filterStatus == 'active' && isEnabled) ||
               (_filterStatus == 'inactive' && !isEnabled);
-          final matchesMode = _tradingMode == 'DEMO'
-              ? !_isLiveBot(bot)
-              : _isLiveBot(bot);
-          return matchesSearch && matchesFilter && matchesMode;
+          return matchesSearch && matchesFilter;
         }).toList();
 
         // Top 5 newest bots (by creation time or just last 5)
         final newestBots = List<Map<String, dynamic>>.from(allBots);
         newestBots.sort((a, b) {
-          final aTime = a['createdAt']?.toString() ?? a['created_at']?.toString() ?? '';
-          final bTime = b['createdAt']?.toString() ?? b['created_at']?.toString() ?? '';
+          final aTime =
+              a['createdAt']?.toString() ?? a['created_at']?.toString() ?? '';
+          final bTime =
+              b['createdAt']?.toString() ?? b['created_at']?.toString() ?? '';
           return bTime.compareTo(aTime);
         });
 
         final activeBots = bots.where(_isActiveBot).length;
         final totalProfit = bots.fold<double>(
           0,
-          (sum, b) => sum + _botAmount(b, ['allTimeProfit', 'totalProfit', 'profit']),
+          (sum, b) =>
+              sum + _botAmount(b, ['allTimeProfit', 'totalProfit', 'profit']),
         );
 
         return Container(
@@ -549,9 +582,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
             ),
           ),
           child: allBots.isEmpty && botService.isLoading
-              ? Center(child: CircularProgressIndicator(color: Theme.of(context).colorScheme.primary))
+              ? Center(
+                  child: CircularProgressIndicator(
+                      color: Theme.of(context).colorScheme.primary))
               : RefreshIndicator(
-                  onRefresh: () => botService.fetchActiveBots(tradingMode: _tradingMode, force: true),
+                  onRefresh: () => botService.fetchActiveBots(
+                      tradingMode: _tradingMode, force: true),
                   color: Theme.of(context).colorScheme.primary,
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
@@ -600,21 +636,26 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                                 child: AccountDisplayWidget(
                                   tradingMode: _tradingMode,
                                   onRefresh: () {
-                                    context.read<BotService>().fetchActiveBots(tradingMode: _tradingMode, force: true);
+                                    context.read<BotService>().fetchActiveBots(
+                                        tradingMode: _tradingMode, force: true);
                                   },
                                 ),
                               )
                             else
                               Center(
                                 child: TextButton.icon(
-                                  onPressed: () =>
-                                      setState(() => _showAccountDetails = true),
+                                  onPressed: () => setState(
+                                      () => _showAccountDetails = true),
                                   icon: Icon(Icons.account_balance_wallet,
-                                      size: 20, color: Theme.of(context).colorScheme.primary),
+                                      size: 20,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary),
                                   label: Text(
                                     'Show Account Details',
                                     style: TextStyle(
-                                      color: Theme.of(context).colorScheme.primary,
+                                      color:
+                                          Theme.of(context).colorScheme.primary,
                                       fontSize: 13,
                                     ),
                                   ),
@@ -625,23 +666,30 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         ),
                       ),
 
-
                       // Summary row
                       Row(
                         children: [
-                          _summaryChip(Icons.smart_toy, '$activeBots Active', Colors.green),
-                          const SizedBox(width: 10),
-                          _summaryChip(Icons.list_alt, '${allBots.length} Total', Theme.of(context).colorScheme.primary),
+                          _summaryChip(Icons.smart_toy, '$activeBots Active',
+                              Colors.green),
                           const SizedBox(width: 10),
                           _summaryChip(
-                            totalProfit >= 0 ? Icons.trending_up : Icons.trending_down,
+                              Icons.list_alt,
+                              '${allBots.length} Total',
+                              Theme.of(context).colorScheme.primary),
+                          const SizedBox(width: 10),
+                          _summaryChip(
+                            totalProfit >= 0
+                                ? Icons.trending_up
+                                : Icons.trending_down,
                             _formatBotAggregate(
                               currencyProvider,
                               allBots,
                               'allTimeProfit',
                               fallbackFields: ['totalProfit', 'profit'],
                             ),
-                            totalProfit >= 0 ? Colors.green : Theme.of(context).colorScheme.secondary,
+                            totalProfit >= 0
+                                ? Colors.green
+                                : Theme.of(context).colorScheme.secondary,
                           ),
                         ],
                       ),
@@ -649,22 +697,28 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       Align(
                         alignment: Alignment.centerRight,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 4),
                           decoration: BoxDecoration(
                             color: Colors.white.withOpacity(0.06),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white.withOpacity(0.08)),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.08)),
                           ),
                           child: DropdownButtonHideUnderline(
                             child: DropdownButton<AppCurrency>(
                               value: currencyProvider.currency,
                               dropdownColor: const Color(0xFF1A1F3A),
                               iconEnabledColor: const Color(0xFF00E5FF),
-                              style: GoogleFonts.poppins(color: Colors.white, fontSize: 12),
-                              items: AppCurrency.values.map((currency) => DropdownMenuItem<AppCurrency>(
-                                  value: currency,
-                                  child: Text(_currencyCode(currency)),
-                                )).toList(),
+                              style: GoogleFonts.poppins(
+                                  color: Colors.white, fontSize: 12),
+                              items: AppCurrency.values
+                                  .map((currency) =>
+                                      DropdownMenuItem<AppCurrency>(
+                                        value: currency,
+                                        child: Text(_currencyCode(currency)),
+                                      ))
+                                  .toList(),
                               onChanged: (value) {
                                 if (value != null) {
                                   currencyProvider.setCurrency(value);
@@ -681,17 +735,23 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.06),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.white.withOpacity(0.08)),
+                          border:
+                              Border.all(color: Colors.white.withOpacity(0.08)),
                         ),
                         child: TextField(
                           onChanged: (v) => setState(() => _searchQuery = v),
-                          style: GoogleFonts.poppins(color: Colors.white, fontSize: 14),
+                          style: GoogleFonts.poppins(
+                              color: Colors.white, fontSize: 14),
                           decoration: InputDecoration(
-                            hintText: 'Search bots by name, symbol, strategy...',
-                            hintStyle: GoogleFonts.poppins(color: Colors.white24, fontSize: 13),
-                            prefixIcon: const Icon(Icons.search, color: Color(0xFF00E5FF), size: 20),
+                            hintText:
+                                'Search bots by name, symbol, strategy...',
+                            hintStyle: GoogleFonts.poppins(
+                                color: Colors.white24, fontSize: 13),
+                            prefixIcon: const Icon(Icons.search,
+                                color: Color(0xFF00E5FF), size: 20),
                             border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 14),
                           ),
                         ),
                       ),
@@ -717,7 +777,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       else
                         ..._buildBrokerSections(bots, currencyProvider),
                       GestureDetector(
-                        onTap: () => _openBotConfigurationRoute(const BotConfigurationRoute()),
+                        onTap: () => _openBotConfigurationRoute(
+                            const BotConfigurationRoute()),
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           decoration: BoxDecoration(
@@ -738,9 +799,15 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(Icons.add_circle_outline, color: Colors.white, size: 22),
+                              const Icon(Icons.add_circle_outline,
+                                  color: Colors.white, size: 22),
                               const SizedBox(width: 10),
-                              Text('Create New Bot', style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15, letterSpacing: 0.3)),
+                              Text('Create New Bot',
+                                  style: GoogleFonts.poppins(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 15,
+                                      letterSpacing: 0.3)),
                             ],
                           ),
                         ),
@@ -754,16 +821,19 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                           ),
                         ),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 14, horizontal: 16),
                           decoration: BoxDecoration(
                             color: const Color(0xFFF3BA2F).withOpacity(0.12),
-                            border: Border.all(color: const Color(0xFFF3BA2F), width: 1.6),
+                            border: Border.all(
+                                color: const Color(0xFFF3BA2F), width: 1.6),
                             borderRadius: BorderRadius.circular(14),
                           ),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(Icons.auto_awesome, color: Color(0xFFF3BA2F), size: 22),
+                              const Icon(Icons.auto_awesome,
+                                  color: Color(0xFFF3BA2F), size: 22),
                               const SizedBox(width: 10),
                               Text(
                                 'Use Tested Binance Template',
@@ -787,10 +857,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                           _showBinanceQuickCreateDialog(context);
                         },
                         child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 14, horizontal: 16),
                           decoration: BoxDecoration(
                             color: const Color(0xFFF3BA2F).withOpacity(0.15),
-                            border: Border.all(color: const Color(0xFFF3BA2F), width: 2),
+                            border: Border.all(
+                                color: const Color(0xFFF3BA2F), width: 2),
                             borderRadius: BorderRadius.circular(14),
                           ),
                           child: Row(
@@ -807,7 +879,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              const Icon(Icons.flash_on, color: Color(0xFFF3BA2F), size: 18),
+                              const Icon(Icons.flash_on,
+                                  color: Color(0xFFF3BA2F), size: 18),
                             ],
                           ),
                         ),
@@ -817,7 +890,10 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       // Quick Action Links for Popular Brokers
                       Text(
                         'Quick Create',
-                        style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white70),
+                        style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white70),
                       ),
                       const SizedBox(height: 8),
                       SingleChildScrollView(
@@ -829,7 +905,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                               icon: '₿',
                               label: 'Binance',
                               color: const Color(0xFFF3BA2F),
-                              onTap: () => _createBotForBroker(context, 'Binance'),
+                              onTap: () =>
+                                  _createBotForBroker(context, 'Binance'),
                               description: 'Crypto pairs',
                             ),
                             const SizedBox(width: 10),
@@ -838,7 +915,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                               icon: Icons.trending_up,
                               label: 'Commodities',
                               color: const Color(0xFFFF9800),
-                              onTap: () => _createBotForBroker(context, 'Exness'),
+                              onTap: () =>
+                                  _createBotForBroker(context, 'Exness'),
                               description: 'Gold, Oil...',
                             ),
                           ],
@@ -875,7 +953,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const ConsolidatedReportsScreen()),
+                MaterialPageRoute(
+                    builder: (_) => const ConsolidatedReportsScreen()),
               );
             },
           ),
@@ -897,62 +976,80 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   }
 
   Widget _summaryChip(IconData icon, String label, Color color) => Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.06),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white.withOpacity(0.08)),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: color, size: 16),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(label,
+                    style: GoogleFonts.poppins(
+                        color: color,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
         ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+      );
+
+  Widget _emptyState() => Container(
+        padding: const EdgeInsets.all(40),
+        child: Column(
           children: [
-            Icon(icon, color: color, size: 16),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(label, style: GoogleFonts.poppins(color: color, fontSize: 12, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+            Icon(Icons.smart_toy_outlined,
+                color: Colors.white.withOpacity(0.2), size: 64),
+            const SizedBox(height: 16),
+            Text('No bots created yet',
+                style:
+                    GoogleFonts.poppins(color: Colors.white54, fontSize: 16)),
+            const SizedBox(height: 8),
+            Text('Tap "Create New Bot" to get started',
+                style:
+                    GoogleFonts.poppins(color: Colors.white30, fontSize: 13)),
+          ],
+        ),
+      );
+
+  Widget _errorState(String error) => Container(
+        padding: const EdgeInsets.all(24),
+        margin: const EdgeInsets.only(top: 12),
+        decoration: BoxDecoration(
+          color: Colors.red.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.red.withOpacity(0.3)),
+        ),
+        child: Column(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.redAccent, size: 36),
+            const SizedBox(height: 12),
+            Text(error,
+                style:
+                    GoogleFonts.poppins(color: Colors.redAccent, fontSize: 13),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () => context
+                  .read<BotService>()
+                  .fetchActiveBots(tradingMode: _tradingMode, force: true),
+              child: Text('Retry',
+                  style: GoogleFonts.poppins(color: const Color(0xFF00E5FF))),
             ),
           ],
         ),
-      ),
-    );
+      );
 
-  Widget _emptyState() => Container(
-      padding: const EdgeInsets.all(40),
-      child: Column(
-        children: [
-          Icon(Icons.smart_toy_outlined, color: Colors.white.withOpacity(0.2), size: 64),
-          const SizedBox(height: 16),
-          Text('No bots created yet', style: GoogleFonts.poppins(color: Colors.white54, fontSize: 16)),
-          const SizedBox(height: 8),
-          Text('Tap "Create New Bot" to get started', style: GoogleFonts.poppins(color: Colors.white30, fontSize: 13)),
-        ],
-      ),
-    );
-
-  Widget _errorState(String error) => Container(
-      padding: const EdgeInsets.all(24),
-      margin: const EdgeInsets.only(top: 12),
-      decoration: BoxDecoration(
-        color: Colors.red.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.red.withOpacity(0.3)),
-      ),
-      child: Column(
-        children: [
-          const Icon(Icons.error_outline, color: Colors.redAccent, size: 36),
-          const SizedBox(height: 12),
-          Text(error, style: GoogleFonts.poppins(color: Colors.redAccent, fontSize: 13), textAlign: TextAlign.center),
-          const SizedBox(height: 12),
-          TextButton(
-            onPressed: () => context.read<BotService>().fetchActiveBots(tradingMode: _tradingMode, force: true),
-            child: Text('Retry', style: GoogleFonts.poppins(color: const Color(0xFF00E5FF))),
-          ),
-        ],
-      ),
-    );
-
-  Widget _buildBotCard(Map<String, dynamic> bot, CurrencyProvider currencyProvider) => _buildUnifiedBotCard(bot, currencyProvider);
+  Widget _buildBotCard(
+          Map<String, dynamic> bot, CurrencyProvider currencyProvider) =>
+      _buildUnifiedBotCard(bot, currencyProvider);
 
   /// Groups bots by broker (Binance / Exness / FXCM / Other) and renders
   /// each non-empty group with a header showing count + native-currency P&L.
@@ -1000,7 +1097,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       byCurrency[code] = (byCurrency[code] ?? 0) + p;
     }
     final totalsText = byCurrency.entries
-        .map((e) => _formatAmount(currencyProvider, e.value, currencyCode: e.key))
+        .map((e) =>
+            _formatAmount(currencyProvider, e.value, currencyCode: e.key))
         .join(' • ');
 
     return Container(
@@ -1072,73 +1170,114 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     );
   }
 
-  Widget _buildUnifiedBotCard(Map<String, dynamic> bot, CurrencyProvider currencyProvider) {
+  Widget _buildUnifiedBotCard(
+      Map<String, dynamic> bot, CurrencyProvider currencyProvider) {
     final botId = bot['botId'] ?? 'Unknown';
     final isEnabled = bot['enabled'] == true || bot['status'] == 'Active';
     final botMode = (bot['mode'] ?? '').toString().trim().toLowerCase();
-    final isDemoBot = botMode == 'demo' || (botMode.isEmpty && bot['is_live'] != true);
-    final status = (bot['status'] ?? (isEnabled ? 'Active' : 'Inactive')).toString().toUpperCase();
-    final sessionProfit = _botAmount(bot, ['sessionProfit', 'currentProfit', 'profit']);
-    final allTimeProfit = _botAmount(bot, ['allTimeProfit', 'totalProfit', 'lifetimeCurrentProfit', 'profit']);
-    final totalTrades = int.tryParse(bot['totalTrades']?.toString() ?? '0') ?? 0;
+    final isDemoBot =
+        botMode == 'demo' || (botMode.isEmpty && bot['is_live'] != true);
+    final status = (bot['status'] ?? (isEnabled ? 'Active' : 'Inactive'))
+        .toString()
+        .toUpperCase();
+    final sessionProfit =
+        _botAmount(bot, ['sessionProfit', 'currentProfit', 'profit']);
+    final allTimeProfit = _botAmount(bot,
+        ['allTimeProfit', 'totalProfit', 'lifetimeCurrentProfit', 'profit']);
+    final totalTrades =
+        int.tryParse(bot['totalTrades']?.toString() ?? '0') ?? 0;
     final winRate = double.tryParse(bot['winRate']?.toString() ?? '0') ?? 0;
     final roi = double.tryParse(bot['roi']?.toString() ?? '0') ?? 0;
-    final avgTrade = double.tryParse(bot['avgProfitPerTrade']?.toString() ?? '0') ?? 0;
-    final maxDrawdown = double.tryParse(bot['maxDrawdown']?.toString() ?? '0') ?? 0;
-    final todaysProfit = double.tryParse(bot['dailyProfit']?.toString() ?? '0') ?? 0;
-    final openPositions = (bot['openPositionsPreview'] as List?) ?? (bot['openPositions'] as List?) ?? [];
-    final floatingProfit = double.tryParse(bot['floatingProfit']?.toString() ?? '0') ??
-      openPositions.fold<double>(0, (sum, position) => sum + (double.tryParse(position['profit']?.toString() ?? '0') ?? 0));
+    final avgTrade =
+        double.tryParse(bot['avgProfitPerTrade']?.toString() ?? '0') ?? 0;
+    final maxDrawdown =
+        double.tryParse(bot['maxDrawdown']?.toString() ?? '0') ?? 0;
+    final todaysProfit =
+        double.tryParse(bot['dailyProfit']?.toString() ?? '0') ?? 0;
+    final openPositions = (bot['openPositionsPreview'] as List?) ??
+        (bot['openPositions'] as List?) ??
+        [];
+    final floatingProfit =
+        double.tryParse(bot['floatingProfit']?.toString() ?? '0') ??
+            openPositions.fold<double>(
+                0,
+                (sum, position) =>
+                    sum +
+                    (double.tryParse(position['profit']?.toString() ?? '0') ??
+                        0));
     final currentProfit = sessionProfit;
-    final promotionStatus = (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
-    final isPromotionEligible = isDemoBot && (bot['promotionEligible'] == true || promotionStatus == 'ready');
-    final accountBalance = double.tryParse(bot['accountBalance']?.toString() ?? '0') ?? 0;
-    final accountEquity = double.tryParse(bot['accountEquity']?.toString() ?? '0') ?? 0;
-    final tradeAmount = double.tryParse(bot['tradeAmount']?.toString() ?? '0') ?? 0;
-    final effectiveTradeAmount = double.tryParse(bot['effectiveTradeAmount']?.toString() ?? '0') ?? 0;
+    final promotionStatus =
+        (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
+    final isPromotionEligible = isDemoBot &&
+        (bot['promotionEligible'] == true || promotionStatus == 'ready');
+    final accountBalance =
+        double.tryParse(bot['accountBalance']?.toString() ?? '0') ?? 0;
+    final accountEquity =
+        double.tryParse(bot['accountEquity']?.toString() ?? '0') ?? 0;
+    final tradeAmount =
+        double.tryParse(bot['tradeAmount']?.toString() ?? '0') ?? 0;
+    final effectiveTradeAmount =
+        double.tryParse(bot['effectiveTradeAmount']?.toString() ?? '0') ?? 0;
     final double configuredCapital = effectiveTradeAmount > 0
-      ? effectiveTradeAmount
-      : (tradeAmount > 0 ? tradeAmount : 0.0);
-    final investedCapital = double.tryParse(bot['roiBasis']?.toString() ?? '0') ??
-      double.tryParse(bot['totalInvestment']?.toString() ?? '0') ??
-      0;
-    final openPositionsCount = int.tryParse(bot['openPositionsCount']?.toString() ?? '${openPositions.length}') ?? openPositions.length;
+        ? effectiveTradeAmount
+        : (tradeAmount > 0 ? tradeAmount : 0.0);
+    final investedCapital =
+        double.tryParse(bot['roiBasis']?.toString() ?? '0') ??
+            double.tryParse(bot['totalInvestment']?.toString() ?? '0') ??
+            0;
+    final openPositionsCount = int.tryParse(
+            bot['openPositionsCount']?.toString() ??
+                '${openPositions.length}') ??
+        openPositions.length;
     final symbols = bot['symbol'] ?? bot['symbols'] ?? 'N/A';
     final strategy = bot['strategy'] ?? 'Auto';
     final brokerType = bot['broker_type'] ?? bot['broker'] ?? 'MT5';
     final brokerLabel = _botConnectionLabel(bot);
-    final isBinanceBot = _normalizeBrokerLabel(bot['brokerName'] ?? brokerType).toLowerCase() == 'binance';
-    final brokerAccent = _brokerAccentColor(_normalizeBrokerLabel(bot['brokerName'] ?? brokerType));
+    final isBinanceBot =
+        _normalizeBrokerLabel(bot['brokerName'] ?? brokerType).toLowerCase() ==
+            'binance';
+    final brokerAccent = _brokerAccentColor(
+        _normalizeBrokerLabel(bot['brokerName'] ?? brokerType));
     final displayCurrency = _botDisplayCurrency(bot);
     final presetName = (bot['presetName'] ?? '').toString().trim();
-    final profileLabel = _formatProfileLabel(bot['managementProfile']?.toString());
+    final profileLabel =
+        _formatProfileLabel(bot['managementProfile']?.toString());
     final accountModeLabel = isDemoBot ? 'DEMO' : 'LIVE';
     final symbolStr = symbols is List ? symbols.join(', ') : symbols.toString();
     final runtime = bot['runtimeFormatted'] ?? '--';
     final pauseReason = (bot['pauseReason'] ?? '').toString().trim();
-    final lastNoTradeReason = (bot['lastNoTradeReason'] ?? '').toString().trim();
+    final lastNoTradeReason =
+        (bot['lastNoTradeReason'] ?? '').toString().trim();
     final lastNoTradeAtText = (bot['lastNoTradeAt'] ?? '').toString().trim();
-    final lastNoTradeAt = lastNoTradeAtText.isEmpty ? null : DateTime.tryParse(lastNoTradeAtText);
-    final hasRecentNoTradeReason =
-      lastNoTradeReason.isNotEmpty &&
-      lastNoTradeAt != null &&
-      DateTime.now().difference(lastNoTradeAt.toLocal()).inMinutes <= 15;
+    final lastNoTradeAt =
+        lastNoTradeAtText.isEmpty ? null : DateTime.tryParse(lastNoTradeAtText);
+    final hasRecentNoTradeReason = lastNoTradeReason.isNotEmpty &&
+        lastNoTradeAt != null &&
+        DateTime.now().difference(lastNoTradeAt.toLocal()).inMinutes <= 15;
     final idleReason = pauseReason.isNotEmpty
-      ? pauseReason
-      : (hasRecentNoTradeReason ? lastNoTradeReason : '');
+        ? pauseReason
+        : (hasRecentNoTradeReason ? lastNoTradeReason : '');
     final drawdownPauseUntilText = bot['drawdownPauseUntil']?.toString();
-    final drawdownPauseUntil = drawdownPauseUntilText == null || drawdownPauseUntilText.isEmpty
-      ? null
-      : DateTime.tryParse(drawdownPauseUntilText);
-    final isCoolingDown = drawdownPauseUntil != null && drawdownPauseUntil.isAfter(DateTime.now());
+    final drawdownPauseUntil =
+        drawdownPauseUntilText == null || drawdownPauseUntilText.isEmpty
+            ? null
+            : DateTime.tryParse(drawdownPauseUntilText);
+    final isCoolingDown = drawdownPauseUntil != null &&
+        drawdownPauseUntil.isAfter(DateTime.now());
     final activeSymbolCooldowns = (bot['activeSymbolCooldowns'] as List?) ?? [];
-    final temporalGuardStatus = (bot['temporalGuardStatus'] ?? 'normal').toString().trim().toLowerCase();
-    final temporalGuardHeadline = (bot['temporalGuardHeadline'] ?? '').toString().trim();
-    final temporalGuardReason = (bot['temporalGuardReason'] ?? '').toString().trim();
-    final showTemporalGuard = temporalGuardStatus == 'blocked' || temporalGuardStatus == 'demoted';
+    final temporalGuardStatus = (bot['temporalGuardStatus'] ?? 'normal')
+        .toString()
+        .trim()
+        .toLowerCase();
+    final temporalGuardHeadline =
+        (bot['temporalGuardHeadline'] ?? '').toString().trim();
+    final temporalGuardReason =
+        (bot['temporalGuardReason'] ?? '').toString().trim();
+    final showTemporalGuard =
+        temporalGuardStatus == 'blocked' || temporalGuardStatus == 'demoted';
     final temporalGuardColor = temporalGuardStatus == 'blocked'
-      ? const Color(0xFFFF8A80)
-      : const Color(0xFFFFB74D);
+        ? const Color(0xFFFF8A80)
+        : const Color(0xFFFFB74D);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -1149,7 +1288,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         border: Border.all(color: Colors.white.withOpacity(0.1)),
         boxShadow: [
           BoxShadow(
-            color: isEnabled ? const Color(0xFF69F0AE).withOpacity(0.1) : Colors.black.withOpacity(0.2),
+            color: isEnabled
+                ? const Color(0xFF69F0AE).withOpacity(0.1)
+                : Colors.black.withOpacity(0.2),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -1165,11 +1306,13 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               decoration: BoxDecoration(
                 color: const Color(0xFFFFA726).withOpacity(0.12),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFFFA726).withOpacity(0.35)),
+                border: Border.all(
+                    color: const Color(0xFFFFA726).withOpacity(0.35)),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.timer_outlined, color: Color(0xFFFFA726), size: 16),
+                  const Icon(Icons.timer_outlined,
+                      color: Color(0xFFFFA726), size: 16),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1192,14 +1335,16 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               decoration: BoxDecoration(
                 color: const Color(0xFF00E5FF).withOpacity(0.10),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.28)),
+                border: Border.all(
+                    color: const Color(0xFF00E5FF).withOpacity(0.28)),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Padding(
                     padding: EdgeInsets.only(top: 1),
-                    child: Icon(Icons.info_outline, color: Color(0xFF00E5FF), size: 16),
+                    child: Icon(Icons.info_outline,
+                        color: Color(0xFF00E5FF), size: 16),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -1231,7 +1376,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 1),
                     child: Icon(
-                      temporalGuardStatus == 'blocked' ? Icons.block_outlined : Icons.tune_outlined,
+                      temporalGuardStatus == 'blocked'
+                          ? Icons.block_outlined
+                          : Icons.tune_outlined,
                       color: temporalGuardColor,
                       size: 16,
                     ),
@@ -1242,7 +1389,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          temporalGuardHeadline.isNotEmpty ? temporalGuardHeadline : 'Adaptive time guard',
+                          temporalGuardHeadline.isNotEmpty
+                              ? temporalGuardHeadline
+                              : 'Adaptive time guard',
                           style: GoogleFonts.poppins(
                             color: temporalGuardColor,
                             fontSize: 11,
@@ -1272,14 +1421,21 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(botId, style: GoogleFonts.poppins(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700)),
+                    Text(botId,
+                        style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700)),
                     const SizedBox(height: 2),
                     Row(
                       children: [
-                        Text(strategy, style: GoogleFonts.poppins(color: Colors.white70, fontSize: 12)),
+                        Text(strategy,
+                            style: GoogleFonts.poppins(
+                                color: Colors.white70, fontSize: 12)),
                         const SizedBox(width: 8),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: brokerAccent.withOpacity(0.2),
                             borderRadius: BorderRadius.circular(6),
@@ -1302,24 +1458,21 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                 decoration: BoxDecoration(
                   color: isEnabled
-                    ? const Color(0xFF69F0AE).withOpacity(0.2)
-                    : Colors.grey.withOpacity(0.2),
+                      ? const Color(0xFF69F0AE).withOpacity(0.2)
+                      : Colors.grey.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
-                    color: isEnabled
-                      ? const Color(0xFF69F0AE)
-                      : Colors.grey,
+                    color: isEnabled ? const Color(0xFF69F0AE) : Colors.grey,
                   ),
                 ),
                 child: Text(
                   status,
                   style: GoogleFonts.poppins(
-                    color: isEnabled
-                      ? const Color(0xFF69F0AE)
-                      : Colors.grey,
+                    color: isEnabled ? const Color(0xFF69F0AE) : Colors.grey,
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
                   ),
@@ -1335,14 +1488,22 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: Colors.white.withOpacity(0.1)),
             ),
-            child: Text(symbolStr, style: GoogleFonts.poppins(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500)),
+            child: Text(symbolStr,
+                style: GoogleFonts.poppins(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500)),
           ),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              _buildMetaChip(accountModeLabel, isDemoBot ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80)),
+              _buildMetaChip(
+                  accountModeLabel,
+                  isDemoBot
+                      ? const Color(0xFF69F0AE)
+                      : const Color(0xFFFF8A80)),
               _buildMetaChip('Profile: $profileLabel', const Color(0xFF00E5FF)),
               if (presetName.isNotEmpty)
                 _buildMetaChip('Preset: $presetName', const Color(0xFFFFA726)),
@@ -1353,7 +1514,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 ),
               if (showTemporalGuard)
                 _buildMetaChip(
-                  temporalGuardHeadline.isNotEmpty ? temporalGuardHeadline : 'Adaptive guard',
+                  temporalGuardHeadline.isNotEmpty
+                      ? temporalGuardHeadline
+                      : 'Adaptive guard',
                   temporalGuardColor,
                 ),
               _buildAdaptationChip(bot),
@@ -1364,37 +1527,89 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           const SizedBox(height: 10),
           Row(
             children: [
-              Text('Running for ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
-              Text(runtime, style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13)),
+              Text('Running for ',
+                  style:
+                      GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+              Text(runtime,
+                  style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13)),
               const Spacer(),
-              Text('Open P/L ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
-              Text(_formatAmount(currencyProvider, floatingProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: floatingProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.bold, fontSize: 13)),
+              Text('Open P/L ',
+                  style:
+                      GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+              Text(
+                  _formatAmount(currencyProvider, floatingProfit,
+                      currencyCode: displayCurrency),
+                  style: GoogleFonts.poppins(
+                      color: floatingProfit >= 0
+                          ? const Color(0xFF69F0AE)
+                          : const Color(0xFFFF8A80),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13)),
             ],
           ),
           const SizedBox(height: 6),
           Row(
             children: [
-              Text('Today closed ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
-              Text(_formatAmount(currencyProvider, todaysProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: todaysProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w600, fontSize: 12)),
+              Text('Today closed ',
+                  style:
+                      GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+              Text(
+                  _formatAmount(currencyProvider, todaysProfit,
+                      currencyCode: displayCurrency),
+                  style: GoogleFonts.poppins(
+                      color: todaysProfit >= 0
+                          ? const Color(0xFF69F0AE)
+                          : const Color(0xFFFF8A80),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12)),
               const Spacer(),
-              Text('Session P/L ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
-              Text(_formatAmount(currencyProvider, currentProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: currentProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w700, fontSize: 12)),
+              Text('Session P/L ',
+                  style:
+                      GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+              Text(
+                  _formatAmount(currencyProvider, currentProfit,
+                      currencyCode: displayCurrency),
+                  style: GoogleFonts.poppins(
+                      color: currentProfit >= 0
+                          ? const Color(0xFF69F0AE)
+                          : const Color(0xFFFF8A80),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12)),
             ],
           ),
           const SizedBox(height: 10),
           Row(
             children: [
               _botStat('Trades', '$totalTrades', const Color(0xFF00E5FF)),
-              _botStat('Win Rate', '${winRate.toStringAsFixed(1)}%', const Color(0xFF69F0AE)),
-              _botStat('All-time', _formatAmount(currencyProvider, allTimeProfit, currencyCode: displayCurrency), allTimeProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80)),
+              _botStat('Win Rate', '${winRate.toStringAsFixed(1)}%',
+                  const Color(0xFF69F0AE)),
+              _botStat(
+                  'All-time',
+                  _formatAmount(currencyProvider, allTimeProfit,
+                      currencyCode: displayCurrency),
+                  allTimeProfit >= 0
+                      ? const Color(0xFF69F0AE)
+                      : const Color(0xFFFF8A80)),
             ],
           ),
           const SizedBox(height: 8),
           Row(
             children: [
-              _botStat('ROI', '${roi.toStringAsFixed(1)}%', const Color(0xFFFFA726)),
-              _botStat('Avg/Trade', _formatAmount(currencyProvider, avgTrade, decimals: 0, currencyCode: displayCurrency), const Color(0xFFAB47BC)),
-              _botStat('Max Drawdown', _formatAmount(currencyProvider, maxDrawdown, decimals: 0, currencyCode: displayCurrency), const Color(0xFFFF8A80)),
+              _botStat(
+                  'ROI', '${roi.toStringAsFixed(1)}%', const Color(0xFFFFA726)),
+              _botStat(
+                  'Avg/Trade',
+                  _formatAmount(currencyProvider, avgTrade,
+                      decimals: 0, currencyCode: displayCurrency),
+                  const Color(0xFFAB47BC)),
+              _botStat(
+                  'Max Drawdown',
+                  _formatAmount(currencyProvider, maxDrawdown,
+                      decimals: 0, currencyCode: displayCurrency),
+                  const Color(0xFFFF8A80)),
             ],
           ),
           // Account Balance & Equity
@@ -1405,7 +1620,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               decoration: BoxDecoration(
                 color: const Color(0xFF00E5FF).withOpacity(0.08),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.2)),
+                border:
+                    Border.all(color: const Color(0xFF00E5FF).withOpacity(0.2)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1416,15 +1632,22 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.account_balance_wallet, color: Color(0xFF00E5FF), size: 16),
+                          const Icon(Icons.account_balance_wallet,
+                              color: Color(0xFF00E5FF), size: 16),
                           const SizedBox(width: 8),
-                          Text('Balance', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                          Text('Balance',
+                              style: GoogleFonts.poppins(
+                                  color: Colors.white60, fontSize: 12)),
                         ],
                       ),
                       Flexible(
                         child: Text(
-                          _formatAmount(currencyProvider, accountBalance, currencyCode: displayCurrency),
-                          style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontWeight: FontWeight.w700, fontSize: 14),
+                          _formatAmount(currencyProvider, accountBalance,
+                              currencyCode: displayCurrency),
+                          style: GoogleFonts.poppins(
+                              color: const Color(0xFF00E5FF),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 14),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -1438,22 +1661,32 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.savings_outlined, color: Color(0xFFFFA726), size: 16),
+                            const Icon(Icons.savings_outlined,
+                                color: Color(0xFFFFA726), size: 16),
                             const SizedBox(width: 8),
-                            Text('Trade Capital', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                            Text('Trade Capital',
+                                style: GoogleFonts.poppins(
+                                    color: Colors.white60, fontSize: 12)),
                           ],
                         ),
                         Flexible(
                           child: Text(
-                            _formatAmount(currencyProvider, configuredCapital, currencyCode: displayCurrency),
-                            style: GoogleFonts.poppins(color: const Color(0xFFFFA726), fontWeight: FontWeight.w600, fontSize: 13),
+                            _formatAmount(currencyProvider, configuredCapital,
+                                currencyCode: displayCurrency),
+                            style: GoogleFonts.poppins(
+                                color: const Color(0xFFFFA726),
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
                     ),
                   ],
-                  if (investedCapital > 0 && (configuredCapital <= 0 || (investedCapital - configuredCapital).abs() >= 0.01)) ...[
+                  if (investedCapital > 0 &&
+                      (configuredCapital <= 0 ||
+                          (investedCapital - configuredCapital).abs() >=
+                              0.01)) ...[
                     const SizedBox(height: 4),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1461,15 +1694,22 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.insights_outlined, color: Color(0xFFAB47BC), size: 16),
+                            const Icon(Icons.insights_outlined,
+                                color: Color(0xFFAB47BC), size: 16),
                             const SizedBox(width: 8),
-                            Text('Invested', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                            Text('Invested',
+                                style: GoogleFonts.poppins(
+                                    color: Colors.white60, fontSize: 12)),
                           ],
                         ),
                         Flexible(
                           child: Text(
-                            _formatAmount(currencyProvider, investedCapital, currencyCode: displayCurrency),
-                            style: GoogleFonts.poppins(color: const Color(0xFFAB47BC), fontWeight: FontWeight.w600, fontSize: 13),
+                            _formatAmount(currencyProvider, investedCapital,
+                                currencyCode: displayCurrency),
+                            style: GoogleFonts.poppins(
+                                color: const Color(0xFFAB47BC),
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -1484,15 +1724,22 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.trending_up, color: Color(0xFF69F0AE), size: 16),
+                            const Icon(Icons.trending_up,
+                                color: Color(0xFF69F0AE), size: 16),
                             const SizedBox(width: 8),
-                            Text('Equity', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                            Text('Equity',
+                                style: GoogleFonts.poppins(
+                                    color: Colors.white60, fontSize: 12)),
                           ],
                         ),
                         Flexible(
                           child: Text(
-                            _formatAmount(currencyProvider, accountEquity, currencyCode: displayCurrency),
-                            style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                            _formatAmount(currencyProvider, accountEquity,
+                                currencyCode: displayCurrency),
+                            style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -1508,31 +1755,43 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
             const SizedBox(height: 10),
             Row(
               children: [
-                const Icon(Icons.candlestick_chart, color: Color(0xFFFFA726), size: 16),
+                const Icon(Icons.candlestick_chart,
+                    color: Color(0xFFFFA726), size: 16),
                 const SizedBox(width: 6),
                 Text(
                   'Open Positions ($openPositionsCount)',
-                  style: GoogleFonts.poppins(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                  style: GoogleFonts.poppins(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
                 ),
               ],
             ),
             const SizedBox(height: 6),
             ...openPositions.take(5).map((pos) {
-              final posTicket = (pos['ticket'] ?? pos['position'] ?? pos['positionId'])?.toString() ?? '';
+              final posTicket =
+                  (pos['ticket'] ?? pos['position'] ?? pos['positionId'])
+                          ?.toString() ??
+                      '';
               final posSymbol = pos['symbol']?.toString() ?? '';
               final posType = pos['type']?.toString() ?? '';
-              final posVolume = double.tryParse(pos['volume']?.toString() ?? '0') ?? 0;
-              final posEntry = double.tryParse(pos['entryPrice']?.toString() ?? '0') ?? 0;
-              final posCurrent = double.tryParse(pos['currentPrice']?.toString() ?? '0') ?? 0;
-              final posProfit = double.tryParse(pos['profit']?.toString() ?? '0') ?? 0;
+              final posVolume =
+                  double.tryParse(pos['volume']?.toString() ?? '0') ?? 0;
+              final posEntry =
+                  double.tryParse(pos['entryPrice']?.toString() ?? '0') ?? 0;
+              final posCurrent =
+                  double.tryParse(pos['currentPrice']?.toString() ?? '0') ?? 0;
+              final posProfit =
+                  double.tryParse(pos['profit']?.toString() ?? '0') ?? 0;
               final isBuy = posType.toUpperCase().contains('BUY');
               final hasProtectionData =
                   (pos['profitProtectionArmed'] == true) ||
-                  (pos['lockedProfitFloor'] != null) ||
-                  (pos['breakEvenFloor'] != null);
+                      (pos['lockedProfitFloor'] != null) ||
+                      (pos['breakEvenFloor'] != null);
               return Container(
                 margin: const EdgeInsets.only(bottom: 4),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.04),
                   borderRadius: BorderRadius.circular(8),
@@ -1545,25 +1804,36 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       children: [
                         Icon(
                           isBuy ? Icons.arrow_upward : Icons.arrow_downward,
-                          color: isBuy ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                          color: isBuy
+                              ? const Color(0xFF69F0AE)
+                              : const Color(0xFFFF8A80),
                           size: 14,
                         ),
                         const SizedBox(width: 6),
                         Text(
                           posSymbol,
-                          style: GoogleFonts.poppins(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                          style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(width: 8),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 1),
                           decoration: BoxDecoration(
-                            color: (isBuy ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80)).withOpacity(0.15),
+                            color: (isBuy
+                                    ? const Color(0xFF69F0AE)
+                                    : const Color(0xFFFF8A80))
+                                .withOpacity(0.15),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
                             isBuy ? 'BUY' : 'SELL',
                             style: GoogleFonts.poppins(
-                              color: isBuy ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                              color: isBuy
+                                  ? const Color(0xFF69F0AE)
+                                  : const Color(0xFFFF8A80),
                               fontSize: 10,
                               fontWeight: FontWeight.w700,
                             ),
@@ -1572,8 +1842,10 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         const Spacer(),
                         Flexible(
                           child: Text(
-                            _formatPositionSize(posVolume, isBinance: isBinanceBot),
-                            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 11),
+                            _formatPositionSize(posVolume,
+                                isBinance: isBinanceBot),
+                            style: GoogleFonts.poppins(
+                                color: Colors.white54, fontSize: 11),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -1581,7 +1853,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         Flexible(
                           child: Text(
                             '@ ${posEntry.toStringAsFixed(posEntry > 100 ? 2 : 5)}',
-                            style: GoogleFonts.poppins(color: Colors.white70, fontSize: 11),
+                            style: GoogleFonts.poppins(
+                                color: Colors.white70, fontSize: 11),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -1590,7 +1863,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                           Text(
                             'P/L ${_formatAmount(currencyProvider, posProfit, currencyCode: displayCurrency)}',
                             style: GoogleFonts.poppins(
-                              color: posProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                              color: posProfit >= 0
+                                  ? const Color(0xFF69F0AE)
+                                  : const Color(0xFFFF8A80),
                               fontSize: 11,
                               fontWeight: FontWeight.w700,
                             ),
@@ -1608,20 +1883,29 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                                   backgroundColor: const Color(0xFF0A0E21),
                                   title: Text(
                                     'Close Position?',
-                                    style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w700),
+                                    style: GoogleFonts.poppins(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w700),
                                   ),
                                   content: Text(
                                     '$posSymbol (${isBuy ? 'BUY' : 'SELL'}) ticket $posTicket will be closed now.',
-                                    style: GoogleFonts.poppins(color: Colors.white70),
+                                    style: GoogleFonts.poppins(
+                                        color: Colors.white70),
                                   ),
                                   actions: [
                                     TextButton(
-                                      onPressed: () => Navigator.pop(dialogContext, false),
-                                      child: Text('Cancel', style: GoogleFonts.poppins(color: Colors.white70)),
+                                      onPressed: () =>
+                                          Navigator.pop(dialogContext, false),
+                                      child: Text('Cancel',
+                                          style: GoogleFonts.poppins(
+                                              color: Colors.white70)),
                                     ),
                                     TextButton(
-                                      onPressed: () => Navigator.pop(dialogContext, true),
-                                      child: Text('Close', style: GoogleFonts.poppins(color: Colors.redAccent)),
+                                      onPressed: () =>
+                                          Navigator.pop(dialogContext, true),
+                                      child: Text('Close',
+                                          style: GoogleFonts.poppins(
+                                              color: Colors.redAccent)),
                                     ),
                                   ],
                                 ),
@@ -1629,12 +1913,17 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
 
                               if (shouldClose != true) return;
                               final botService = context.read<BotService>();
-                              final closed = await botService.closeBotPosition(botId.toString(), posTicket);
+                              final closed = await botService.closeBotPosition(
+                                  botId.toString(), posTicket);
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text(closed ? 'Position closed' : (botService.errorMessage ?? 'Failed to close position')),
-                                  backgroundColor: closed ? Colors.green : Colors.red,
+                                  content: Text(closed
+                                      ? 'Position closed'
+                                      : (botService.errorMessage ??
+                                          'Failed to close position')),
+                                  backgroundColor:
+                                      closed ? Colors.green : Colors.red,
                                   duration: const Duration(seconds: 2),
                                 ),
                               );
@@ -1647,9 +1936,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                               decoration: BoxDecoration(
                                 color: Colors.redAccent.withOpacity(0.18),
                                 borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: Colors.redAccent.withOpacity(0.45)),
+                                border: Border.all(
+                                    color: Colors.redAccent.withOpacity(0.45)),
                               ),
-                              child: const Icon(Icons.close, color: Colors.redAccent, size: 14),
+                              child: const Icon(Icons.close,
+                                  color: Colors.redAccent, size: 14),
                             ),
                           ),
                         ],
@@ -1666,12 +1957,20 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                               'Protect ${pos['profitProtectionBucket']}',
                               const Color(0xFF26A69A),
                             ),
-                          if ((double.tryParse(pos['lockedProfitFloor']?.toString() ?? '0') ?? 0) > 0)
+                          if ((double.tryParse(
+                                      pos['lockedProfitFloor']?.toString() ??
+                                          '0') ??
+                                  0) >
+                              0)
                             _buildProtectionChip(
                               'Floor ${_formatAmount(currencyProvider, double.tryParse(pos['lockedProfitFloor']?.toString() ?? '0') ?? 0, currencyCode: displayCurrency)}',
                               const Color(0xFF26A69A),
                             ),
-                          if ((double.tryParse(pos['breakEvenFloor']?.toString() ?? '0') ?? 0) > 0)
+                          if ((double.tryParse(
+                                      pos['breakEvenFloor']?.toString() ??
+                                          '0') ??
+                                  0) >
+                              0)
                             _buildProtectionChip(
                               'BE+ ${_formatAmount(currencyProvider, double.tryParse(pos['breakEvenFloor']?.toString() ?? '0') ?? 0, currencyCode: displayCurrency)}',
                               const Color(0xFF42A5F5),
@@ -1688,7 +1987,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
                   '+${openPositionsCount - 5} more positions',
-                  style: GoogleFonts.poppins(color: Colors.white38, fontSize: 11),
+                  style:
+                      GoogleFonts.poppins(color: Colors.white38, fontSize: 11),
                 ),
               ),
             if (activeSymbolCooldowns.isNotEmpty) ...[
@@ -1697,7 +1997,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 spacing: 6,
                 runSpacing: 6,
                 children: activeSymbolCooldowns.take(3).map((cooldown) {
-                  final cooldownUntil = DateTime.tryParse(cooldown['until']?.toString() ?? '');
+                  final cooldownUntil =
+                      DateTime.tryParse(cooldown['until']?.toString() ?? '');
                   final label = cooldownUntil == null
                       ? '${cooldown['symbol']} cooldown'
                       : '${cooldown['symbol']} until ${DateFormat('HH:mm').format(cooldownUntil.toLocal())}';
@@ -1713,16 +2014,19 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 child: Container(
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: isEnabled 
-                        ? [const Color(0xFFFFA726), const Color(0xFFFF7043)]
-                        : [const Color(0xFF66BB6A), const Color(0xFF43A047)],
+                      colors: isEnabled
+                          ? [const Color(0xFFFFA726), const Color(0xFFFF7043)]
+                          : [const Color(0xFF66BB6A), const Color(0xFF43A047)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
                     borderRadius: BorderRadius.circular(12),
                     boxShadow: [
                       BoxShadow(
-                        color: (isEnabled ? const Color(0xFFFFA726) : const Color(0xFF66BB6A)).withOpacity(0.3),
+                        color: (isEnabled
+                                ? const Color(0xFFFFA726)
+                                : const Color(0xFF66BB6A))
+                            .withOpacity(0.3),
                         blurRadius: 8,
                         offset: const Offset(0, 4),
                       ),
@@ -1734,11 +2038,13 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       onTap: () async {
                         final botService = context.read<BotService>();
                         final result = isEnabled
-                          ? await botService.stopBotTrading(botId)
-                          : await botService.startBotTrading(botId);
+                            ? await botService.stopBotTrading(botId)
+                            : await botService.startBotTrading(botId);
                         if (!mounted) return;
                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                          content: Text(result ? (isEnabled ? 'Bot stopped' : 'Bot started') : 'Action failed'),
+                          content: Text(result
+                              ? (isEnabled ? 'Bot stopped' : 'Bot started')
+                              : 'Action failed'),
                           backgroundColor: result ? Colors.green : Colors.red,
                           duration: const Duration(seconds: 2),
                         ));
@@ -1750,11 +2056,16 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(isEnabled ? Icons.pause_circle : Icons.play_circle, size: 18),
+                            Icon(
+                                isEnabled
+                                    ? Icons.pause_circle
+                                    : Icons.play_circle,
+                                size: 18),
                             const SizedBox(width: 8),
                             Text(
                               isEnabled ? 'Stop' : 'Start',
-                              style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 13),
+                              style: GoogleFonts.poppins(
+                                  fontWeight: FontWeight.w600, fontSize: 13),
                             ),
                           ],
                         ),
@@ -1785,9 +2096,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     color: Colors.transparent,
                     child: InkWell(
                       onTap: () {
-                        Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => BotAnalyticsScreen(bot: bot),
-                        ));
+                        Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => BotAnalyticsScreen(bot: bot),
+                            ));
                       },
                       borderRadius: BorderRadius.circular(12),
                       child: Padding(
@@ -1799,7 +2112,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                             const SizedBox(width: 8),
                             Text(
                               'Analytics',
-                              style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 13),
+                              style: GoogleFonts.poppins(
+                                  fontWeight: FontWeight.w600, fontSize: 13),
                             ),
                           ],
                         ),
@@ -1811,9 +2125,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               const SizedBox(width: 6),
               // Overflow menu for less-used actions (Delete)
               PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert, color: Colors.white54, size: 22),
+                icon: const Icon(Icons.more_vert,
+                    color: Colors.white54, size: 22),
                 color: const Color(0xFF1A1F3A),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 onSelected: (value) async {
                   if (value == 'edit') {
                     final isEnabled = bot['enabled'] == true;
@@ -1821,7 +2137,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Stop the bot before reconfiguring it.'),
+                          content:
+                              Text('Stop the bot before reconfiguring it.'),
                           backgroundColor: Colors.orange,
                           duration: Duration(seconds: 3),
                         ),
@@ -1886,7 +2203,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     final confirmed = await showDialog<bool>(
                       context: context,
                       builder: (ctx) => AlertDialog(
-                        title: Text('Delete $botId?', style: const TextStyle(color: Colors.white)),
+                        title: Text('Delete $botId?',
+                            style: const TextStyle(color: Colors.white)),
                         backgroundColor: const Color(0xFF0A0E21),
                         content: const Text(
                           'This action cannot be undone.',
@@ -1895,11 +2213,14 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         actions: [
                           TextButton(
                             onPressed: () => Navigator.pop(ctx, false),
-                            child: Text('Cancel', style: GoogleFonts.poppins(color: Colors.white70)),
+                            child: Text('Cancel',
+                                style:
+                                    GoogleFonts.poppins(color: Colors.white70)),
                           ),
                           TextButton(
                             onPressed: () => Navigator.pop(ctx, true),
-                            child: Text('Delete', style: GoogleFonts.poppins(color: Colors.red)),
+                            child: Text('Delete',
+                                style: GoogleFonts.poppins(color: Colors.red)),
                           ),
                         ],
                       ),
@@ -1920,7 +2241,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     } else {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(botService.errorMessage ?? 'Failed to delete $botId'),
+                          content: Text(botService.errorMessage ??
+                              'Failed to delete $botId'),
                           backgroundColor: Colors.orange,
                           duration: const Duration(seconds: 3),
                         ),
@@ -1933,9 +2255,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     value: 'edit',
                     child: Row(
                       children: [
-                        const Icon(Icons.edit_outlined, color: Color(0xFF00E5FF), size: 18),
+                        const Icon(Icons.edit_outlined,
+                            color: Color(0xFF00E5FF), size: 18),
                         const SizedBox(width: 8),
-                        Text('Reconfigure Bot', style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontSize: 13)),
+                        Text('Reconfigure Bot',
+                            style: GoogleFonts.poppins(
+                                color: const Color(0xFF00E5FF), fontSize: 13)),
                       ],
                     ),
                   ),
@@ -1943,9 +2268,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     value: 'clone',
                     child: Row(
                       children: [
-                        const Icon(Icons.copy_all_outlined, color: Color(0xFF69F0AE), size: 18),
+                        const Icon(Icons.copy_all_outlined,
+                            color: Color(0xFF69F0AE), size: 18),
                         const SizedBox(width: 8),
-                        Text('Clone Bot', style: GoogleFonts.poppins(color: const Color(0xFF69F0AE), fontSize: 13)),
+                        Text('Clone Bot',
+                            style: GoogleFonts.poppins(
+                                color: const Color(0xFF69F0AE), fontSize: 13)),
                       ],
                     ),
                   ),
@@ -1957,7 +2285,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         children: [
                           Icon(
                             Icons.trending_up_outlined,
-                            color: isPromotionEligible ? const Color(0xFFFFB74D) : Colors.white38,
+                            color: isPromotionEligible
+                                ? const Color(0xFFFFB74D)
+                                : Colors.white38,
                             size: 18,
                           ),
                           const SizedBox(width: 8),
@@ -1968,7 +2298,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                                     ? 'Promotion Expired'
                                     : 'Promote To Live (evaluating)',
                             style: GoogleFonts.poppins(
-                              color: isPromotionEligible ? const Color(0xFFFFB74D) : Colors.white38,
+                              color: isPromotionEligible
+                                  ? const Color(0xFFFFB74D)
+                                  : Colors.white38,
                               fontSize: 13,
                             ),
                           ),
@@ -1979,9 +2311,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                     value: 'delete',
                     child: Row(
                       children: [
-                        const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18),
+                        const Icon(Icons.delete_outline,
+                            color: Colors.redAccent, size: 18),
                         const SizedBox(width: 8),
-                        Text('Delete Bot', style: GoogleFonts.poppins(color: Colors.redAccent, fontSize: 13)),
+                        Text('Delete Bot',
+                            style: GoogleFonts.poppins(
+                                color: Colors.redAccent, fontSize: 13)),
                       ],
                     ),
                   ),
@@ -2014,25 +2349,28 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   }
 
   Widget _botStat(String label, String value, Color color) => Expanded(
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: color.withOpacity(0.3)),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: color.withOpacity(0.3)),
+              ),
+              child: Text(
+                value,
+                style: GoogleFonts.poppins(
+                    color: color, fontSize: 13, fontWeight: FontWeight.w600),
+              ),
             ),
-            child: Text(
-              value,
-              style: GoogleFonts.poppins(color: color, fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(label, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 10)),
-        ],
-      ),
-    );
+            const SizedBox(height: 4),
+            Text(label,
+                style:
+                    GoogleFonts.poppins(color: Colors.white60, fontSize: 10)),
+          ],
+        ),
+      );
 
   // IG Markets integration removed
 
@@ -2043,54 +2381,70 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     required VoidCallback onTap,
     dynamic icon,
     String? description,
-  }) => GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.15),
-          border: Border.all(color: color.withOpacity(0.5)),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (icon is String)
+  }) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.15),
+            border: Border.all(color: color.withOpacity(0.5)),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (icon is String)
+                Text(
+                  icon,
+                  style: const TextStyle(fontSize: 24),
+                )
+              else if (icon is IconData)
+                Icon(icon, color: color, size: 20),
+              const SizedBox(height: 4),
               Text(
-                icon,
-                style: const TextStyle(fontSize: 24),
-              )
-            else if (icon is IconData)
-              Icon(icon, color: color, size: 20),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: GoogleFonts.poppins(
-                color: color,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            if (description != null) ...[
-              const SizedBox(height: 2),
-              Text(
-                description,
+                label,
                 style: GoogleFonts.poppins(
-                  color: color.withOpacity(0.7),
-                  fontSize: 9,
+                  color: color,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
+              if (description != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  description,
+                  style: GoogleFonts.poppins(
+                    color: color.withOpacity(0.7),
+                    fontSize: 9,
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
-      ),
-    );
+      );
 
   /// Create bot for specific broker - with quick create option for Binance
   void _createBotForBroker(BuildContext context, String brokerName) async {
+    final botService = context.read<BotService>();
     if (brokerName == 'Binance') {
       // Show quick create dialog for Binance
       _showBinanceQuickCreateDialog(context);
+    } else if (brokerName == 'Exness') {
+      final result = await Navigator.push<Map<String, dynamic>>(
+        context,
+        MaterialPageRoute(builder: (_) => const ExnessSetupWizardScreen()),
+      );
+      if (!mounted) return;
+      await botService.fetchActiveBots(
+        tradingMode: _tradingMode,
+        force: true,
+        includeHistory: true,
+      );
+      if (result != null && result['botId'] != null) {
+        setState(() {});
+      }
     } else {
       // Standard bot creation flow
       Navigator.push(
@@ -2110,8 +2464,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         backgroundColor: const Color(0xFF1A1A2E),
         title: Row(
           children: [
-            const Text('₿ ', style: TextStyle(fontSize: 24, color: Color(0xFFF3BA2F))),
-            Text('Quick Binance Bot', style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w700)),
+            const Text('₿ ',
+                style: TextStyle(fontSize: 24, color: Color(0xFFF3BA2F))),
+            Text('Quick Binance Bot',
+                style: GoogleFonts.poppins(
+                    color: Colors.white, fontWeight: FontWeight.w700)),
           ],
         ),
         content: Column(
@@ -2156,12 +2513,14 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 // Show standard configuration screen
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const BotConfigurationRoute()),
+                  MaterialPageRoute(
+                      builder: (_) => const BotConfigurationRoute()),
                 );
               },
               child: Text(
                 'Custom Setup',
-                style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontSize: 13),
+                style: GoogleFonts.poppins(
+                    color: const Color(0xFF00E5FF), fontSize: 13),
               ),
             ),
           ],
@@ -2171,60 +2530,69 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   }
 
   /// Individual Binance preset option button
-  Widget _binancePresetOption(BuildContext context, String title, String description, String preset) => InkWell(
-      onTap: () => _quickCreateBinanceBot(context, preset),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFFF3BA2F).withOpacity(0.3)),
+  Widget _binancePresetOption(BuildContext context, String title,
+          String description, String preset) =>
+      InkWell(
+        onTap: () => _quickCreateBinanceBot(context, preset),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFF3BA2F).withOpacity(0.3)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: GoogleFonts.poppins(
+                      color: const Color(0xFFF3BA2F),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12)),
+              const SizedBox(height: 4),
+              Text(description,
+                  style:
+                      GoogleFonts.poppins(color: Colors.white60, fontSize: 11)),
+            ],
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: GoogleFonts.poppins(color: const Color(0xFFF3BA2F), fontWeight: FontWeight.w600, fontSize: 12)),
-            const SizedBox(height: 4),
-            Text(description, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 11)),
-          ],
-        ),
-      ),
-    );
+      );
 
   /// Quick create Binance bot with preset
   void _quickCreateBinanceBot(BuildContext context, String preset) async {
     Navigator.pop(context); // Close dialog
-    
+
     try {
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token');
-      
+
       if (sessionToken == null || sessionToken.isEmpty) {
         _showErrorSnackbar('⚠️ Session expired. Please login again.');
         return;
       }
-      
+
       final brokerService = BrokerCredentialsService();
-      
+
       await brokerService.fetchCredentials();
       final credential = brokerService.activeCredential;
-      
+
       if (credential == null) {
         _showErrorSnackbar('⚠️ Please setup Binance broker integration first');
         return;
       }
-      
+
       if (credential.broker.toLowerCase() != 'binance') {
-        _showErrorSnackbar('⚠️ This quick create only works with Binance broker');
+        _showErrorSnackbar(
+            '⚠️ This quick create only works with Binance broker');
         return;
       }
-      
+
       // Verify credentialId exists
       if (credential.credentialId.isEmpty) {
         _showErrorSnackbar('⚠️ Invalid Binance credential');
         return;
       }
-      
+
       // Show loading dialog
       showDialog(
         context: context,
@@ -2236,36 +2604,41 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               const SizedBox(
                 width: 24,
                 height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white60)),
+                child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation(Colors.white60)),
               ),
               const SizedBox(width: 16),
-              Text('Creating quick bot...', style: GoogleFonts.poppins(color: Colors.white70)),
+              Text('Creating quick bot...',
+                  style: GoogleFonts.poppins(color: Colors.white70)),
             ],
           ),
         ),
       );
-      
+
       // Call quick create endpoint
-      final response = await http.post(
-        Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/quick-create'),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-Token': sessionToken,
-        },
-        body: jsonEncode({
-          'credentialId': credential.credentialId,
-          'preset': preset,
-        }),
-      ).timeout(const Duration(seconds: 15));
-      
+      final response = await http
+          .post(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/quick-create'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+            body: jsonEncode({
+              'credentialId': credential.credentialId,
+              'preset': preset,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+
       if (!mounted) return;
       Navigator.pop(context); // Close loading dialog
-      
+
       if (response.statusCode == 201 || response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final botId = data['botId'] ?? 'Bot';
         final pairs = (data['pairs'] as List?)?.join(', ') ?? 'N/A';
-        
+
         // Show success dialog
         showDialog(
           context: context,
@@ -2275,14 +2648,20 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               children: [
                 const Text('✅', style: TextStyle(fontSize: 24)),
                 const SizedBox(width: 8),
-                Expanded(child: Text('Bot Created', style: GoogleFonts.poppins(color: const Color(0xFF69F0AE), fontWeight: FontWeight.w700))),
+                Expanded(
+                    child: Text('Bot Created',
+                        style: GoogleFonts.poppins(
+                            color: const Color(0xFF69F0AE),
+                            fontWeight: FontWeight.w700))),
               ],
             ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Your quick bot is ready!', style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13)),
+                Text('Your quick bot is ready!',
+                    style: GoogleFonts.poppins(
+                        color: Colors.white70, fontSize: 13)),
                 const SizedBox(height: 12),
                 _infoRow('Bot ID', botId, Colors.white60),
                 const SizedBox(height: 8),
@@ -2296,17 +2675,20 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 onPressed: () {
                   Navigator.pop(ctx);
                   // Refresh bot list
-                  final botService = Provider.of<BotService>(context, listen: false);
+                  final botService =
+                      Provider.of<BotService>(context, listen: false);
                   botService.fetchActiveBots(tradingMode: _tradingMode);
                   setState(() {});
                 },
-                child: Text('Done', style: GoogleFonts.poppins(color: const Color(0xFF00E5FF))),
+                child: Text('Done',
+                    style: GoogleFonts.poppins(color: const Color(0xFF00E5FF))),
               ),
             ],
           ),
         );
       } else {
-        final error = jsonDecode(response.body)['error'] ?? 'Failed to create bot';
+        final error =
+            jsonDecode(response.body)['error'] ?? 'Failed to create bot';
         _showErrorSnackbar('❌ $error');
       }
     } catch (e) {
@@ -2316,12 +2698,17 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
 
   /// Helper widget to display info rows
   Widget _infoRow(String label, String value, Color valueColor) => Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
-        Text(value, style: GoogleFonts.poppins(color: valueColor, fontSize: 12, fontWeight: FontWeight.w600)),
-      ],
-    );
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label,
+              style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+          Text(value,
+              style: GoogleFonts.poppins(
+                  color: valueColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600)),
+        ],
+      );
 
   /// Show error snackbar
   void _showErrorSnackbar(String message) {
@@ -2341,9 +2728,12 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFF00E5FF).withOpacity(0.2) : Colors.white.withOpacity(0.05),
+          color: isSelected
+              ? const Color(0xFF00E5FF).withOpacity(0.2)
+              : Colors.white.withOpacity(0.05),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isSelected ? const Color(0xFF00E5FF) : Colors.white12),
+          border: Border.all(
+              color: isSelected ? const Color(0xFF00E5FF) : Colors.white12),
         ),
         child: Text(
           label,
@@ -2357,37 +2747,39 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     );
   }
 
-  Widget _buildNewestBotCard(Map<String, dynamic> bot, CurrencyProvider currencyProvider) => _buildUnifiedBotCard(bot, currencyProvider);
+  Widget _buildNewestBotCard(
+          Map<String, dynamic> bot, CurrencyProvider currencyProvider) =>
+      _buildUnifiedBotCard(bot, currencyProvider);
 
   Widget _buildStatCard(String value, String label, Color color) => Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            value,
-            style: GoogleFonts.poppins(
-              color: color,
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white.withOpacity(0.1)),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              value,
+              style: GoogleFonts.poppins(
+                color: color,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: GoogleFonts.poppins(
-              color: Colors.white60,
-              fontSize: 10,
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: GoogleFonts.poppins(
+                color: Colors.white60,
+                fontSize: 10,
+              ),
             ),
-          ),
-        ],
-      ),
-    );
+          ],
+        ),
+      );
 
   Widget _buildMiniBot(Map<String, dynamic> bot) {
     final botId = bot['botId'] ?? 'Unknown';
@@ -2396,7 +2788,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final displayCurrency = _botDisplayCurrency(bot);
 
     return GestureDetector(
-      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BotAnalyticsScreen(bot: bot))),
+      onTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => BotAnalyticsScreen(bot: bot))),
       child: Container(
         width: 140,
         margin: const EdgeInsets.only(right: 10),
@@ -2404,11 +2797,17 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: isEnabled
-                ? [const Color(0xFF69F0AE).withOpacity(0.1), const Color(0xFF00E5FF).withOpacity(0.1)]
+                ? [
+                    const Color(0xFF69F0AE).withOpacity(0.1),
+                    const Color(0xFF00E5FF).withOpacity(0.1)
+                  ]
                 : [Colors.grey.withOpacity(0.1), Colors.grey.withOpacity(0.05)],
           ),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: isEnabled ? const Color(0xFF69F0AE).withOpacity(0.3) : Colors.white12),
+          border: Border.all(
+              color: isEnabled
+                  ? const Color(0xFF69F0AE).withOpacity(0.3)
+                  : Colors.white12),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2416,15 +2815,25 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           children: [
             Row(
               children: [
-                Icon(Icons.smart_toy, color: isEnabled ? const Color(0xFF69F0AE) : Colors.grey, size: 16),
+                Icon(Icons.smart_toy,
+                    color: isEnabled ? const Color(0xFF69F0AE) : Colors.grey,
+                    size: 16),
                 const SizedBox(width: 6),
-                Expanded(child: Text(botId, style: GoogleFonts.poppins(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
+                Expanded(
+                    child: Text(botId,
+                        style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600),
+                        overflow: TextOverflow.ellipsis)),
               ],
             ),
             Text(
               '${_symbolForCode(displayCurrency)}${profit.toStringAsFixed(2)}',
               style: GoogleFonts.poppins(
-                color: profit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                color: profit >= 0
+                    ? const Color(0xFF69F0AE)
+                    : const Color(0xFFFF8A80),
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
               ),
@@ -2432,12 +2841,17 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: isEnabled ? const Color(0xFF69F0AE).withOpacity(0.15) : Colors.grey.withOpacity(0.15),
+                color: isEnabled
+                    ? const Color(0xFF69F0AE).withOpacity(0.15)
+                    : Colors.grey.withOpacity(0.15),
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Text(
                 isEnabled ? 'Active' : 'Inactive',
-                style: GoogleFonts.poppins(color: isEnabled ? const Color(0xFF69F0AE) : Colors.grey, fontSize: 9, fontWeight: FontWeight.w600),
+                style: GoogleFonts.poppins(
+                    color: isEnabled ? const Color(0xFF69F0AE) : Colors.grey,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600),
               ),
             ),
           ],

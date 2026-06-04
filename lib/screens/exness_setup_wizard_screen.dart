@@ -19,7 +19,8 @@ class ExnessSetupWizardScreen extends StatefulWidget {
   const ExnessSetupWizardScreen({Key? key}) : super(key: key);
 
   @override
-  State<ExnessSetupWizardScreen> createState() => _ExnessSetupWizardScreenState();
+  State<ExnessSetupWizardScreen> createState() =>
+      _ExnessSetupWizardScreenState();
 }
 
 class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
@@ -37,8 +38,16 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
 
   // Step 3 state
   final List<String> _availableSymbols = [
-    'EURUSD', 'GBPUSD', 'XAUUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'NZDUSD',
-    'GBPJPY', 'EURJPY', 'EURGBP',
+    'EURUSD',
+    'GBPUSD',
+    'XAUUSD',
+    'USDJPY',
+    'AUDUSD',
+    'USDCAD',
+    'NZDUSD',
+    'GBPJPY',
+    'EURJPY',
+    'EURGBP',
   ];
   final List<String> _selectedSymbols = ['EURUSD', 'GBPUSD', 'XAUUSD'];
   String _strategy = 'Trend Following';
@@ -48,7 +57,6 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
   // Results from API calls
   Map<String, dynamic>? _step1Result;
   Map<String, dynamic>? _step2Result;
-  Map<String, dynamic>? _step3Result;
 
   bool _loading = false;
   String? _errorMessage;
@@ -72,25 +80,41 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
   }
 
   Future<Map<String, dynamic>> _callWizard(Map<String, dynamic> body) async {
-    final response = await http.post(
-      Uri.parse('${EnvironmentConfig.apiUrl}/api/broker/exness/onboard'),
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Token': _sessionToken,
-      },
-      body: jsonEncode(body),
-    ).timeout(const Duration(seconds: 30));
-    return jsonDecode(response.body) as Map<String, dynamic>;
+    final response = await http
+        .post(
+          Uri.parse('${EnvironmentConfig.apiUrl}/api/broker/exness/onboard'),
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-Token': _sessionToken,
+          },
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 30));
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return {
+        ...decoded,
+        'success': false,
+        'http_status': response.statusCode,
+      };
+    }
+    return decoded;
   }
 
   // ── Step 1: validate account number + check capacity ─────────────────
   Future<void> _submitStep1() async {
     final account = _accountController.text.trim();
-    if (account.isEmpty || account.length != 9 || int.tryParse(account) == null) {
-      setState(() => _errorMessage = 'Enter your 9-digit Exness MT5 account number.');
+    if (account.isEmpty ||
+        account.length != 9 ||
+        int.tryParse(account) == null) {
+      setState(() =>
+          _errorMessage = 'Enter your 9-digit Exness MT5 account number.');
       return;
     }
-    setState(() { _loading = true; _errorMessage = null; });
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
     try {
       final result = await _callWizard({
         'step': '1',
@@ -100,13 +124,15 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
       if (result['success'] == true) {
         if (result['at_capacity'] == true) {
           setState(() {
-            _errorMessage =
-                'Exness is full (${result['slots_max']} users). '
+            _errorMessage = 'Exness is full (${result['slots_max']} users). '
                 'Contact support to join the waitlist.';
           });
           return;
         }
-        setState(() { _step1Result = result; _currentStep = 1; });
+        setState(() {
+          _step1Result = result;
+          _currentStep = 1;
+        });
       } else {
         setState(() => _errorMessage = result['error'] ?? 'Step 1 failed.');
       }
@@ -124,14 +150,19 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
       setState(() => _errorMessage = 'Password required.');
       return;
     }
-    setState(() { _loading = true; _errorMessage = null; });
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
     try {
       final result = await _callWizard({
         'step': '2',
         'account_number': _accountController.text.trim(),
         'password': password,
         'is_live': _isLive,
-        'label': _labelController.text.trim().isEmpty ? null : _labelController.text.trim(),
+        'label': _labelController.text.trim().isEmpty
+            ? null
+            : _labelController.text.trim(),
         'mt5_terminal_path': _terminalPathController.text.trim().isEmpty
             ? null
             : _terminalPathController.text.trim(),
@@ -158,7 +189,10 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
       setState(() => _errorMessage = 'Select at least one trading symbol.');
       return;
     }
-    setState(() { _loading = true; _errorMessage = null; });
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
     try {
       final result = await _callWizard({
         'step': '3',
@@ -170,12 +204,12 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
       });
       if (result['success'] == true) {
         setState(() {
-          _step3Result = result;
           _botId = result['bot_id'];
           _currentStep = 3;
         });
       } else {
-        setState(() => _errorMessage = result['error'] ?? 'Bot creation failed.');
+        setState(
+            () => _errorMessage = result['error'] ?? 'Bot creation failed.');
       }
     } catch (e) {
       setState(() => _errorMessage = 'Network error: $e');
@@ -187,16 +221,21 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
   // ── Start the bot via the standard endpoint ───────────────────────────
   Future<void> _startBot() async {
     if (_botId == null) return;
-    setState(() { _loading = true; _errorMessage = null; });
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
     try {
-      final response = await http.post(
-        Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/start'),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-Token': _sessionToken,
-        },
-        body: jsonEncode({'botId': _botId}),
-      ).timeout(const Duration(seconds: 45));
+      final response = await http
+          .post(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/start'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': _sessionToken,
+            },
+            body: jsonEncode({'botId': _botId}),
+          )
+          .timeout(const Duration(seconds: 45));
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (data['success'] == true || data['status'] == 'RUNNING') {
         if (mounted) {
@@ -279,11 +318,13 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
                         ),
                         child: Center(
                           child: isDone
-                              ? const Icon(Icons.check, color: Colors.white, size: 16)
+                              ? const Icon(Icons.check,
+                                  color: Colors.white, size: 16)
                               : Text(
                                   '${i + 1}',
                                   style: TextStyle(
-                                    color: isActive ? Colors.white : Colors.grey,
+                                    color:
+                                        isActive ? Colors.white : Colors.grey,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 13,
                                   ),
@@ -296,7 +337,8 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
                         style: TextStyle(
                           color: isActive ? Colors.white : Colors.grey,
                           fontSize: 10,
-                          fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                          fontWeight:
+                              isActive ? FontWeight.bold : FontWeight.normal,
                         ),
                       ),
                     ],
@@ -333,38 +375,39 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
 
   // ── Step 1 ────────────────────────────────────────────────────────────
   Widget _buildStep1() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      _sectionTitle('Your Exness MT5 Account'),
-      const SizedBox(height: 8),
-      _hint(
-        'Open Exness → My Accounts and copy your 9-digit MT5 account number (e.g. 295677214).',
-      ),
-      const SizedBox(height: 20),
-      _label('MT5 Account Number'),
-      _field(
-        controller: _accountController,
-        hint: '295677214',
-        keyboardType: TextInputType.number,
-        maxLength: 9,
-      ),
-      const SizedBox(height: 16),
-      _label('Account Type'),
-      _modeToggle(),
-      const SizedBox(height: 8),
-      _hint(_isLive
-          ? '⚡ Live — real money trading. Slots: limited to ${10} users.'
-          : '🧪 Demo — practice trading with virtual funds.'),
-      const SizedBox(height: 28),
-      _primaryButton('Next', _loading ? null : _submitStep1),
-      if (_loading) const SizedBox(height: 12),
-      if (_loading) const LinearProgressIndicator(),
-    ],
-  );
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle('Your Exness MT5 Account'),
+          const SizedBox(height: 8),
+          _hint(
+            'Open Exness → My Accounts and copy your 9-digit MT5 account number (e.g. 295677214).',
+          ),
+          const SizedBox(height: 20),
+          _label('MT5 Account Number'),
+          _field(
+            controller: _accountController,
+            hint: '295677214',
+            keyboardType: TextInputType.number,
+            maxLength: 9,
+          ),
+          const SizedBox(height: 16),
+          _label('Account Type'),
+          _modeToggle(),
+          const SizedBox(height: 8),
+          _hint(_isLive
+              ? '⚡ Live — real money trading. Slots: limited to ${10} users.'
+              : '🧪 Demo — practice trading with virtual funds.'),
+          const SizedBox(height: 28),
+          _primaryButton('Next', _loading ? null : _submitStep1),
+          if (_loading) const SizedBox(height: 12),
+          if (_loading) const LinearProgressIndicator(),
+        ],
+      );
 
   // ── Step 2 ────────────────────────────────────────────────────────────
   Widget _buildStep2() {
-    final acct = _step1Result?['account_number'] ?? _accountController.text.trim();
+    final acct =
+        _step1Result?['account_number'] ?? _accountController.text.trim();
     final mode = _isLive ? 'Live' : 'Demo';
     final server = _step1Result?['server'] ?? 'Exness-MT5';
     return Column(
@@ -387,7 +430,8 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
           hint: 'C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe',
         ),
         const SizedBox(height: 8),
-        _hint('Leave blank to use the shared Exness default terminal. Fill this in when this user must run on a separate MT5 installation.'),
+        _hint(
+            'Leave blank to use the shared Exness default terminal. Fill this in when this user must run on a separate MT5 installation.'),
         const SizedBox(height: 16),
         _label('Label (optional)'),
         _field(
@@ -395,14 +439,27 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
           hint: 'e.g. My Exness Live',
         ),
         const SizedBox(height: 8),
-        _hint('The system will test your credentials against Exness MT5. This takes ~15 seconds.'),
+        _hint(
+            'The system will test your credentials against Exness MT5. This takes ~15 seconds.'),
         const SizedBox(height: 28),
         Row(children: [
-          Expanded(child: _outlineButton('Back', _loading ? null : () => setState(() { _currentStep = 0; _errorMessage = null; }))),
+          Expanded(
+              child: _outlineButton(
+                  'Back',
+                  _loading
+                      ? null
+                      : () => setState(() {
+                            _currentStep = 0;
+                            _errorMessage = null;
+                          }))),
           const SizedBox(width: 12),
-          Expanded(child: _primaryButton('Connect', _loading ? null : _submitStep2)),
+          Expanded(
+              child: _primaryButton('Connect', _loading ? null : _submitStep2)),
         ]),
-        if (_loading) ...[const SizedBox(height: 12), const LinearProgressIndicator()],
+        if (_loading) ...[
+          const SizedBox(height: 12),
+          const LinearProgressIndicator()
+        ],
       ],
     );
   }
@@ -420,7 +477,8 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
         _infoCard([
           _infoRow('Account', _step2Result?['account_number'] ?? ''),
           _infoRow('Mode', _isLive ? 'Live' : 'Demo'),
-          if (verified) _infoRow('Balance', '${balance.toStringAsFixed(2)} $currency'),
+          if (verified)
+            _infoRow('Balance', '${balance.toStringAsFixed(2)} $currency'),
           if (!verified) _infoRow('Status', 'Saved (verification deferred)'),
         ]),
         const SizedBox(height: 20),
@@ -431,7 +489,10 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
           children: _availableSymbols.map((sym) {
             final selected = _selectedSymbols.contains(sym);
             return FilterChip(
-              label: Text(sym, style: TextStyle(fontSize: 12, color: selected ? Colors.white : Colors.grey)),
+              label: Text(sym,
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: selected ? Colors.white : Colors.grey)),
               selected: selected,
               onSelected: (val) => setState(() {
                 if (val) {
@@ -453,7 +514,13 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
         _label('Strategy'),
         _dropdown(
           value: _strategy,
-          items: ['Trend Following', 'EMA Pullback ML', 'Scalping', 'Swing Trading', 'Conservative'],
+          items: [
+            'Trend Following',
+            'EMA Pullback ML',
+            'Scalping',
+            'Swing Trading',
+            'Conservative'
+          ],
           onChanged: (v) => setState(() => _strategy = v!),
         ),
         const SizedBox(height: 20),
@@ -481,90 +548,120 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
         ),
         const SizedBox(height: 28),
         Row(children: [
-          Expanded(child: _outlineButton('Back', _loading ? null : () => setState(() { _currentStep = 1; _errorMessage = null; }))),
+          Expanded(
+              child: _outlineButton(
+                  'Back',
+                  _loading
+                      ? null
+                      : () => setState(() {
+                            _currentStep = 1;
+                            _errorMessage = null;
+                          }))),
           const SizedBox(width: 12),
-          Expanded(child: _primaryButton('Create Bot', _loading ? null : _submitStep3)),
+          Expanded(
+              child:
+                  _primaryButton('Create Bot', _loading ? null : _submitStep3)),
         ]),
-        if (_loading) ...[const SizedBox(height: 12), const LinearProgressIndicator()],
+        if (_loading) ...[
+          const SizedBox(height: 12),
+          const LinearProgressIndicator()
+        ],
       ],
     );
   }
 
   // ── Step 4: Done ─────────────────────────────────────────────────────
   Widget _buildStep4Done() => Column(
-    crossAxisAlignment: CrossAxisAlignment.center,
-    children: [
-      const SizedBox(height: 24),
-      Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.green.withOpacity(0.15),
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.green, width: 2),
-        ),
-        child: const Icon(Icons.check_circle_outline, color: Colors.green, size: 56),
-      ),
-      const SizedBox(height: 20),
-      Text(
-        'Exness Account Connected!',
-        style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
-        textAlign: TextAlign.center,
-      ),
-      const SizedBox(height: 8),
-      Text(
-        'Your ${_isLive ? "live" : "demo"} account ${_accountController.text.trim()} is set up and ready.',
-        style: TextStyle(color: Colors.grey[400], fontSize: 14),
-        textAlign: TextAlign.center,
-      ),
-      const SizedBox(height: 24),
-      _infoCard([
-        _infoRow('Bot ID', _botId ?? '—'),
-        _infoRow('Symbols', _selectedSymbols.join(', ')),
-        _infoRow('Strategy', _strategy),
-        if ((_step2Result?['terminal_path'] ?? '').toString().isNotEmpty)
-          _infoRow('MT5 Path', (_step2Result?['terminal_path'] ?? '').toString()),
-        _infoRow('Risk/trade', '${_riskPerTrade.toStringAsFixed(0)}%'),
-        _infoRow('Max daily loss', '${_maxDailyLoss.toStringAsFixed(0)}%'),
-      ]),
-      const SizedBox(height: 28),
-      _primaryButton('Start Trading Now', _loading ? null : _startBot),
-      const SizedBox(height: 12),
-      _outlineButton('Do It Later', () => Navigator.of(context).pop({'botStarted': false, 'botId': _botId})),
-      if (_loading) ...[const SizedBox(height: 12), const LinearProgressIndicator()],
-      const SizedBox(height: 20),
-    ],
-  );
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const SizedBox(height: 24),
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.green.withOpacity(0.15),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.green, width: 2),
+            ),
+            child: const Icon(Icons.check_circle_outline,
+                color: Colors.green, size: 56),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'Exness Account Connected!',
+            style: const TextStyle(
+                color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Your ${_isLive ? "live" : "demo"} account ${_accountController.text.trim()} is set up and ready.',
+            style: TextStyle(color: Colors.grey[400], fontSize: 14),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          _infoCard([
+            _infoRow('Bot ID', _botId ?? '—'),
+            _infoRow('Symbols', _selectedSymbols.join(', ')),
+            _infoRow('Strategy', _strategy),
+            if ((_step2Result?['terminal_path'] ?? '').toString().isNotEmpty)
+              _infoRow('MT5 Path',
+                  (_step2Result?['terminal_path'] ?? '').toString()),
+            _infoRow('Risk/trade', '${_riskPerTrade.toStringAsFixed(0)}%'),
+            _infoRow('Max daily loss', '${_maxDailyLoss.toStringAsFixed(0)}%'),
+          ]),
+          const SizedBox(height: 28),
+          _primaryButton('Start Trading Now', _loading ? null : _startBot),
+          const SizedBox(height: 12),
+          _outlineButton(
+              'Do It Later',
+              () => Navigator.of(context).pop(
+                  {'botStarted': false, 'botId': _botId, 'bot_id': _botId})),
+          if (_loading) ...[
+            const SizedBox(height: 12),
+            const LinearProgressIndicator()
+          ],
+          const SizedBox(height: 20),
+        ],
+      );
 
   // ── Shared widgets ────────────────────────────────────────────────────
 
   Widget _buildError(String msg) => Container(
-    margin: const EdgeInsets.only(bottom: 16),
-    padding: const EdgeInsets.all(12),
-    decoration: BoxDecoration(
-      color: Colors.red.withOpacity(0.1),
-      border: Border.all(color: Colors.red.shade400),
-      borderRadius: BorderRadius.circular(8),
-    ),
-    child: Row(
-      children: [
-        const Icon(Icons.error_outline, color: Colors.red, size: 18),
-        const SizedBox(width: 8),
-        Expanded(child: Text(msg, style: const TextStyle(color: Colors.red, fontSize: 13))),
-      ],
-    ),
-  );
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.red.withOpacity(0.1),
+          border: Border.all(color: Colors.red.shade400),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+                child: Text(msg,
+                    style: const TextStyle(color: Colors.red, fontSize: 13))),
+          ],
+        ),
+      );
 
   Widget _sectionTitle(String t) => Text(
-    t,
-    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-  );
+        t,
+        style: const TextStyle(
+            color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+      );
 
-  Widget _hint(String t) => Text(t, style: TextStyle(color: Colors.grey[500], fontSize: 13));
+  Widget _hint(String t) =>
+      Text(t, style: TextStyle(color: Colors.grey[500], fontSize: 13));
 
   Widget _label(String t) => Padding(
-    padding: const EdgeInsets.only(bottom: 6),
-    child: Text(t, style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
-  );
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text(t,
+            style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w500)),
+      );
 
   Widget _field({
     required TextEditingController controller,
@@ -583,7 +680,9 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
           counterText: '',
           filled: true,
           fillColor: const Color(0xFF1A1F3A),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide.none),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
             borderSide: const BorderSide(color: Color(0xFF1E88E5)),
@@ -592,60 +691,80 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
       );
 
   Widget _passwordField() => TextField(
-    controller: _passwordController,
-    obscureText: _obscurePassword,
-    style: const TextStyle(color: Colors.white),
-    decoration: InputDecoration(
-      hintText: 'MT5 password',
-      hintStyle: const TextStyle(color: Colors.grey),
-      filled: true,
-      fillColor: const Color(0xFF1A1F3A),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: Color(0xFF1E88E5)),
-      ),
-      suffixIcon: IconButton(
-        icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility, color: Colors.grey),
-        onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-      ),
-    ),
-  );
+        controller: _passwordController,
+        obscureText: _obscurePassword,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          hintText: 'MT5 password',
+          hintStyle: const TextStyle(color: Colors.grey),
+          filled: true,
+          fillColor: const Color(0xFF1A1F3A),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide.none),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF1E88E5)),
+          ),
+          suffixIcon: IconButton(
+            icon: Icon(
+                _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                color: Colors.grey),
+            onPressed: () =>
+                setState(() => _obscurePassword = !_obscurePassword),
+          ),
+        ),
+      );
 
   Widget _modeToggle() => Row(
-    children: [
-      Expanded(
-        child: GestureDetector(
-          onTap: () => setState(() => _isLive = false),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              color: !_isLive ? AppColors.primaryColor : const Color(0xFF1A1F3A),
-              borderRadius: const BorderRadius.horizontal(left: Radius.circular(8)),
-              border: Border.all(color: !_isLive ? AppColors.primaryColor : Colors.grey.shade700),
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _isLive = false),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: !_isLive
+                      ? AppColors.primaryColor
+                      : const Color(0xFF1A1F3A),
+                  borderRadius:
+                      const BorderRadius.horizontal(left: Radius.circular(8)),
+                  border: Border.all(
+                      color: !_isLive
+                          ? AppColors.primaryColor
+                          : Colors.grey.shade700),
+                ),
+                child: Text('Demo',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: !_isLive ? Colors.white : Colors.grey,
+                        fontWeight: FontWeight.bold)),
+              ),
             ),
-            child: Text('Demo', textAlign: TextAlign.center,
-                style: TextStyle(color: !_isLive ? Colors.white : Colors.grey, fontWeight: FontWeight.bold)),
           ),
-        ),
-      ),
-      Expanded(
-        child: GestureDetector(
-          onTap: () => setState(() => _isLive = true),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              color: _isLive ? Colors.green.shade700 : const Color(0xFF1A1F3A),
-              borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
-              border: Border.all(color: _isLive ? Colors.green : Colors.grey.shade700),
+          Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _isLive = true),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color:
+                      _isLive ? Colors.green.shade700 : const Color(0xFF1A1F3A),
+                  borderRadius:
+                      const BorderRadius.horizontal(right: Radius.circular(8)),
+                  border: Border.all(
+                      color: _isLive ? Colors.green : Colors.grey.shade700),
+                ),
+                child: Text('Live',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: _isLive ? Colors.white : Colors.grey,
+                        fontWeight: FontWeight.bold)),
+              ),
             ),
-            child: Text('Live', textAlign: TextAlign.center,
-                style: TextStyle(color: _isLive ? Colors.white : Colors.grey, fontWeight: FontWeight.bold)),
           ),
-        ),
-      ),
-    ],
-  );
+        ],
+      );
 
   Widget _dropdown({
     required String value,
@@ -659,58 +778,77 @@ class _ExnessSetupWizardScreenState extends State<ExnessSetupWizardScreen> {
         decoration: InputDecoration(
           filled: true,
           fillColor: const Color(0xFF1A1F3A),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide.none),
         ),
         items: items
-            .map((s) => DropdownMenuItem(value: s, child: Text(s, style: const TextStyle(color: Colors.white))))
+            .map((s) => DropdownMenuItem(
+                value: s,
+                child: Text(s, style: const TextStyle(color: Colors.white))))
             .toList(),
         onChanged: onChanged,
       );
 
   Widget _infoCard(List<Widget> rows) => Container(
-    padding: const EdgeInsets.all(14),
-    decoration: BoxDecoration(
-      color: const Color(0xFF1A1F3A),
-      borderRadius: BorderRadius.circular(10),
-    ),
-    child: Column(children: rows),
-  );
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1F3A),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(children: rows),
+      );
 
   Widget _infoRow(String label, String value) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 4),
-    child: Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
-        Text(value, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-      ],
-    ),
-  );
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label,
+                style: const TextStyle(color: Colors.grey, fontSize: 13)),
+            Text(value,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
+          ],
+        ),
+      );
 
   Widget _primaryButton(String label, VoidCallback? onPressed) => SizedBox(
-    width: double.infinity,
-    height: 48,
-    child: ElevatedButton(
-      onPressed: onPressed,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: AppColors.primaryColor,
-        disabledBackgroundColor: Colors.grey.shade800,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-      child: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-    ),
-  );
+        width: double.infinity,
+        height: 48,
+        child: ElevatedButton(
+          onPressed: onPressed,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.primaryColor,
+            disabledBackgroundColor: Colors.grey.shade800,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          child: Text(label,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15)),
+        ),
+      );
 
   Widget _outlineButton(String label, VoidCallback? onPressed) => SizedBox(
-    width: double.infinity,
-    height: 48,
-    child: OutlinedButton(
-      onPressed: onPressed,
-      style: OutlinedButton.styleFrom(
-        side: BorderSide(color: Colors.grey.shade600),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-      child: Text(label, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.bold, fontSize: 15)),
-    ),
-  );
+        width: double.infinity,
+        height: 48,
+        child: OutlinedButton(
+          onPressed: onPressed,
+          style: OutlinedButton.styleFrom(
+            side: BorderSide(color: Colors.grey.shade600),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  color: Colors.grey.shade400,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15)),
+        ),
+      );
 }
