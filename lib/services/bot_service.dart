@@ -45,7 +45,8 @@ class BotService extends ChangeNotifier {
     return _prefs!;
   }
 
-  void startPolling({String? tradingMode, Duration interval = const Duration(seconds: 15)}) {
+  void startPolling(
+      {String? tradingMode, Duration interval = const Duration(seconds: 15)}) {
     final mode = tradingMode ?? _lastTradingMode;
     _pollTimer?.cancel();
     if (_authPollingDisabled) {
@@ -121,7 +122,10 @@ class BotService extends ChangeNotifier {
   }
 
   /// Fetch active bots from backend
-  Future<void> fetchActiveBots({String? tradingMode, bool force = false, bool includeHistory = false}) async {
+  Future<void> fetchActiveBots(
+      {String? tradingMode,
+      bool force = false,
+      bool includeHistory = false}) async {
     if (_inFlightFetch != null && !force) {
       return _inFlightFetch!;
     }
@@ -141,11 +145,17 @@ class BotService extends ChangeNotifier {
     }
   }
 
-  Future<void> _fetchActiveBotsInternal({String? tradingMode, bool force = false, bool includeHistory = false}) async {
+  Future<void> _fetchActiveBotsInternal(
+      {String? tradingMode,
+      bool force = false,
+      bool includeHistory = false}) async {
     final prefs = await _getPrefs();
     final mode = tradingMode ?? prefs.getString('trading_mode') ?? 'DEMO';
     final now = DateTime.now();
-    if (!force && _lastFetchAt != null && _lastTradingMode == mode && now.difference(_lastFetchAt!) < const Duration(seconds: 3)) {
+    if (!force &&
+        _lastFetchAt != null &&
+        _lastTradingMode == mode &&
+        now.difference(_lastFetchAt!) < const Duration(seconds: 3)) {
       return;
     }
 
@@ -174,6 +184,7 @@ class BotService extends ChangeNotifier {
         _authPollingDisabled = true;
         stopPolling();
         _isLoading = false;
+        _activeBots = [];
         _errorMessage = 'Session token missing. Please login again.';
         notifyListeners();
         return;
@@ -215,21 +226,24 @@ class BotService extends ChangeNotifier {
           _authPollingDisabled = true;
           stopPolling();
         }
-        // Don't wipe _activeBots - preserve previous data on error
+        _activeBots = [];
       }
     } catch (e) {
       _errorMessage = 'Error fetching bots: $e';
-      // Don't wipe _activeBots - preserve previous data on error
+      _activeBots = [];
       debugPrint('Bot fetch error: $e');
     }
 
     _isLoading = false;
-    if (!_botListsEqual(previousBots, _activeBots) || previousError != _errorMessage || shouldShowLoading) {
+    if (!_botListsEqual(previousBots, _activeBots) ||
+        previousError != _errorMessage ||
+        shouldShowLoading) {
       notifyListeners();
     }
   }
 
-  bool _botListsEqual(List<Map<String, dynamic>> first, List<Map<String, dynamic>> second) {
+  bool _botListsEqual(
+      List<Map<String, dynamic>> first, List<Map<String, dynamic>> second) {
     if (identical(first, second)) {
       return true;
     }
@@ -265,7 +279,7 @@ class BotService extends ChangeNotifier {
       final prefs = await _getPrefs();
       final sessionToken = prefs.getString('auth_token');
       final userId = prefs.getString('user_id');
-        final tradingMode =
+      final tradingMode =
           (prefs.getString('trading_mode') ?? 'DEMO').trim().toUpperCase();
 
       debugPrint('🔐 DEBUG: CreateBot - Checking session...');
@@ -307,7 +321,7 @@ class BotService extends ChangeNotifier {
         'autoSwitch': true,
         'dynamicSizing': true,
         'basePositionSize': 1.0,
-        'autoStart': true,  // Always auto-start from this service path
+        'autoStart': true, // Always auto-start from this service path
       };
 
       debugPrint('📤 Sending bot creation request to $_apiUrl/api/bot/create');
@@ -328,7 +342,7 @@ class BotService extends ChangeNotifier {
         final responseData = jsonDecode(response.body);
         if (responseData['success'] == true) {
           final createdMode =
-              ((requestBody['mode'] ?? 'demo').toString()).toUpperCase();
+              (requestBody['mode'] ?? 'demo').toString().toUpperCase();
           await prefs.setString('trading_mode', createdMode);
           await prefs.setBool('is_live_mode', createdMode == 'LIVE');
           await prefs.setString(
@@ -502,7 +516,8 @@ class BotService extends ChangeNotifier {
         _errorMessage = 'Session expired. Please login again.';
       } else {
         try {
-          _errorMessage = jsonDecode(response.body)['error']?.toString() ?? 'Failed to close position';
+          _errorMessage = jsonDecode(response.body)['error']?.toString() ??
+              'Failed to close position';
         } catch (_) {
           _errorMessage = 'Failed to close position';
         }
@@ -626,16 +641,18 @@ class BotService extends ChangeNotifier {
         return false;
       }
 
-      final response = await http.delete(
-        Uri.parse('$_apiUrl/api/bot/delete/$botId'),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-Token': sessionToken,
-        },
-        body: jsonEncode({
-          if (userId != null && userId.isNotEmpty) 'user_id': userId,
-        }),
-      ).timeout(const Duration(seconds: 60));
+      final response = await http
+          .delete(
+            Uri.parse('$_apiUrl/api/bot/delete/$botId'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+            body: jsonEncode({
+              if (userId != null && userId.isNotEmpty) 'user_id': userId,
+            }),
+          )
+          .timeout(const Duration(seconds: 60));
 
       // Add null safety for response body
       if (response.body.isEmpty) {
