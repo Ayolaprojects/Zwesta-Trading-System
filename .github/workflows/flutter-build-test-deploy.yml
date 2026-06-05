@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: zwesta-v2-professional/mobile
+        working-directory: zwesta_trader
     outputs:
       flutter_version: ${{ steps.flutter.outputs.version }}
 
@@ -79,7 +79,7 @@ jobs:
     needs: setup-and-lint
     defaults:
       run:
-        working-directory: zwesta-v2-professional/mobile
+        working-directory: zwesta_trader
 
     steps:
       - name: Checkout code
@@ -118,7 +118,7 @@ jobs:
       - name: Upload coverage reports
         uses: codecov/codecov-action@v3
         with:
-          files: ./zwesta-v2-professional/mobile/coverage/lcov.info
+          files: ./zwesta_trader/coverage/lcov.info
           flags: unittests
           name: codecov-umbrella
 
@@ -144,7 +144,7 @@ jobs:
     needs: unit-tests
     defaults:
       run:
-        working-directory: zwesta-v2-professional/mobile
+        working-directory: zwesta_trader
 
     steps:
       - name: Checkout code
@@ -166,7 +166,7 @@ jobs:
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
-            "ndk;25.1.8937393"
+            "ndk;27.0.12077973"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -209,7 +209,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zwesta-trading-apk-${{ github.run_number }}
-          path: zwesta-v2-professional/mobile/build/app/outputs/flutter-apk/app-release.apk
+          path: zwesta_trader/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 90
 
   # ============================================================================
@@ -222,7 +222,7 @@ jobs:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     defaults:
       run:
-        working-directory: zwesta-v2-professional/mobile
+        working-directory: zwesta_trader
 
     steps:
       - name: Checkout code
