@@ -5,13 +5,6 @@ on:
     branches:
       - master
       - main
-    paths:
-      - 'zwesta-v2-professional/mobile/lib/**'
-      - 'zwesta-v2-professional/mobile/test/**'
-      - 'zwesta-v2-professional/mobile/pubspec.yaml'
-      - 'zwesta-v2-professional/mobile/android/**'
-      - 'zwesta-v2-professional/mobile/ios/**'
-      - '.github/workflows/flutter-build-test-deploy.yml'
   workflow_dispatch:
     inputs:
       build_type:
