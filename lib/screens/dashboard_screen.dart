@@ -595,6 +595,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<Map<String, dynamic>> _brokerAccounts = [];
   bool _brokerBalancesLoading = false;
   double _totalBrokerBalance = 0;
+  Map<String, double> _brokerBalanceTotals = {};
 
   // Demo/Live balance toggle
   String _balanceMode = 'all'; // 'all', 'live', 'demo'
@@ -859,6 +860,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success'] == true && mounted) {
+          final responseTotals = <String, double>{};
+          final rawTotals = data['totalByCurrency'];
+          if (rawTotals is Map) {
+            rawTotals.forEach((key, value) {
+              final currency = _normalizeCurrency(key);
+              final amount = (value as num?)?.toDouble() ??
+                  double.tryParse(value?.toString() ?? '') ??
+                  0.0;
+              if (amount.abs() > 0) {
+                responseTotals[currency] = amount;
+              }
+            });
+          }
+
           final mergedAccounts = _mergeLocalSnapshotIntoAccounts(
             List<Map<String, dynamic>>.from(data['accounts'] ?? []),
             localSnapshot,
@@ -879,6 +894,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               0.0,
               (sum, account) => sum + ((account['balance'] as num?)?.toDouble() ?? 0.0),
             );
+            _brokerBalanceTotals = responseTotals;
             _balanceChanges = newChanges;
           });
         }
@@ -892,6 +908,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() {
           _brokerAccounts = _mergeLocalSnapshotIntoAccounts([], localSnapshot);
           _totalBrokerBalance = (localSnapshot['balance'] as num?)?.toDouble() ?? 0.0;
+          _brokerBalanceTotals = {};
         });
       }
     } finally {
@@ -3080,6 +3097,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               // ── Total Portfolio Balance ──
               Builder(
                 builder: (context) {
+                  final selectedBroker = _normalizeBrokerDisplayName(_portfolioBrokerFilter);
+                  final useServerHeadlineTotals = selectedBroker == 'All' && _brokerBalanceTotals.isNotEmpty;
                   final filteredAll = _applyPortfolioBrokerFilter(_filteredBrokerAccounts());
                   final liveAllAccounts = _applyPortfolioBrokerFilter(_filteredBrokerAccounts('live'));
                   final demoAllAccounts = _applyPortfolioBrokerFilter(_filteredBrokerAccounts('demo'));
@@ -3093,6 +3112,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     filtered,
                     respectPortfolioTotalsFlag: _balanceMode == 'all',
                   );
+                  final headlineTotals = useServerHeadlineTotals ? _brokerBalanceTotals : filteredTotals;
                   final connectedCount = filtered.where((a) => a['connected'] == true).length;
 
                   return Container(
@@ -3117,7 +3137,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   Text('Loading...', style: GoogleFonts.poppins(color: Colors.white38, fontSize: 14)),
                                 ],
                               ) else Text(
-                                _formatCurrencyBreakdown(filteredTotals),
+                                _formatCurrencyBreakdown(headlineTotals),
                                 style: GoogleFonts.poppins(
                                   color: Colors.white,
                                   fontSize: 28,
