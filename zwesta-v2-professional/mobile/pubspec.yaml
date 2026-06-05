@@ -39,7 +39,7 @@ dependencies:
   # Utils
   uuid: ^3.0.0
   logger: ^1.4.0
-  dotenv: ^5.0.0
+  dotenv: ^4.2.0
 
 dev_dependencies:
   flutter_test:
