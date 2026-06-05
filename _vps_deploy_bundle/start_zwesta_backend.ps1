@@ -5,8 +5,36 @@ $backendUrl = 'http://127.0.0.1:9000'
 $healthUrl = "$backendUrl/api/health"
 $watchdogScript = Join-Path $backendDir 'watchdog.py'
 $watchdogLauncher = Join-Path $backendDir 'start_watchdog.bat'
-$pythonExe = 'c:\zwesta-trader\.venv\Scripts\python.exe'
 $serviceNames = @('postgresql-x64-18', 'postgresql-x64-17')
+
+function Resolve-PythonExecutable {
+    $candidates = @(
+        'c:\zwesta-trader\.venv\Scripts\python.exe',
+        'C:\Program Files\Python311\python.exe',
+        'C:\Python312\python.exe',
+        'C:\Python311\python.exe',
+        'C:\Python310\python.exe',
+        'C:\Python39\python.exe'
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return $candidate
+        }
+    }
+
+    foreach ($commandName in @('python', 'py')) {
+        try {
+            $command = Get-Command $commandName -ErrorAction Stop | Select-Object -First 1
+            if ($command -and $command.Source) {
+                return $command.Source
+            }
+        } catch {
+        }
+    }
+
+    return $null
+}
 
 function Get-PostgresService {
     $services = Get-Service -Name $serviceNames -ErrorAction SilentlyContinue
@@ -62,9 +90,31 @@ function Get-WatchdogProcess {
         Select-Object -First 1
 }
 
+function Get-BackendProcesses {
+    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -match '^python(w)?\.exe$' -and
+            $_.CommandLine -like '*C:\backend\multi_broker_backend_updated.py*'
+        })
+}
+
 Set-Location $backendDir
 
 Ensure-PostgresRunning
+
+$backendProcesses = Get-BackendProcesses
+if ($backendProcesses.Count -gt 1) {
+    $duplicateIds = ($backendProcesses | Select-Object -ExpandProperty ProcessId) -join ', '
+    Write-Host "Duplicate backend processes detected ($duplicateIds). Stopping them before restart..." -ForegroundColor Yellow
+    foreach ($proc in $backendProcesses) {
+        try {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Could not stop backend PID $($proc.ProcessId): $($_.Exception.Message)"
+        }
+    }
+    Start-Sleep -Seconds 2
+}
 
 if (Test-BackendHealthy) {
     Write-Host 'Backend already healthy on http://127.0.0.1:9000' -ForegroundColor Green
@@ -75,16 +125,18 @@ $watchdogProcess = Get-WatchdogProcess
 if ($watchdogProcess) {
     Write-Host "Watchdog already running (PID $($watchdogProcess.ProcessId)). Waiting for backend health..." -ForegroundColor Yellow
 } else {
+    $pythonExe = Resolve-PythonExecutable
     if (-not (Test-Path $watchdogScript)) {
         throw "Missing watchdog script: $watchdogScript"
     }
     if (-not (Test-Path $watchdogLauncher)) {
         throw "Missing watchdog launcher: $watchdogLauncher"
     }
-    if (-not (Test-Path $pythonExe)) {
-        throw "Missing Python executable: $pythonExe"
+    if (-not $pythonExe) {
+        throw 'Missing Python executable: no supported Python interpreter was found on this machine.'
     }
 
+    Write-Host "Using Python: $pythonExe" -ForegroundColor Cyan
     Write-Host 'Starting Zwesta backend stack...' -ForegroundColor Cyan
     Start-Process -FilePath $watchdogLauncher -WorkingDirectory $backendDir -WindowStyle Minimized | Out-Null
 }

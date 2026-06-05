@@ -116,6 +116,37 @@ def _maybe_reexec_with_preferred_python() -> None:
 _maybe_reexec_with_preferred_python()
 
 from system.backup_and_recovery import BackupManager, RecoveryManager
+try:
+    from binance_worker_manager import BinanceWorkerPoolManager
+except ImportError as _binance_worker_import_error:
+    class BinanceWorkerPoolManager:
+        def __init__(self, worker_count: int = 0, max_bots_per_worker: int = 500):
+            self.worker_count = 0
+            self.max_bots_per_worker = max_bots_per_worker
+            logging.getLogger(__name__).warning(
+                "Binance worker manager unavailable (%s) - Binance worker pool disabled until binance_worker_manager.py is deployed",
+                _binance_worker_import_error,
+            )
+
+        @property
+        def enabled(self) -> bool:
+            return False
+
+        def start_all(self):
+            return None
+
+        def dispatch_bot(self, bot_id, user_id, bot_config, credentials=None) -> bool:
+            return False
+
+        def stop_bot(self, bot_id) -> bool:
+            return False
+
+        def get_worker_status(self):
+            return []
+
+        def shutdown(self):
+            return None
+
 from worker_manager import WorkerPoolManager
 from metaapi_client import MetaApiClient, MetaApiTradingBridge, get_metaapi_client, is_metaapi_enabled
 from rest_price_feed import RestPriceFeed, get_price_feed
@@ -131,13 +162,28 @@ from credential_crypto import (
     decrypting_row_factory,
 )
 
+# Import Exness permanent fix framework (ensures ALL new Exness bots get defaults)
+try:
+    from exness_bot_defaults import create_new_bot_runtime_state, apply_exness_defaults_to_runtime_state
+    EXNESS_DEFAULTS_AVAILABLE = True
+except ImportError:
+    EXNESS_DEFAULTS_AVAILABLE = False
+    print("[WARNING] exness_bot_defaults module not available - bot creation will proceed without Exness defaults")
+
 
 def build_sqlite_connection(*args, **kwargs):
-    """Wrapper around runtime_infrastructure.build_sqlite_connection that
-    installs a transparent decrypting row factory whenever a row factory is
-    requested. Marker-based detection (`enc:v1:`) makes this a no-op for
-    non-encrypted columns/tables.
+    """Wrapper around runtime_infrastructure.build_sqlite_connection that:
+    1. Redirects to PostgreSQL abstraction when PostgreSQL is enabled
+    2. Installs a transparent decrypting row factory for encrypted columns
     """
+    # If PostgreSQL is enabled, use the abstraction layer instead of SQLite
+    if using_postgres():
+        timeout = kwargs.get('timeout', float(os.environ.get('SQLITE_CONNECTION_TIMEOUT_SECONDS', '60')))
+        row_factory = kwargs.get('row_factory', False)
+        pg_conn = _PostgresCompatConnection(timeout=timeout, row_factory=row_factory)
+        return pg_conn
+    
+    # Otherwise use SQLite as normal
     conn = _orig_build_sqlite_connection(*args, **kwargs)
     try:
         if kwargs.get('row_factory') or getattr(conn, 'row_factory', None) is not None:
@@ -244,9 +290,12 @@ def _translate_sqlite_query_to_postgres(sql: str) -> str:
     translated = str(sql or '')
     translated = re.sub(r'(?i)\bBEGIN\s+IMMEDIATE\b', 'BEGIN', translated)
     translated = re.sub(r'(?i)\bBEGIN\s+EXCLUSIVE\b', 'BEGIN', translated)
+    translated = re.sub(r'(?i)\bINSERT\s+OR\s+IGNORE\s+INTO\b', 'INSERT INTO', translated)
     # Convert INSERT OR REPLACE (SQLite) -> INSERT ... ON CONFLICT DO UPDATE (PostgreSQL)
     if re.search(r'(?i)\bINSERT\s+OR\s+REPLACE\b', translated):
         translated = _rewrite_insert_or_replace_for_postgres(translated)
+    if re.search(r'(?i)\bINSERT\s+INTO\b', translated) and re.search(r'(?i)\bON\s+CONFLICT\b', translated) is None:
+        translated = translated.rstrip().rstrip(';') + ' ON CONFLICT DO NOTHING'
     translated = _rewrite_postgres_insert_boolean_placeholders(translated)
 
     for column in _POSTGRES_BOOLEAN_COLUMNS:
@@ -316,17 +365,119 @@ class _PostgresCompatCursor:
         self._cursor.close()
 
 
-class _PostgresCompatConnection:
-    def __init__(self, *, timeout: float = 30.0, row_factory: bool = False):
+# ---------------------------------------------------------------------------
+# Postgres connection pool — reuse TCP connections instead of opening a new
+# one for every get_db_connection() call (saves ~10–20 ms per DB operation).
+# ---------------------------------------------------------------------------
+_PG_POOL_LOCK = threading.Lock()
+_PG_POOL_USAGE_LOCK = threading.Lock()
+_pg_connection_pool = None  # psycopg2.pool.ThreadedConnectionPool (lazy init)
+_pg_connection_semaphore = None
+_pg_pool_max_connections = 0
+_pg_pool_active_checkouts = 0
+
+
+def _get_pg_pool():
+    global _pg_connection_pool, _pg_connection_semaphore, _pg_pool_max_connections
+    if _pg_connection_pool is not None:
+        return _pg_connection_pool
+    with _PG_POOL_LOCK:
+        if _pg_connection_pool is not None:  # double-checked locking
+            return _pg_connection_pool
         database_url = get_database_url()
         if not database_url:
             raise RuntimeError('DATABASE_URL is required when PostgreSQL mode is enabled')
         try:
-            import psycopg2
+            import psycopg2.pool as _pg_pool_mod
         except ImportError as exc:
             raise RuntimeError('psycopg2 is required when PostgreSQL mode is enabled') from exc
-        self._conn = psycopg2.connect(database_url, connect_timeout=max(1, int(math.ceil(timeout))))
+        requested_max_conns = int(os.environ.get('PG_POOL_MAX', '25'))
+        requested_min_conns = int(os.environ.get('PG_POOL_MIN', '2'))
+        safe_pool_cap_raw = str(os.environ.get('PG_POOL_SAFE_CAP', '')).strip()
+        safe_pool_cap = max(1, int(safe_pool_cap_raw)) if safe_pool_cap_raw else 0
+        max_conns = max(1, min(requested_max_conns, safe_pool_cap)) if safe_pool_cap else max(1, requested_max_conns)
+        min_conns = max(1, min(requested_min_conns, max_conns))
+        if safe_pool_cap and requested_max_conns != max_conns:
+            logger.warning(
+                f"PostgreSQL pool max clamped from {requested_max_conns} to {max_conns} "
+                f"to avoid exhausting server connection slots"
+            )
+        logger.info(f"🔌 PostgreSQL connection pool: min={min_conns}, max={max_conns}")
+        _pg_pool_max_connections = max_conns
+        _pg_connection_semaphore = threading.BoundedSemaphore(max_conns)
+        _pg_connection_pool = _pg_pool_mod.ThreadedConnectionPool(min_conns, max_conns, database_url)
+        return _pg_connection_pool
+
+
+def _borrow_pg_connection(timeout_seconds: float = 30.0):
+    global _pg_pool_active_checkouts
+    pool = _get_pg_pool()
+    semaphore = _pg_connection_semaphore
+    wait_timeout = max(1.0, float(timeout_seconds or 30.0))
+
+    if semaphore is not None and not semaphore.acquire(timeout=wait_timeout):
+        with _PG_POOL_USAGE_LOCK:
+            active_checkouts = _pg_pool_active_checkouts
+            max_connections = _pg_pool_max_connections
+        raise RuntimeError(
+            f"connection pool exhausted (waited {wait_timeout:.1f}s, active={active_checkouts}/{max_connections})"
+        )
+
+    try:
+        conn = pool.getconn()
+    except Exception:
+        if semaphore is not None:
+            try:
+                semaphore.release()
+            except Exception:
+                pass
+        raise
+
+    try:
+        if conn.status != 0:  # IDLE == 0 in psycopg2
+            conn.rollback()
+    except Exception:
+        pass
+
+    with _PG_POOL_USAGE_LOCK:
+        _pg_pool_active_checkouts += 1
+
+    return conn
+
+
+def _return_pg_connection(conn):
+    global _pg_pool_active_checkouts
+    if conn is None:
+        return
+
+    try:
+        try:
+            if conn.status != 0:  # IDLE == 0 in psycopg2
+                conn.rollback()
+        except Exception:
+            pass
+        _get_pg_pool().putconn(conn)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    finally:
+        with _PG_POOL_USAGE_LOCK:
+            if _pg_pool_active_checkouts > 0:
+                _pg_pool_active_checkouts -= 1
+        if _pg_connection_semaphore is not None:
+            try:
+                _pg_connection_semaphore.release()
+            except Exception:
+                pass
+
+
+class _PostgresCompatConnection:
+    def __init__(self, *, timeout: float = 30.0, row_factory: bool = False):
+        self._conn = _borrow_pg_connection(timeout)
         self._row_factory = row_factory
+        self._closed = False
 
     def cursor(self):
         return _PostgresCompatCursor(self._conn.cursor(), row_factory=self._row_factory)
@@ -341,7 +492,26 @@ class _PostgresCompatConnection:
         self._conn.rollback()
 
     def close(self):
-        self._conn.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            _return_pg_connection(self._conn)
+        finally:
+            self._conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class _PostgresBackupManager:
@@ -1677,6 +1847,103 @@ def _resolve_active_broker_credential_for_bot(
                 pass
 
 
+def _resolve_requested_broker_credential_for_user(
+    user_id: str,
+    credential_id: Any,
+    broker_hint: Any = '',
+) -> Optional[Dict[str, Any]]:
+    normalized_credential_id = str(credential_id or '').strip()
+    normalized_broker_hint = canonicalize_broker_name(broker_hint)
+    if not user_id or not normalized_credential_id:
+        return None
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT credential_id, broker_name, account_number, username, is_live, api_key, password, server, is_active,
+                   account_currency, cached_balance, cached_margin_free
+            FROM broker_credentials
+            WHERE credential_id = ? AND user_id = ?
+            LIMIT 1
+            ''',
+            (normalized_credential_id, user_id),
+        )
+        direct_row = cursor.fetchone()
+        if direct_row:
+            return dict(direct_row)
+
+        normalized_credential_id_upper = normalized_credential_id.upper()
+        synthetic_binance_id = normalized_credential_id_upper.startswith('BINANCE-')
+        if normalized_broker_hint != 'Binance' and not synthetic_binance_id:
+            return None
+
+        market_hint = _resolve_binance_account_market_hint(normalized_credential_id)
+        synthetic_suffix = normalized_credential_id_upper.rsplit('-', 1)[-1]
+        cursor.execute(
+            '''
+            SELECT credential_id, broker_name, account_number, username, is_live, api_key, password, server, is_active,
+                   account_currency, cached_balance, cached_margin_free, updated_at, created_at
+            FROM broker_credentials
+            WHERE user_id = ? AND is_active = 1 AND LOWER(TRIM(broker_name)) = 'binance'
+            ORDER BY COALESCE(updated_at, created_at, '') DESC, credential_id DESC
+            ''',
+            (user_id,),
+        )
+        candidate_rows = [dict(row) for row in cursor.fetchall()]
+        candidate_rows, _ = dedupe_active_broker_credentials(candidate_rows)
+
+        for candidate in candidate_rows:
+            resolved_market = _resolve_binance_market_for_credential_usage(
+                credential_row=candidate,
+                credential_id=candidate.get('credential_id'),
+                user_id=user_id,
+            )
+            normalized_account_id = _normalize_binance_account_number(
+                candidate.get('account_number'),
+                resolved_market,
+                candidate.get('api_key'),
+            ).upper()
+            if normalized_account_id == normalized_credential_id_upper:
+                logger.warning(
+                    f"Resolved synthetic Binance credentialId {normalized_credential_id} to stored credential "
+                    f"{candidate.get('credential_id')} for user {user_id}"
+                )
+                return candidate
+
+        if synthetic_suffix:
+            for candidate in candidate_rows:
+                resolved_market = _resolve_binance_market_for_credential_usage(
+                    credential_row=candidate,
+                    credential_id=candidate.get('credential_id'),
+                    user_id=user_id,
+                )
+                if market_hint and resolved_market != market_hint:
+                    continue
+                api_key = str(candidate.get('api_key') or '').strip()
+                if api_key and api_key[-8:].upper() == synthetic_suffix:
+                    logger.warning(
+                        f"Resolved Binance API-key suffix credentialId {normalized_credential_id} to stored credential "
+                        f"{candidate.get('credential_id')} for user {user_id}"
+                    )
+                    return candidate
+
+        return None
+    except Exception as exc:
+        logger.warning(
+            f"Could not resolve requested broker credential {normalized_credential_id} for user {user_id}: {exc}"
+        )
+        return None
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _sync_bot_credential_mapping(bot_id: str, user_id: str, credential_id: str) -> None:
     normalized_credential_id = str(credential_id or '').strip()
     if not bot_id or not user_id or not normalized_credential_id:
@@ -1775,6 +2042,14 @@ else:
     sock = None
     logger.warning("⚠️ WebSocket support disabled - install flask-sock: pip install flask-sock")
 
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    import traceback
+    logger.error(f"[UNHANDLED EXCEPTION] {type(e).__name__}: {e}\n{traceback.format_exc()}")
+    return jsonify({'success': False, 'error': f'Internal server error: {type(e).__name__}: {e}'}), 500
+
+
 # ==================== BOT CLEANUP & REPOPULATION ====================
 def repopulate_active_bots():
     """Repopulate active_bots from user_bots table on backend startup"""
@@ -1846,7 +2121,16 @@ def resolve_bind_ports() -> List[int]:
 # Environment Configuration (DEMO or LIVE)
 ENVIRONMENT = resolve_environment_mode()
 AUTO_RESTART_BOTS_ON_STARTUP = os.getenv('AUTO_RESTART_BOTS_ON_STARTUP', 'false').lower() == 'true'
+AUTO_RESTART_BOTS_MODE_FILTER = str(
+    os.getenv('AUTO_RESTART_BOTS_MODE_FILTER', 'live' if ENVIRONMENT == 'LIVE' else 'all') or 'all'
+).strip().lower()
+if AUTO_RESTART_BOTS_MODE_FILTER not in {'all', 'live', 'demo'}:
+    logger.warning(
+        f"[STARTUP] Invalid AUTO_RESTART_BOTS_MODE_FILTER={AUTO_RESTART_BOTS_MODE_FILTER!r}; falling back to 'all'"
+    )
+    AUTO_RESTART_BOTS_MODE_FILTER = 'all'
 BOT_STARTUP_RESTART_DELAY_SECONDS = max(0.5, float(os.getenv('BOT_STARTUP_RESTART_DELAY_SECONDS', '15')))  # 15s gap between bots prevents MT5 lock thundering herd
+BINANCE_BOT_STARTUP_RESTART_DELAY_SECONDS = max(0.0, float(os.getenv('BINANCE_BOT_STARTUP_RESTART_DELAY_SECONDS', '0.5')))
 BOT_STARTUP_RESTART_LIMIT = max(0, int(os.getenv('BOT_STARTUP_RESTART_LIMIT', '0')))
 BOT_STARTUP_ENTRY_GRACE_SECONDS = max(0, int(os.getenv('BOT_STARTUP_ENTRY_GRACE_SECONDS', '30')))
 BOT_STARTUP_WARMUP_CYCLES = max(0, int(os.getenv('BOT_STARTUP_WARMUP_CYCLES', '1')))
@@ -1911,12 +2195,23 @@ if WORKER_COUNT > 0 and DEPLOYMENT_MODE != 'LOCAL' and not using_postgres():
     WORKER_COUNT = 0
 MAX_BOTS_PER_WORKER = max(1, int(os.getenv('MAX_BOTS_PER_WORKER', '35')))
 MAX_CONCURRENT_ACTIVE_BOTS = max(1, int(os.getenv('MAX_CONCURRENT_ACTIVE_BOTS', '5')))  # 4GB VPS starter cap
+CONFIGURED_BINANCE_WORKER_COUNT = max(0, int(os.getenv('BINANCE_WORKER_COUNT', '2')))
+MAX_BOTS_PER_BINANCE_WORKER = max(1, int(os.getenv('MAX_BOTS_PER_BINANCE_WORKER', '500')))
+MAX_CONCURRENT_BINANCE_BOTS = max(
+    1,
+    int(
+        os.getenv(
+            'MAX_CONCURRENT_BINANCE_BOTS',
+            str(CONFIGURED_BINANCE_WORKER_COUNT * MAX_BOTS_PER_BINANCE_WORKER),
+        )
+    ),
+)
 
 # ==================== BROKER USER CAPS ====================
 # Exness runs on shared MT5 terminals (2 processes: demo + live) — hard cap per mode.
 # Binance bots are stateless REST calls — can scale much higher.
-EXNESS_MAX_USERS = int(os.getenv('EXNESS_MAX_USERS', '10'))    # 10 Exness MT5 slots max (shared terminal)
-BINANCE_MAX_USERS = int(os.getenv('BINANCE_MAX_USERS', '5000'))  # Binance is API-only, scales freely
+EXNESS_MAX_USERS = int(os.getenv('EXNESS_MAX_USERS', '100'))    # Initial rollout target for Exness users
+BINANCE_MAX_USERS = int(os.getenv('BINANCE_MAX_USERS', '5000'))  # Keep original Binance rollout target
 
 # ==================== REST TRADING CONFIG (Phase 2 Scaling) ====================
 METAAPI_TOKEN = os.getenv('METAAPI_TOKEN', '')  # MetaAPI cloud token for REST-based MT5 trading
@@ -1936,6 +2231,10 @@ print(
     f"({'multi-process' if WORKER_COUNT > 0 else 'single-process (legacy)'})"
     + (f" [configured={CONFIGURED_WORKER_COUNT}]" if CONFIGURED_WORKER_COUNT != WORKER_COUNT else '')
 )
+print(
+    f"[BINANCE SCALE] Active cap: {MAX_CONCURRENT_BINANCE_BOTS} "
+    f"({CONFIGURED_BINANCE_WORKER_COUNT} workers x {MAX_BOTS_PER_BINANCE_WORKER} bots/worker)"
+)
 print(f"[REST TRADING] MetaAPI: {'ENABLED' if METAAPI_TOKEN else 'DISABLED (no token)'}")
 print(f"[REST TRADING] Prefer REST: {PREFER_REST_TRADING}")
 print(f"[PRICE FEED] Twelve Data: {'ENABLED' if TWELVE_DATA_KEY else 'DISABLED'} | Alpha Vantage: {'ENABLED' if ALPHA_VANTAGE_KEY else 'DISABLED'}")
@@ -1944,6 +2243,10 @@ print(f"{'='*70}\n")
 
 # ==================== WORKER POOL MANAGER ====================
 worker_pool_manager = WorkerPoolManager(worker_count=WORKER_COUNT, max_bots_per_worker=MAX_BOTS_PER_WORKER)
+binance_worker_pool_manager = BinanceWorkerPoolManager(
+    worker_count=CONFIGURED_BINANCE_WORKER_COUNT,
+    max_bots_per_worker=MAX_BOTS_PER_BINANCE_WORKER,
+)
 
 # ==================== REST TRADING INFRASTRUCTURE ====================
 # Initialize MetaAPI client (cloud-hosted MT5 REST trading)
@@ -2076,14 +2379,44 @@ def _resolve_exness_terminal_path(
     elif is_live is False and default_demo_path:
         candidate_paths.append(default_demo_path)
 
+    # Two-pass resolution: prefer any candidate that resolves to a real terminal
+    # executable on disk (handles the nested terminal64.exe\terminal64.exe folder
+    # layout used on the VPS). Only fall back to a non-existent path hint if none
+    # of the candidates point at a file that actually exists, so a stale DB/env
+    # path can never shadow a working terminal further down the list.
+    # NOTE: resolution is inlined here (not via resolve_mt5_terminal_executable_path)
+    # because this function runs at module import time, before that helper is defined.
+    def _exness_candidate_executable(candidate: str) -> Optional[str]:
+        if not candidate:
+            return None
+        if os.path.isfile(candidate):
+            return candidate
+        if os.path.isdir(candidate):
+            for exe_name in ('terminal64.exe', 'terminal.exe'):
+                direct = os.path.join(candidate, exe_name)
+                if os.path.isfile(direct):
+                    return direct
+                # Some VPS installs unpack into a directory literally named
+                # terminal64.exe/terminal.exe containing the real executable.
+                if os.path.isdir(direct):
+                    for nested_name in ('terminal64.exe', 'terminal.exe'):
+                        nested = os.path.join(direct, nested_name)
+                        if os.path.isfile(nested):
+                            return nested
+        return None
+
+    fallback_candidate: Optional[str] = None
     for path in candidate_paths:
         normalized_candidate = _normalize_exness_path_candidate(path)
-        if normalized_candidate and os.path.isfile(normalized_candidate):
-            return normalized_candidate
-        if normalized_candidate:
-            return normalized_candidate
+        if not normalized_candidate:
+            continue
+        resolved_candidate = _exness_candidate_executable(normalized_candidate)
+        if resolved_candidate and os.path.isfile(resolved_candidate):
+            return resolved_candidate
+        if fallback_candidate is None:
+            fallback_candidate = normalized_candidate
 
-    return None
+    return fallback_candidate
 
 
 def get_exness_mt5_config(is_live: Optional[bool] = None, server: str = None, account_number: Any = None) -> Dict:
@@ -3712,6 +4045,13 @@ def _score_signal_setup(
     symbol_performance = None
     required_setup_score = 7.0
     if isinstance(bot_config, dict):
+        management_mode = str(bot_config.get('managementMode') or 'assisted').strip().lower()
+        required_setup_score = _default_setup_score_for_broker_profile(
+            bot_config.get('managementProfile'),
+            broker_name,
+            bot_config.get('mode'),
+            management_mode,
+        )
         try:
             symbol_performance = _evaluate_symbol_performance(bot_config, symbol)
         except Exception:
@@ -3732,12 +4072,6 @@ def _score_signal_setup(
         if consecutive_losses >= 3:
             score -= 1.0
             reasons.append('Loss streak penalty')
-        if broker_name == 'Binance':
-            management_mode = str(bot_config.get('managementMode') or 'assisted').strip().lower()
-            if live_binance_mode:
-                required_setup_score = 5.5 if management_mode == 'manual' else 6.0
-            else:
-                required_setup_score = 5.5 if management_mode == 'manual' else 6.5
         symbol_base = _normalize_symbol_base(symbol)
         if broker_name == 'Binance' and symbol_base not in {'BTCUSDT', 'BTCUSD', 'ETHUSDT', 'ETHUSD'}:
             btc_market_data = commodity_market_data.get('BTCUSDT') or commodity_market_data.get('BTCUSD') or {}
@@ -4175,6 +4509,8 @@ def audit_bot_requests():
         if request.path == '/api/bot/create':
             logger.info(
                 f"[BOT CREATE REQUEST] credentialId={payload.get('credentialId')} "
+                f"mode={payload.get('mode') or payload.get('botMode')} "
+                f"isLive={payload.get('isLive', payload.get('is_live'))} "
                 f"symbols={payload.get('symbols') or payload.get('symbol')} strategy={payload.get('strategy')}"
             )
         elif request.path == '/api/bot/start':
@@ -5754,6 +6090,16 @@ def init_database():
         )
     ''')
 
+    # Fix any existing Binance credentials that were incorrectly stored with a non-USDT currency (e.g. ZAR)
+    try:
+        conn.execute(
+            "UPDATE broker_credentials SET account_currency = 'USDT' "
+            "WHERE LOWER(broker_name) = 'binance' AND (account_currency IS NULL OR account_currency NOT IN ('USDT','USDC','BUSD','USD'))"
+        )
+        conn.commit()
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -5880,7 +6226,9 @@ backup_manager, recovery_manager = init_backup_system(app)
 
 TEMP_SESSION_CACHE = {}
 SESSION_VALIDATION_CACHE = {}
-SESSION_VALIDATION_CACHE_TTL_SECONDS = 30
+SESSION_VALIDATION_CACHE_TTL_SECONDS = int(
+    os.getenv('SESSION_VALIDATION_CACHE_TTL_SECONDS', '120' if using_postgres() else '30')
+)
 SQLITE_CONNECTION_TIMEOUT_SECONDS = float(os.getenv('SQLITE_CONNECTION_TIMEOUT_SECONDS', '60'))
 SQLITE_BUSY_TIMEOUT_MS = int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', '60000'))
 LOGIN_SESSION_WRITE_TIMEOUT_MS = int(os.getenv('LOGIN_SESSION_WRITE_TIMEOUT_MS', '1500'))
@@ -5900,6 +6248,136 @@ def get_bot_create_db_connection(*, row_factory: bool = True):
         row_factory=row_factory,
         busy_timeout_ms=BOT_CREATE_DB_BUSY_TIMEOUT_MS,
     )
+
+
+def _generate_persisted_bot_id(prefix: str = 'bot') -> str:
+    return f"{prefix}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+
+def _persist_new_bot_records(
+    *,
+    bot_id: str,
+    user_id: str,
+    bot_name: str,
+    strategy: str,
+    status: str,
+    trading_enabled: bool,
+    account_id: str,
+    symbols: list,
+    is_live: bool,
+    created_at: str,
+    credential_id: str,
+    id_prefix: str = 'bot',
+) -> str:
+    persisted_bot_id = str(bot_id or '').strip() or _generate_persisted_bot_id(id_prefix)
+    last_lock_error = None
+
+    for bot_create_attempt in range(4):
+        conn = get_bot_create_db_connection()
+        try:
+            cursor = conn.cursor()
+            if not using_postgres():
+                logger.info(
+                    f"🔒 [BOT INSERT LOCK] Acquiring immediate write lock for {persisted_bot_id}... "
+                    f"(attempt {bot_create_attempt + 1}/4)"
+                )
+                cursor.execute('BEGIN IMMEDIATE')
+
+            cursor.execute('SELECT 1 FROM user_bots WHERE bot_id = ? LIMIT 1', (persisted_bot_id,))
+            if cursor.fetchone():
+                logger.warning(f"Bot ID {persisted_bot_id} already exists, regenerating...")
+                persisted_bot_id = _generate_persisted_bot_id(id_prefix)
+                continue
+
+            logger.info(
+                f"🔧 [BOT INSERT] Inserting bot {persisted_bot_id} for user {user_id} into user_bots table... "
+                f"(attempt {bot_create_attempt + 1}/4)"
+            )
+            cursor.execute('''
+                INSERT INTO user_bots (bot_id, user_id, name, strategy, status, enabled, broker_account_id, symbols, is_live, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                persisted_bot_id,
+                user_id,
+                bot_name,
+                strategy,
+                status,
+                1 if trading_enabled else 0,
+                account_id,
+                ','.join(symbols),
+                1 if is_live else 0,
+                created_at,
+                created_at,
+            ))
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"user_bots insert did not persist bot {persisted_bot_id} (rowcount={cursor.rowcount})"
+                )
+            logger.info("✅ [BOT INSERT SUCCESS] user_bots row inserted")
+
+            logger.info("🔧 [CREDENTIALS INSERT] Inserting bot credentials...")
+            cursor.execute('''
+                INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
+                VALUES (?, ?, ?, ?)
+            ''', (persisted_bot_id, credential_id, user_id, created_at))
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"bot_credentials insert did not persist bot {persisted_bot_id} (rowcount={cursor.rowcount})"
+                )
+            logger.info("✅ [CREDENTIALS INSERT SUCCESS] bot_credentials row inserted")
+
+            logger.info("🔧 [DB COMMIT] Committing transaction...")
+            conn.commit()
+            logger.info("✅ [DB COMMIT SUCCESS] Transaction committed to database")
+        except sqlite3.OperationalError as lock_error:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            lock_message = str(lock_error).lower()
+            if using_postgres() or (('locked' not in lock_message and 'busy' not in lock_message) or bot_create_attempt >= 3):
+                raise
+            last_lock_error = lock_error
+            logger.warning(
+                f"Bot creation DB write lock unavailable for {persisted_bot_id}; retrying save after rollback "
+                f"({bot_create_attempt + 1}/4): {lock_error}"
+            )
+            time.sleep(0.35 * (bot_create_attempt + 1))
+            continue
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+        verify_conn = get_bot_create_db_connection()
+        try:
+            verify_cursor = verify_conn.cursor()
+            verify_cursor.execute(
+                'SELECT 1 FROM user_bots WHERE bot_id = ? AND user_id = ? LIMIT 1',
+                (persisted_bot_id, user_id),
+            )
+            bot_row_exists = verify_cursor.fetchone() is not None
+            verify_cursor.execute(
+                'SELECT 1 FROM bot_credentials WHERE bot_id = ? AND credential_id = ? AND user_id = ? LIMIT 1',
+                (persisted_bot_id, credential_id, user_id),
+            )
+            bot_credential_exists = verify_cursor.fetchone() is not None
+        finally:
+            verify_conn.close()
+
+        if bot_row_exists and bot_credential_exists:
+            return persisted_bot_id
+
+        raise RuntimeError(
+            f"Bot creation verification failed for {persisted_bot_id} "
+            f"(bot_row={bot_row_exists}, credential_row={bot_credential_exists})"
+        )
+
+    raise sqlite3.OperationalError('database is locked') from last_lock_error
 
 
 def get_recent_cached_session(session_token: str):
@@ -6545,12 +7023,12 @@ class MT5Connection(BrokerConnection):
             except Exception as fe:
                 logger.debug(f"  (Fast-path mt5.login() not attempted: {fe})")
             
-            # Retry logic: balance checks get 1 attempt (fast fail), trading gets 3
             # Retry logic: balance checks get 1 attempt (fast fail), manual tests get 2
             # (allows one recovery from transient 'future not completed' IPC errors),
             # background trading gets 3.
             is_balance_check = self.credentials.get('is_balance_check', False)
             max_retries = 1 if is_balance_check else (2 if is_manual_test else 3)
+            error_code = None  # Initialize for retry logic below
             for attempt in range(1, max_retries + 1):
                 logger.info(f"MT5 connection attempt {attempt}/{max_retries}: Account={account}, Server={server}")
                 
@@ -6743,8 +7221,13 @@ class MT5Connection(BrokerConnection):
                         error_code = init_error[0] if isinstance(init_error, tuple) else -1
                         err_desc = str(init_error).lower()
                         if error_code in [-10005, -10004, -10014] or 'future not completed' in err_desc:  # IPC timeout, No IPC connection, or Future not completed
-                            logger.warning(f"  ⚠️  IPC CONNECTION ISSUE (code {error_code}) - will wait longer before retry")
+                            logger.warning(f"  ⚠️  IPC CONNECTION ISSUE (code {error_code}) - MT5 IPC not ready yet, waiting longer before retry")
                             ensure_mt5_terminal_running(self.mt5_path, broker_name)
+                            # For "future not completed" errors on first attempts, increase wait time significantly
+                            if error_code == -10014 or 'future not completed' in err_desc:
+                                if attempt <= 2:
+                                    logger.info(f"  💤 MT5 IPC 'future not completed' - sleeping extra 8s for terminal stabilization")
+                                    time.sleep(8)
                         logger.debug(f"    (Terminal process may still be starting...)")
                 
                 except Exception as e:
@@ -6752,8 +7235,8 @@ class MT5Connection(BrokerConnection):
                 
                 # Wait before retry with exponential backoff
                 if attempt < max_retries:
-                    # Exponential backoff: 5s, 7s, (no 3rd wait as this completes loop)
-                    wait_time = 5 + (2 * attempt)
+                    # For IPC errors, use longer backoff: 8s, 10s, (no 3rd wait as this completes loop)
+                    wait_time = (8 if error_code == -10014 else 5) + (2 * attempt)
                     logger.info(f"  ⏳ Retry in {wait_time}s (exponential backoff)...")
                     time.sleep(wait_time)
             
@@ -7673,31 +8156,14 @@ class MT5Connection(BrokerConnection):
                         volume = _capped
                         request_dict['volume'] = volume
 
-            # TIMEOUT WRAPPER: order_send can hang for 10+ seconds if MT5 is busy/disconnected
-            # Set a 5-second timeout to fail fast instead of freezing bot
-            import threading
-            result = None
-            result_holder = []
-            error_holder = []
-            
-            def mt5_order_with_timeout():
-                try:
-                    res = self.mt5.order_send(request_dict)
-                    result_holder.append(res)
-                except Exception as e:
-                    error_holder.append(e)
-            
-            thread = threading.Thread(target=mt5_order_with_timeout, daemon=True)
-            thread.start()
-            thread.join(timeout=5.0)  # Wait max 5 seconds
-            
-            if error_holder:
-                logger.error(f"MT5 order_send exception: {error_holder[0]}")
-                result = None
-            elif result_holder:
-                result = result_holder[0]
-            else:
-                logger.error(f"MT5 order_send TIMEOUT after 5 seconds - terminal likely disconnected")
+            # MT5 order_send must stay on the same thread as the initialized session.
+            # The timeout-thread wrapper caused live Exness sessions to pass order_check()
+            # and terminal_info() in-thread, then fail the real send with false 10027-style
+            # behavior when order_send() ran on a different Python thread.
+            try:
+                result = self.mt5.order_send(request_dict)
+            except Exception as order_send_error:
+                logger.error(f"MT5 order_send exception: {order_send_error}")
                 result = None
 
             if result is None:
@@ -8767,7 +9233,7 @@ class BinanceConnection(BrokerConnection):
         if cached_margin != normalized_margin_type:
             margin_ok, margin_error = self._set_futures_margin_type(instrument, normalized_margin_type)
             if not margin_ok:
-                return False, f"marginType {normalized_margin_type} failed: {margin_error}"
+                return False, f"marginType {normalized_margin_type} failed: {margin_error}", leverage
 
         cached_leverage = int(self._futures_leverage_cache.get(instrument) or 0)
         effective_leverage = cached_leverage if cached_leverage > 0 else target_leverage
@@ -9220,9 +9686,10 @@ class BinanceConnection(BrokerConnection):
                 # Hardcoded known step sizes as a last-resort fallback when exchangeInfo
                 # is unavailable. Keep these aligned with Binance futures MARKET_LOT_SIZE.
                 _KNOWN_FUTURES_STEP = {
-                    'SOLUSDT': 0.01, 'DOGEUSDT': 1.0, 'XRPUSDT': 0.1, 'ADAUSDT': 1.0,
-                    'AVAXUSDT': 1.0, 'DOTUSDT': 0.1, 'MATICUSDT': 1.0, 'LINKUSDT': 0.01,
+                    'SOLUSDT': 0.1, 'DOGEUSDT': 1.0, 'XRPUSDT': 0.1, 'ADAUSDT': 1.0,
+                    'AVAXUSDT': 0.1, 'DOTUSDT': 0.1, 'MATICUSDT': 1.0, 'LINKUSDT': 0.01,
                     'BNBUSDT': 0.01, 'LTCUSDT': 0.001, 'ETHUSDT': 0.001, 'BTCUSDT': 0.001,
+                    'BCHUSDT': 0.01, 'OPUSDT': 0.1, 'ARBUSDT': 1.0,
                 }
                 _known_step = _KNOWN_FUTURES_STEP.get(instrument.upper(), 0.0)
                 # MARKET_LOT_SIZE is the tighter constraint for market orders on many
@@ -12792,6 +13259,35 @@ def ensure_user_preferences_table(cursor):
     ''')
 
 
+def save_user_preferences(cursor, user_id: str, trading_mode: str = 'DEMO', live_account: Optional[str] = None,
+                          live_server: Optional[str] = None, updated_at: Optional[str] = None) -> None:
+    ensure_user_preferences_table(cursor)
+    normalized_mode = str(trading_mode or 'DEMO').upper()
+    normalized_account = str(live_account).strip() if live_account is not None else None
+    normalized_server = str(live_server).strip() if live_server is not None else None
+    updated_value = updated_at or datetime.now().isoformat()
+
+    cursor.execute('SELECT 1 FROM user_preferences WHERE user_id = ? LIMIT 1', (user_id,))
+    if cursor.fetchone():
+        cursor.execute(
+            '''
+            UPDATE user_preferences
+            SET trading_mode = ?, live_account = ?, live_server = ?, updated_at = ?
+            WHERE user_id = ?
+            ''',
+            (normalized_mode, normalized_account, normalized_server, updated_value, user_id),
+        )
+        return
+
+    cursor.execute(
+        '''
+        INSERT INTO user_preferences (user_id, trading_mode, live_account, live_server, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ''',
+        (user_id, normalized_mode, normalized_account, normalized_server, updated_value),
+    )
+
+
 def ensure_user_risk_settings_table(cursor):
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_risk_settings (
@@ -12907,9 +13403,10 @@ def warm_trading_mode_credential(user_id: str, credential_id: str, mode: str):
 
 def apply_user_trading_mode_to_active_bots(user_id: str, mode: str) -> Dict[str, Any]:
     normalized_mode = str(mode or 'DEMO').upper()
-    desired_is_live = normalized_mode == 'LIVE'
     updated_bot_ids: List[str] = []
     skipped_bot_ids: List[str] = []
+    db_repairs: List[Tuple[int, str, str, str]] = []
+    updated_at = datetime.now().isoformat()
 
     for bot_id, bot_config in list(active_bots.items()):
         if bot_config.get('user_id') != user_id:
@@ -12922,51 +13419,72 @@ def apply_user_trading_mode_to_active_bots(user_id: str, mode: str) -> Dict[str,
             user_id,
             broker_name,
             bot_config.get('accountNumber') or bot_config.get('account_number') or bot_config.get('account'),
-            normalized_mode.lower(),
+            None,
             bot_config.get('credentialId'),
         )
         if not resolved_credential:
             skipped_bot_ids.append(bot_id)
             continue
 
-        previous_conn = bot_config.get('broker_conn')
-        if previous_conn is not None and hasattr(previous_conn, 'disconnect'):
-            try:
-                previous_conn.disconnect()
-            except Exception:
-                pass
+        resolved_is_live = bool(normalize_mt5_is_live_flag(
+            canonicalize_broker_name(resolved_credential.get('broker_name') or broker_name),
+            resolved_credential.get('is_live'),
+            resolved_credential.get('server'),
+        ))
+        resolved_mode = 'live' if resolved_is_live else 'demo'
+        bot_updated = False
 
         resolved_credential_id = str(resolved_credential.get('credential_id') or '').strip()
-        if resolved_credential_id:
+        if resolved_credential_id and bot_config.get('credentialId') != resolved_credential_id:
             bot_config['credentialId'] = resolved_credential_id
             _sync_bot_credential_mapping(bot_id, user_id, resolved_credential_id)
+            bot_updated = True
 
         resolved_account_number = str(resolved_credential.get('account_number') or '').strip()
         if resolved_account_number:
-            bot_config['accountNumber'] = resolved_account_number
-            bot_config['account_number'] = resolved_account_number
+            resolved_account_id = f"{broker_name}_{resolved_account_number}"
+            if bot_config.get('accountNumber') != resolved_account_number:
+                bot_config['accountNumber'] = resolved_account_number
+                bot_updated = True
+            if bot_config.get('account_number') != resolved_account_number:
+                bot_config['account_number'] = resolved_account_number
+                bot_updated = True
+            if bot_config.get('accountId') != resolved_account_id:
+                bot_config['accountId'] = resolved_account_id
+                bot_updated = True
 
-        bot_config['mode'] = normalized_mode.lower()
-        bot_config['is_live'] = desired_is_live
-        bot_config['broker_conn'] = None
-        updated_bot_ids.append(bot_id)
+        if bot_config.get('mode') != resolved_mode:
+            bot_config['mode'] = resolved_mode
+            bot_updated = True
+        if bool(bot_config.get('is_live')) != resolved_is_live:
+            bot_config['is_live'] = resolved_is_live
+            bot_updated = True
+        if bot_config.get('broker_conn') is not None:
+            bot_config['broker_conn'] = None
+            bot_updated = True
 
-        try:
-            persist_bot_runtime_state(bot_id, force=True)
-        except Exception as exc:
-            logger.warning(f"Could not persist mode-switch runtime state for bot {bot_id}: {exc}")
+        db_repairs.append((1 if resolved_is_live else 0, updated_at, bot_id, user_id))
+
+        if bot_updated:
+            updated_bot_ids.append(bot_id)
+
+            try:
+                persist_bot_runtime_state(bot_id, force=True)
+            except Exception as exc:
+                logger.warning(f"Could not persist mode-switch runtime state for bot {bot_id}: {exc}")
 
     conn = None
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE user_bots SET is_live = ?, updated_at = ? WHERE user_id = ?',
-            (1 if desired_is_live else 0, datetime.now().isoformat(), user_id),
-        )
-        conn.commit()
+        if db_repairs:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.executemany(
+                'UPDATE user_bots SET is_live = ?, updated_at = ? WHERE bot_id = ? AND user_id = ?',
+                db_repairs,
+            )
+            conn.commit()
     except Exception as exc:
-        logger.warning(f"Could not persist trading mode for user {user_id} bots: {exc}")
+        logger.warning(f"Could not repair persisted bot trading modes for user {user_id}: {exc}")
     finally:
         if conn:
             try:
@@ -13082,24 +13600,20 @@ def switch_trading_mode():
             live_account = str(data.get('account') or (preferred_credential or {}).get('account_number') or '') or None
             live_server = data.get('server') or (preferred_credential or {}).get('server')
         
-        # Update or insert user preference
-        cursor.execute('''
-            INSERT OR REPLACE INTO user_preferences 
-            (user_id, trading_mode, live_account, live_server, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (
+        save_user_preferences(
+            cursor,
             user_id,
-            mode,
-            live_account,
-            live_server,
-            datetime.now().isoformat()
-        ))
+            trading_mode=mode,
+            live_account=live_account,
+            live_server=live_server,
+            updated_at=datetime.now().isoformat(),
+        )
         
         conn.commit()
         conn.close()
 
         active_credential = None
-        connection_status = 'missing-credentials'
+        connection_status = 'saved'
         account_info = {}
         warning = None
 
@@ -13112,13 +13626,16 @@ def switch_trading_mode():
                 'is_live': bool(preferred_credential['is_live']),
             }
 
-            warm_result = warm_trading_mode_credential(user_id, preferred_credential['credential_id'], mode)
-            if warm_result['connected']:
-                connection_status = 'connected'
-                account_info = warm_result.get('account_info', {})
-            else:
-                connection_status = 'connection-failed'
-                warning = f"{mode} mode saved, but broker session warmup failed: {warm_result.get('error') or 'unknown error'}"
+            # Fire MT5 warm-up in background so the HTTP response returns immediately.
+            # (MT5 initialize() can take 10-30 s; blocking here causes Flutter timeout.)
+            _cred_id = preferred_credential['credential_id']
+            threading.Thread(
+                target=warm_trading_mode_credential,
+                args=(user_id, _cred_id, mode),
+                daemon=True,
+                name=f'mode-warm-{user_id[:8]}-{mode.lower()}',
+            ).start()
+            connection_status = 'warming'
         else:
             warning = f"{mode} mode saved, but no active {mode.lower()} broker credential was found to warm automatically."
 
@@ -13484,6 +14001,11 @@ def get_account_balances():
 
             # GET ACTUAL ACCOUNT CURRENCY from database (demo USD vs live ZAR)
             account_currency = cred.get('account_currency', 'USD').upper()
+            if broker_name == 'Binance':
+                account_currency = _resolve_binance_display_currency(
+                    fallback_currency=account_currency,
+                    market=cred.get('server'),
+                )
             display_currency = _resolve_display_currency_for_mode(mode, account_currency)
             
             account_info = None
@@ -13552,6 +14074,10 @@ def get_account_balances():
                         credential_id=cred.get('credential_id'),
                         user_id=user_id,
                     )
+                    account_currency = _resolve_binance_display_currency(
+                        fallback_currency=account_currency,
+                        market=resolved_market,
+                    )
                     _binance_cache_row = cached_data.get(cred['credential_id']) or {}
                     _binance_cache_age = _cache_snapshot_age_seconds(_binance_cache_row.get('last_update'))
                     _binance_cached_bal = _binance_cache_row.get('cached_balance')
@@ -13605,8 +14131,14 @@ def get_account_balances():
                                         'balance': balance_info.get('balance', 0),
                                         'equity': balance_info.get('equity', balance_info.get('balance', 0)),
                                         'marginFree': balance_info.get('marginFree', balance_info.get('margin_free', 0)),
-                                        'currency': balance_info.get('currency', 'USDT'),
-                                        'displayCurrency': balance_info.get('currency', 'USDT'),
+                                        'currency': _resolve_binance_display_currency(
+                                            fallback_currency=balance_info.get('currency', account_currency),
+                                            market=resolved_market,
+                                        ),
+                                        'displayCurrency': _resolve_binance_display_currency(
+                                            fallback_currency=balance_info.get('currency', account_currency),
+                                            market=resolved_market,
+                                        ),
                                         'broker': 'Binance',
                                         'leverage': 1,
                                     }
@@ -15270,6 +15802,9 @@ def get_account_detailed():
         broker_filter = request.args.get('broker', default='', type=str).strip()
         preferred_mode = requested_mode if requested_mode in ['LIVE', 'DEMO'] else get_user_trading_mode_value(user_id)
         desired_live = 1 if preferred_mode == 'LIVE' else 0
+        user_mode_preferences = _get_user_trading_mode_preferences(cursor, user_id)
+        preferred_live_account = user_mode_preferences.get('live_account', '') if desired_live else ''
+        preferred_live_server = user_mode_preferences.get('live_server', '') if desired_live else ''
         
         # Query all active credentials, optionally filtered by broker
         if broker_filter:
@@ -15297,6 +15832,21 @@ def get_account_detailed():
         
         creds = [dict(row) for row in cursor.fetchall()]
         creds, duplicate_credential_ids = dedupe_active_broker_credentials(creds)
+        if creds:
+            def _credential_priority(row: Dict[str, Any]) -> Tuple[int, int, int, str, str]:
+                row_broker = canonicalize_broker_name(row.get('broker_name'))
+                row_account = str(row.get('account_number') or '').strip()
+                row_server = str(row.get('server') or '').strip()
+                row_is_live = int(normalize_mt5_is_live_flag(row_broker, row.get('is_live'), row.get('server')))
+                return (
+                    1 if row_is_live == desired_live else 0,
+                    1 if preferred_live_account and row_account == preferred_live_account else 0,
+                    1 if preferred_live_server and row_server == preferred_live_server else 0,
+                    str(row.get('updated_at') or row.get('last_update') or ''),
+                    str(row.get('credential_id') or ''),
+                )
+
+            creds.sort(key=_credential_priority, reverse=True)
         if duplicate_credential_ids:
             logger.info(
                 f"Detected {len(duplicate_credential_ids)} duplicate/incomplete broker credential(s) for user {user_id} while loading account details; leaving database unchanged during polling."
@@ -15350,6 +15900,15 @@ def get_account_detailed():
                 elif broker_name == 'Binance':
                     cache_age_seconds = _cache_snapshot_age_seconds(cred.get('last_update') or cred.get('updated_at'))
                     cached_balance = _safe_float(cred.get('cached_balance'))
+                    resolved_market = _resolve_binance_market_for_credential_usage(
+                        credential_row=cred,
+                        credential_id=cred.get('credential_id'),
+                        user_id=user_id,
+                    )
+                    binance_display_currency = _resolve_binance_display_currency(
+                        fallback_currency=cred.get('account_currency') or 'USDT',
+                        market=resolved_market,
+                    )
                     if cache_age_seconds is not None and cache_age_seconds < 90 and cached_balance > 0:
                         account_info = {
                             'account_id': account_num,
@@ -15360,26 +15919,17 @@ def get_account_detailed():
                             'margin': _safe_float(cred.get('cached_margin')),
                             'margin_level': _safe_float(cred.get('cached_margin_level')),
                             'profit': _safe_float(cred.get('cached_profit')),
-                            'currency': str(cred.get('account_currency') or 'USDT').upper(),
+                            'currency': binance_display_currency,
                             'broker': 'Binance',
                             'credential_id': cred['credential_id'],
                             'dataSource': 'cached',
-                            'market': _resolve_binance_market_for_credential_usage(
-                                credential_row=cred,
-                                credential_id=cred.get('credential_id'),
-                                user_id=user_id,
-                            ),
+                            'market': resolved_market,
                         }
                         logger.info(
                             f"✅ Account details: serving cached Binance snapshot for {account_num} "
                             f"({cache_age_seconds:.0f}s old)"
                         )
                     else:
-                        resolved_market = _resolve_binance_market_for_credential_usage(
-                            credential_row=cred,
-                            credential_id=cred.get('credential_id'),
-                            user_id=user_id,
-                        )
                         binance_conn = BinanceConnection({
                             'api_key': cred.get('api_key'),
                             'api_secret': cred['password'],
@@ -15391,6 +15941,12 @@ def get_account_detailed():
                         if binance_conn.connect():
                             account_info = binance_conn.get_account_info()
                             if account_info:
+                                resolved_currency = _resolve_binance_display_currency(
+                                    fallback_currency=account_info.get('currency', binance_display_currency),
+                                    market=resolved_market,
+                                )
+                                account_info['currency'] = resolved_currency
+                                account_info['displayCurrency'] = resolved_currency
                                 account_info['broker'] = 'Binance'
                                 account_info['credential_id'] = cred['credential_id']
                                 logger.info(f"✅ Fetched account details from Binance {account_num}")
@@ -15450,6 +16006,14 @@ def get_account_detailed():
                 if not account_info and not skip_cached_snapshot:
                     cached_balance = float(cred.get('cached_balance') or 0)
                     if cached_balance > 0 or cred.get('cached_equity'):
+                        resolved_cached_currency = (
+                            _resolve_binance_display_currency(
+                                fallback_currency=cred.get('account_currency') or 'USDT',
+                                market=cred.get('server'),
+                            )
+                            if broker_name == 'Binance'
+                            else str(cred.get('account_currency') or 'USD').upper()
+                        )
                         account_info = {
                             'account_id': account_num,
                             'accountNumber': account_num,
@@ -15459,7 +16023,7 @@ def get_account_detailed():
                             'margin': float(cred.get('cached_margin') or 0),
                             'margin_level': float(cred.get('cached_margin_level') or 0),
                             'profit': float(cred.get('cached_profit') or 0),
-                            'currency': str(cred.get('account_currency') or 'USD').upper(),
+                            'currency': resolved_cached_currency,
                             'broker': broker_name,
                             'credential_id': cred['credential_id'],
                             'dataSource': 'cached',
@@ -15507,7 +16071,14 @@ def get_account_detailed():
                     'margin': float(cred.get('cached_margin') or 0),
                     'margin_level': float(cred.get('cached_margin_level') or 0),
                     'profit': float(cred.get('cached_profit') or 0),
-                    'currency': str(cred.get('account_currency') or 'USD').upper(),
+                    'currency': (
+                        _resolve_binance_display_currency(
+                            fallback_currency=cred.get('account_currency') or 'USDT',
+                            market=cred.get('server'),
+                        )
+                        if canonicalize_broker_name(cred['broker_name']) == 'Binance'
+                        else str(cred.get('account_currency') or 'USD').upper()
+                    ),
                     'broker': cred['broker_name'],
                     'dataSource': 'cached',
                     'credentialId': cred['credential_id'],
@@ -15515,6 +16086,19 @@ def get_account_detailed():
                 }), 200
             else:
                 return jsonify({'success': False, 'error': 'No account data available'}), 404
+
+        accounts_data.sort(
+            key=lambda account: (
+                1 if int(normalize_mt5_is_live_flag(
+                    canonicalize_broker_name(account.get('broker') or account.get('brokerName') or ''),
+                    account.get('isLive', account.get('is_live')),
+                    account.get('server'),
+                )) == desired_live else 0,
+                1 if preferred_live_account and str(account.get('accountNumber') or account.get('account_id') or '').strip() == preferred_live_account else 0,
+                1 if preferred_live_server and str(account.get('server') or '').strip() == preferred_live_server else 0,
+            ),
+            reverse=True,
+        )
 
         # Return all accounts or the first one depending on usage
         primary_account = accounts_data[0]
@@ -20225,7 +20809,7 @@ def _choose_strategy_for_cycle(
         'reason': switch_reason,
     })
     bot_config['strategyHistory'] = bot_config['strategyHistory'][-50:]
-    persist_bot_runtime_state(bot_id)
+    persist_bot_runtime_state(bot_id, force=True)
     return chosen_strategy
 
 
@@ -21960,13 +22544,16 @@ def _default_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     cached_balance = float(row['cached_balance'] or 0.0)
     cached_equity = float(row['cached_equity'] or cached_balance)
     broker_name = canonicalize_broker_name(row['broker_name']) if row['broker_name'] else 'MT5'
+    # Use bot_is_live (ub.is_live) when available — it is the authoritative live/demo flag.
+    # Fall back to is_live (bcr.is_live) only when loading from contexts that don't alias.
+    _row_is_live = row['bot_is_live'] if 'bot_is_live' in (row.keys() if hasattr(row, 'keys') else {}) else row['is_live']
     recent_profit_risk_guard_settings, _ = _resolve_recent_profit_risk_guard_settings(
-        {'mode': 'live' if row['is_live'] else 'demo'},
+        {'mode': 'live' if _row_is_live else 'demo'},
         broker_name,
-        bool(row['is_live']),
+        bool(_row_is_live),
     )
     return {
-        'mode': 'live' if row['is_live'] else 'demo',
+        'mode': 'live' if _row_is_live else 'demo',
         'symbols': row['symbols'].split(',') if row['symbols'] else ['EURUSDm'],
         'strategy': row['strategy'],
         'enabled': bool(row['enabled']),
@@ -22103,6 +22690,61 @@ def _resolve_bot_name_for_mode(
     if strategy:
         return strategy
     return 'Live Bot' if normalized_mode == 'live' else 'Demo Bot'
+
+
+def _resolve_requested_bot_mode(
+    data: Optional[Dict[str, Any]],
+    user_id: str = '',
+    fallback_mode: str = 'DEMO',
+) -> Tuple[str, bool]:
+    payload = data if isinstance(data, dict) else {}
+
+    raw_mode = payload.get('mode')
+    if raw_mode is None or not str(raw_mode).strip():
+        raw_mode = payload.get('botMode')
+
+    if raw_mode is not None and str(raw_mode).strip():
+        return str(raw_mode).strip().lower(), True
+
+    if 'is_live' in payload or 'isLive' in payload:
+        raw_is_live = payload.get('is_live', payload.get('isLive'))
+        return ('live' if _coerce_bool(raw_is_live, False) else 'demo'), True
+
+    preferred_mode = str(fallback_mode or 'DEMO').upper()
+    if user_id:
+        preferred_mode = get_user_trading_mode_value(user_id, preferred_mode)
+
+    return ('live' if preferred_mode == 'LIVE' else 'demo'), False
+
+
+def _get_user_trading_mode_preferences(cursor, user_id: str) -> Dict[str, str]:
+    if not cursor or not user_id:
+        return {
+            'trading_mode': 'DEMO',
+            'live_account': '',
+            'live_server': '',
+        }
+
+    try:
+        ensure_user_preferences_table(cursor)
+        cursor.execute(
+            '''
+            SELECT trading_mode, live_account, live_server
+            FROM user_preferences
+            WHERE user_id = ?
+            ''',
+            (user_id,),
+        )
+        row = cursor.fetchone()
+    except Exception as exc:
+        logger.warning(f"Could not read trading mode preferences for user {user_id}: {exc}")
+        row = None
+
+    return {
+        'trading_mode': str((row['trading_mode'] if row else 'DEMO') or 'DEMO').upper(),
+        'live_account': str((row['live_account'] if row else '') or '').strip(),
+        'live_server': str((row['live_server'] if row else '') or '').strip(),
+    }
 
 
 def _normalize_dashboard_datetime(value: Any, fallback: Optional[datetime] = None) -> Optional[datetime]:
@@ -22490,16 +23132,28 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     bot_state['credentialId'] = row['credential_id']
     broker_name = canonicalize_broker_name(row['broker_name']) if row['broker_name'] else 'MT5'
     account_number = str(row['account_number'] or '').strip()
+    # Prefer the account number embedded in broker_account_id as the authoritative source.
+    # e.g. 'Exness_295677214' -> '295677214'. Corrects stale bot_credentials links where
+    # the linked credential's account_number doesn't match the bot's intended account,
+    # causing wrong balance or live/demo display confusion.
+    _baid = str(row['broker_account_id'] or '').strip()
+    if _baid and '_' in _baid:
+        _embedded = _baid.split('_', 1)[-1].strip()
+        if _embedded:
+            account_number = _embedded
     bot_state['brokerName'] = broker_name
     bot_state['broker_type'] = bot_state.get('broker_type') or broker_name
-    bot_state['accountNumber'] = bot_state.get('accountNumber') or account_number
-    bot_state['account_number'] = bot_state.get('account_number') or bot_state['accountNumber']
-    bot_state['mode'] = bot_state.get('mode') or ('live' if row['is_live'] else 'demo')
+    bot_state['accountNumber'] = account_number
+    bot_state['account_number'] = account_number
+    # Use the bot's own is_live flag (bot_is_live) as the authoritative mode source.
+    # bcr.is_live from a stale/wrong bot_credentials link must not override the bot's intent.
+    _bot_is_live = row['bot_is_live'] if 'bot_is_live' in (row.keys() if hasattr(row, 'keys') else {}) else row['is_live']
+    bot_state['mode'] = 'live' if _bot_is_live else 'demo'
     resolved_credential = _resolve_active_broker_credential_for_bot(
         row['user_id'],
         broker_name,
         bot_state.get('accountNumber') or account_number,
-        bot_state.get('mode'),
+        bot_state['mode'],
         row['credential_id'],
     )
     if resolved_credential:
@@ -23208,6 +23862,23 @@ def _resolve_binance_account_market_hint(account_number: Any) -> str:
     return ''
 
 
+def _resolve_binance_display_currency(
+    fallback_currency: Any = 'USDT',
+    market: Any = None,
+) -> str:
+    normalized_currency = str(fallback_currency or '').strip().upper()
+    if normalized_currency in {'USDT', 'USDC', 'BUSD', 'USD'}:
+        return normalized_currency
+
+    normalized_market = str(market or '').strip().lower()
+    if normalized_market not in {'spot', 'futures'}:
+        normalized_market = _resolve_binance_account_market_hint(market)
+
+    if normalized_market in {'spot', 'futures'}:
+        return 'USDT'
+    return 'USDT'
+
+
 def _normalize_broker_credential_label(
     label: Any,
     broker_name: Any,
@@ -23499,6 +24170,75 @@ def _get_bot_thread_credentials(bot_config: Dict[str, Any]) -> Optional[Dict[str
         return None
 
 
+def _get_bot_runtime_manager(bot_config: Optional[Dict[str, Any]]):
+    bot_config = bot_config or {}
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
+    if broker_name == 'Binance' and binance_worker_pool_manager and binance_worker_pool_manager.enabled:
+        return binance_worker_pool_manager
+    if is_mt5_broker_name(broker_name) and worker_pool_manager and worker_pool_manager.enabled:
+        return worker_pool_manager
+    return None
+
+
+def _queue_or_launch_bot_runtime(
+    bot_id: str,
+    user_id: str,
+    bot_config: Dict[str, Any],
+    bot_credentials: Optional[Dict[str, Any]] = None,
+    *,
+    startup_delay: float = 0.0,
+    log_label: str = 'Bot',
+) -> str:
+    bot_id = str(bot_id or '').strip()
+    user_id = str(user_id or bot_config.get('user_id') or '').strip()
+    manager = _get_bot_runtime_manager(bot_config)
+    if bot_credentials is None:
+        bot_credentials = _get_bot_thread_credentials(bot_config)
+
+    if manager and manager.dispatch_bot(bot_id, user_id, bot_config, bot_credentials or {}):
+        if manager is binance_worker_pool_manager:
+            logger.info(f"🚀 {log_label} {bot_id}: Dispatched to Binance worker pool")
+            return 'binance-worker'
+        logger.info(f"🚀 {log_label} {bot_id}: Dispatched to worker pool")
+        return 'worker-pool'
+
+    if bot_id in bot_threads and bot_threads[bot_id].is_alive():
+        return 'local-thread'
+
+    def _run_bot_locally():
+        try:
+            if startup_delay > 0:
+                time.sleep(float(startup_delay))
+            continuous_bot_trading_loop(bot_id, user_id, bot_credentials or None)
+        except Exception as e:
+            clear_bot_start_pending(bot_id)
+            running_bots[bot_id] = False
+            logger.error(f"Error starting {log_label.lower()} {bot_id}: {e}")
+
+    bot_thread = threading.Thread(
+        target=_run_bot_locally,
+        daemon=True,
+        name=f"BotThread-{bot_id}",
+    )
+    bot_threads[bot_id] = bot_thread
+    bot_thread.start()
+    logger.info(f"🚀 {log_label} {bot_id}: Background thread launched")
+    return 'local-thread'
+
+
+def _stop_bot_in_runtime(bot_id: str, bot_config: Optional[Dict[str, Any]]) -> bool:
+    manager = _get_bot_runtime_manager(bot_config)
+    if manager and manager.stop_bot(bot_id):
+        if manager is binance_worker_pool_manager:
+            logger.info(f"🛑 Bot {bot_id}: Stop dispatched to Binance worker pool")
+        else:
+            logger.info(f"🛑 Bot {bot_id}: Stop dispatched to worker pool")
+        return True
+    return False
+
+
 def _build_binance_market_connection_from_existing(
     existing_connection,
     target_market: str,
@@ -23644,6 +24384,10 @@ def start_enabled_bots_on_startup():
     for bot_id, bot_config in list(active_bots.items()):
         if not bot_config.get('enabled'):
             continue
+
+        if not _should_auto_restart_bot_for_mode(bot_id, bot_config, 'startup auto-restart'):
+            continue
+
         if bot_id in bot_threads and bot_threads[bot_id].is_alive():
             continue
         if BOT_STARTUP_RESTART_LIMIT and restarted_bots >= BOT_STARTUP_RESTART_LIMIT:
@@ -23665,29 +24409,57 @@ def start_enabled_bots_on_startup():
         elif _clear_stale_last_pause_event(bot_config):
             persist_bot_runtime_state(bot_id)
 
-        bot_thread = threading.Thread(
-            target=continuous_bot_trading_loop,
-            args=(bot_id, bot_config.get('user_id'), bot_credentials),
-            daemon=True,
-            name=f"BotThread-{bot_id}",
+        _queue_or_launch_bot_runtime(
+            bot_id,
+            bot_config.get('user_id'),
+            bot_config,
+            bot_credentials,
+            log_label='Bot',
         )
-        bot_threads[bot_id] = bot_thread
-        bot_thread.start()
         restarted_bots += 1
         logger.info(f"♻️ Restarted bot {bot_id} from persisted runtime state")
-        if BOT_STARTUP_RESTART_DELAY_SECONDS > 0:
-            # Add small random jitter (0-5s) so bots don't all hit the MT5 lock in sync
-            jitter = random.uniform(0, 5)
-            time.sleep(BOT_STARTUP_RESTART_DELAY_SECONDS + jitter)
+        broker_name = canonicalize_broker_name(bot_config.get('brokerName') or bot_config.get('broker_type') or '')
+        restart_delay_seconds = BOT_STARTUP_RESTART_DELAY_SECONDS
+        if broker_name == 'Binance':
+            restart_delay_seconds = BINANCE_BOT_STARTUP_RESTART_DELAY_SECONDS
+
+        if restart_delay_seconds > 0:
+            if broker_name == 'Binance':
+                time.sleep(restart_delay_seconds)
+            else:
+                # Add small random jitter so MT5 bots do not all contend for the terminal lock in sync.
+                jitter = random.uniform(0, 5)
+                time.sleep(restart_delay_seconds + jitter)
 
     return restarted_bots
 
 
+def _resolve_bot_runtime_mode(bot_config: Optional[Dict[str, Any]]) -> str:
+    bot_config = bot_config or {}
+    bot_mode = str(bot_config.get('mode') or '').strip().lower()
+    if bot_mode in {'live', 'demo'}:
+        return bot_mode
+
+    normalized_broker = canonicalize_broker_name(bot_config.get('brokerName') or bot_config.get('broker_type') or '')
+    normalized_server = bot_config.get('server') or bot_config.get('broker_server')
+    effective_is_live = bool(normalize_mt5_is_live_flag(normalized_broker, bot_config.get('is_live'), normalized_server))
+    return 'live' if effective_is_live else 'demo'
+
+
+def _should_auto_restart_bot_for_mode(bot_id: str, bot_config: Optional[Dict[str, Any]], restart_reason: str) -> bool:
+    bot_mode = _resolve_bot_runtime_mode(bot_config)
+    if AUTO_RESTART_BOTS_MODE_FILTER != 'all' and bot_mode != AUTO_RESTART_BOTS_MODE_FILTER:
+        logger.info(
+            f"⏭️ Skipping bot {bot_id} during {restart_reason} because mode={bot_mode} does not match "
+            f"AUTO_RESTART_BOTS_MODE_FILTER={AUTO_RESTART_BOTS_MODE_FILTER}"
+        )
+        return False
+    return True
+
+
 def stop_bot_runtime(bot_id: str, bot_config: Dict[str, Any]) -> Dict[str, Any]:
-    # If worker pool is active, send stop via worker queue
-    if worker_pool_manager and worker_pool_manager.enabled:
-        worker_pool_manager.stop_bot(bot_id)
-        logger.info(f"🛑 Bot {bot_id}: Stop dispatched to worker pool")
+    if _stop_bot_in_runtime(bot_id, bot_config):
+        pass
     elif bot_id in bot_threads and bot_threads[bot_id].is_alive():
         logger.info(f"🛑 Bot {bot_id}: Stopping background trading thread...")
         bot_stop_flags[bot_id] = True
@@ -23731,22 +24503,30 @@ def _ensure_enabled_bot_runtime(bot_id: str) -> Optional[Dict[str, Any]]:
 
     runtime_bot = active_bots.get(bot_id)
     if runtime_bot is not None:
+        # Guard: skip re-dispatch if the bot is already running in a worker pool.
+        # Worker-pool bots never register in bot_threads, so the normal alive-check
+        # always evaluates to True and would cause repeated duplicate dispatches.
+        # A bot is worker-pool-running when running_bots[bot_id] is True AND there
+        # is no local bot_threads entry (i.e. it lives in the pool, not a thread).
+        _already_in_pool = running_bots.get(bot_id) and bot_id not in bot_threads
         if (
             runtime_bot.get('enabled')
+            and not _already_in_pool
             and (bot_id not in bot_threads or not bot_threads[bot_id].is_alive())
             and not is_bot_start_pending(bot_id)
         ):
+            if not _should_auto_restart_bot_for_mode(bot_id, runtime_bot, 'on-demand runtime restore'):
+                return runtime_bot
             bot_stop_flags[bot_id] = False
             running_bots[bot_id] = True
             bot_credentials = _get_bot_thread_credentials(runtime_bot)
-            bot_thread = threading.Thread(
-                target=continuous_bot_trading_loop,
-                args=(bot_id, runtime_bot.get('user_id'), bot_credentials),
-                daemon=True,
-                name=f"BotThread-{bot_id}",
+            _queue_or_launch_bot_runtime(
+                bot_id,
+                runtime_bot.get('user_id'),
+                runtime_bot,
+                bot_credentials,
+                log_label='Bot',
             )
-            bot_threads[bot_id] = bot_thread
-            bot_thread.start()
             logger.info(f"♻️ Bot {bot_id}: restarted missing runtime thread on demand")
         return runtime_bot
 
@@ -23757,18 +24537,20 @@ def _ensure_enabled_bot_runtime(bot_id: str) -> Optional[Dict[str, Any]]:
     restored_bot = _restore_bot_runtime_state(db_row)
     active_bots[bot_id] = restored_bot
 
-    if restored_bot.get('enabled') and not is_bot_start_pending(bot_id):
+    _already_in_pool = running_bots.get(bot_id) and bot_id not in bot_threads
+    if restored_bot.get('enabled') and not is_bot_start_pending(bot_id) and not _already_in_pool:
+        if not _should_auto_restart_bot_for_mode(bot_id, restored_bot, 'on-demand runtime restore'):
+            return restored_bot
         bot_stop_flags[bot_id] = False
         running_bots[bot_id] = True
         bot_credentials = _get_bot_thread_credentials(restored_bot)
-        bot_thread = threading.Thread(
-            target=continuous_bot_trading_loop,
-            args=(bot_id, restored_bot.get('user_id'), bot_credentials),
-            daemon=True,
-            name=f"BotThread-{bot_id}",
+        _queue_or_launch_bot_runtime(
+            bot_id,
+            restored_bot.get('user_id'),
+            restored_bot,
+            bot_credentials,
+            log_label='Bot',
         )
-        bot_threads[bot_id] = bot_thread
-        bot_thread.start()
         logger.info(f"♻️ Bot {bot_id}: restored from DB and restarted on demand")
 
     return restored_bot
@@ -23799,6 +24581,7 @@ def load_user_bots_from_database(enabled_only: bool = False):
                         bcr.broker_name,
                         bcr.account_number,
                         bcr.is_live,
+                        ub.is_live AS bot_is_live,
                         bcr.account_currency,
                         bcr.cached_balance,
                         bcr.cached_equity
@@ -24488,20 +25271,77 @@ def update_bot_config(bot_id):
         mode = 'live' if is_live else 'demo'
         cached_balance = _safe_float(credential_data.get('cached_balance'))
         cached_margin_free = _safe_float(credential_data.get('cached_margin_free'))
+        user_mode_preferences = _get_user_trading_mode_preferences(cursor, user_id)
 
-        requested_mode = data.get('mode') or data.get('botMode')
-        if requested_mode is not None:
-            requested_mode = str(requested_mode).strip().lower()
-        elif 'is_live' in data:
-            requested_mode = 'live' if bool(data.get('is_live')) else 'demo'
-
+        requested_mode, explicit_mode_supplied = _resolve_requested_bot_mode(
+            data,
+            user_id,
+            mode.upper(),
+        )
+        used_selected_credential_mode = False
         if requested_mode and requested_mode not in ['demo', 'live']:
             return jsonify({'success': False, 'error': 'mode must be either "demo" or "live"'}), 400
-        if requested_mode and requested_mode != mode:
-            return jsonify({
-                'success': False,
-                'error': f'Credential mode mismatch: credential is {mode} but request mode is {requested_mode}. Use the correct credentialId for demo or live accounts.'
-            }), 400
+        if requested_mode != mode:
+            if explicit_mode_supplied:
+                logger.warning(
+                    f"Bot config update mode {requested_mode} did not match selected credential {credential_id} ({mode}); "
+                    f"using credential mode to keep the bot on the chosen account"
+                )
+            else:
+                logger.info(
+                    f"Bot config update fell back to saved preferences, but selected credential {credential_id} is {mode}; "
+                    f"keeping the bot on that credential"
+                )
+                used_selected_credential_mode = True
+            requested_mode = mode
+
+        preferred_account_for_mode = ''
+        if requested_mode == 'live':
+            preferred_account_for_mode = user_mode_preferences.get('live_account', '')
+
+        resolved_credential = _resolve_active_broker_credential_for_bot(
+            user_id,
+            broker_name,
+            preferred_account_for_mode or None,
+            requested_mode,
+            credential_id,
+        )
+        if resolved_credential:
+            resolved_credential_id = str(resolved_credential.get('credential_id') or '').strip()
+            resolved_broker_name = resolved_credential.get('broker_name') or broker_name
+            resolved_account_number = resolved_credential.get('account_number') or account_number
+            resolved_is_live = bool(normalize_mt5_is_live_flag(
+                canonicalize_broker_name(resolved_broker_name),
+                resolved_credential.get('is_live'),
+                resolved_credential.get('server'),
+            ))
+            resolved_mode = 'live' if resolved_is_live else 'demo'
+
+            if resolved_credential_id and resolved_credential_id != credential_id:
+                logger.info(
+                    f"Bot config update remapped credential {credential_id} -> {resolved_credential_id} "
+                    f"for requested mode {requested_mode} (account {resolved_account_number})"
+                )
+                credential_id = resolved_credential_id
+                credential_data = resolved_credential
+                broker_name = resolved_broker_name
+                account_number = resolved_account_number
+                is_live = resolved_is_live
+                mode = resolved_mode
+                cached_balance = _safe_float(credential_data.get('cached_balance'))
+                cached_margin_free = _safe_float(credential_data.get('cached_margin_free'))
+
+        if not explicit_mode_supplied:
+            if used_selected_credential_mode:
+                logger.info(
+                    f"Bot config update did not specify mode; using selected credential mode {requested_mode} "
+                    f"for user {user_id}"
+                )
+            else:
+                logger.info(
+                    f"Bot config update did not specify mode; using saved user trading mode {requested_mode} "
+                    f"for user {user_id}"
+                )
 
         if canonicalize_broker_name(broker_name) == 'Binance':
             # Only validate Binance credentials when the credential_id is being changed.
@@ -26259,12 +27099,20 @@ def should_trade_today(bot_config, symbol):
     session_perf = _evaluate_session_hour_performance(bot_config, now)
     active_session_perf = session_perf.get('activeSession') if isinstance(session_perf, dict) else {}
     active_hour_perf = session_perf.get('activeHour') if isinstance(session_perf, dict) else {}
+    temporal_override_signal = _safe_float(
+        exness_runtime_risk.get('sessionPerfStrongOverrideSignal'),
+        SESSION_PERF_STRONG_OVERRIDE_SIGNAL,
+    )
+    temporal_override_score = _safe_float(
+        exness_runtime_risk.get('sessionPerfStrongOverrideScore'),
+        SESSION_PERF_STRONG_OVERRIDE_SCORE,
+    )
     temporal_override = (
         current_signal_direction in {'BUY', 'SELL'}
         and not open_positions
         and current_trend in {'UP', 'DOWN'}
-        and current_signal_strength >= SESSION_PERF_STRONG_OVERRIDE_SIGNAL
-        and _safe_float(setup_eval.get('score'), 0.0) >= SESSION_PERF_STRONG_OVERRIDE_SCORE
+        and current_signal_strength >= temporal_override_signal
+        and _safe_float(setup_eval.get('score'), 0.0) >= temporal_override_score
     )
     if current_signal_direction in {'BUY', 'SELL'}:
         if isinstance(active_session_perf, dict) and active_session_perf.get('verdict') == 'blocked':
@@ -27949,18 +28797,27 @@ def is_bot_start_pending(bot_id: str, max_age_seconds: float = 45.0) -> bool:
         return False
     return True
 
-def get_running_bot_count(exclude_bot_id: str = None) -> int:
+def get_running_bot_count(exclude_bot_id: str = None, broker_name: Optional[str] = None) -> int:
     """Count currently active bot loops using runtime flags and thread liveness."""
     active_count = 0
+    normalized_broker_name = canonicalize_broker_name(broker_name) if broker_name else None
     for current_bot_id, is_running in list(running_bots.items()):
         if exclude_bot_id and current_bot_id == exclude_bot_id:
             continue
-        if is_running:
+        if not is_running:
+            thread_obj = bot_threads.get(current_bot_id)
+            if not (thread_obj and thread_obj.is_alive()):
+                continue
+        if normalized_broker_name:
+            current_bot = active_bots.get(current_bot_id) or {}
+            current_broker_name = canonicalize_broker_name(
+                current_bot.get('brokerName') or current_bot.get('broker_type') or ''
+            )
+            if current_broker_name != normalized_broker_name:
+                continue
             active_count += 1
             continue
-        thread_obj = bot_threads.get(current_bot_id)
-        if thread_obj and thread_obj.is_alive():
-            active_count += 1
+        active_count += 1
     return active_count
 
 # ==================== CONNECTION CACHING (Performance Optimization) ====================
@@ -29019,11 +29876,12 @@ def test_broker_connection():
                     'is_live': is_live,
                     'path': mt5_terminal_path,
                     'is_manual_test': True,
-                    # Keep well below Flutter's 45s HTTP timeout. MT5 lock wait (5s) +
-                    # initialize() thread timeout (15s) = 20s max, leaving headroom for
+                    # Keep well below Flutter's 45s HTTP timeout. 
+                    # Increased timeouts for Exness futures: IPC takes longer to initialize (-10014 future not completed)
+                    # MT5 lock wait (8s for futures) + initialize() thread timeout (20s) = 28s max, leaving headroom for
                     # DB saves and response serialisation.
-                    'lock_timeout': 5,
-                    'init_timeout': 15,
+                    'lock_timeout': 8,
+                    'init_timeout': 20,
                 })
 
                 if quick_test_conn.connect():
@@ -29291,29 +30149,19 @@ def test_broker_connection():
                         'while the terminal is attached to another account.'
                     )
 
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS user_preferences (
-                        user_id TEXT PRIMARY KEY,
-                        trading_mode TEXT DEFAULT 'DEMO',
-                        live_account TEXT,
-                        live_server TEXT,
-                        updated_at TEXT
-                    )
-                ''')
+                ensure_user_preferences_table(cursor)
                 cursor.execute('SELECT trading_mode FROM user_preferences WHERE user_id = ?', (user_id,))
                 preference_row = cursor.fetchone()
                 current_mode = ((preference_row['trading_mode'] if preference_row else 'DEMO') or 'DEMO').upper()
 
-                cursor.execute('''
-                    (user_id, trading_mode, live_account, live_server, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (
+                save_user_preferences(
+                    cursor,
                     user_id,
-                    current_mode,
-                    account if is_live else None,
-                    server if is_live else None,
-                    datetime.now().isoformat(),
-                ))
+                    trading_mode=current_mode,
+                    live_account=account if is_live else None,
+                    live_server=server if is_live else None,
+                    updated_at=datetime.now().isoformat(),
+                )
                 conn.commit()
 
                 if broker == 'Exness':
@@ -30649,7 +31497,7 @@ SCANNER_CAPITAL_LIVE_MAX_BOOST = 10.0  # 🚀 Increased from 1.6 to 10.0 for agg
 SCANNER_CAPITAL_GUARDED_LIVE_MAX_BOOST = 10.0  # 🚀 Increased from 1.15 to 10.0
 SCANNER_CAPITAL_ABSOLUTE_MAX_BOOST = 100.0  # 🚀 Increased from 10.0 to 100.0 (only capital-limited)
 BINANCE_FUTURES_MAX_LEVERAGE = 125
-BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE = 20   # baseline — defensive 50% halving = 10x minimum
+BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE = 2    # baseline — small accounts need safety (2x for $50-500, 3x for $500+)
 BINANCE_FUTURES_DEFAULT_PEAK_LEVERAGE = 25   # max when in hot/profitable regime
 BINANCE_FUTURES_MIN_LEVERAGE = 10            # hard floor — never go below this regardless of state
 UPSWING_SCALE_MIN_OPEN_PROFIT = 2.0
@@ -31737,6 +32585,30 @@ def _default_signal_threshold_for_broker_profile(
 
     return default_threshold
 
+
+def _default_setup_score_for_broker_profile(
+    management_profile: Any,
+    broker_name: Any,
+    mode: Any = None,
+    management_mode: Any = None,
+) -> float:
+    normalized_profile = _normalize_management_profile(management_profile)
+    normalized_broker = canonicalize_broker_name(broker_name)
+    normalized_mode = str(mode or '').strip().lower()
+    normalized_management_mode = str(management_mode or 'assisted').strip().lower()
+
+    if normalized_broker == 'Binance':
+        if normalized_mode == 'live':
+            return 5.5 if normalized_management_mode == 'manual' else 6.0
+        return 5.5 if normalized_management_mode == 'manual' else 6.5
+
+    if normalized_broker == 'Exness' and normalized_mode == 'live':
+        if normalized_profile in {'advanced', 'fast_growth'}:
+            return 5.5 if normalized_management_mode == 'manual' else 6.0
+        return 6.0 if normalized_management_mode == 'manual' else 6.5
+
+    return 7.0
+
 SUPPORTED_DISPLAY_CURRENCIES = {'USD', 'ZAR', 'GBP'}
 SMALL_LIVE_ACCOUNT_THRESHOLDS = {
     'USD': 100.0,
@@ -31830,6 +32702,10 @@ def _fetch_binance_top_movers(spot: bool = True) -> List[str]:
             base = sym[:-4]  # strip USDT
             if base in _TOP_MOVERS_EXCLUDE_BASES:
                 continue
+            # Skip non-ASCII / non-alphanumeric bases (e.g. exotic CJK-named pairs)
+            # that cannot be routed or sized by the trading engine.
+            if not base or not sym.isascii() or not base.isalnum():
+                continue
             try:
                 pct = abs(float(t.get('priceChangePercent') or 0))
                 vol = float(t.get('quoteVolume') or 0)  # already in USDT
@@ -31877,6 +32753,10 @@ def _fetch_binance_top_movers_with_data(spot: bool = True) -> Dict[str, Dict[str
                 continue
             base = sym[:-4]
             if base in _TOP_MOVERS_EXCLUDE_BASES:
+                continue
+            # Skip non-ASCII / non-alphanumeric bases (e.g. exotic CJK-named pairs)
+            # that cannot be routed or sized by the trading engine.
+            if not base or not sym.isascii() or not base.isalnum():
                 continue
             try:
                 raw_pct = float(t.get('priceChangePercent') or 0)
@@ -31947,15 +32827,15 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'portfolioActivationMinProfit': 3.0,
     'closeLosingPositionsWithProfitablePeers': True,
     'loserRotationMinLoss': 0.0,
-    'peakProfitHardLockShare': 0.90,  # Trigger hard lock at 90% drop from peak (was 0.95)
+    'peakProfitHardLockShare': 0.92,  # Trigger hard lock at 92% drop from peak (was 0.90 - tighter to lock sooner)
     'minLockedProfit': 5.0,           # Always lock $5 profit floor (was 0.0)
     'marginTakeProfitPercent': 0.0,   # Disabled — was 30.0 (MARGIN_TAKE_PROFIT 30% rule removed)
-    'retraceClosePercent': 10.0,      # Tighter trailing stop — keep 90% of peak (was 5.0 default, 22 in runtime)
+    'retraceClosePercent': 5.0,       # AGGRESSIVE trailing stop — close at 95% of peak (was 10.0, was losing too much)
     'switchOnReversal': True,
     'adaptiveByVolatility': True,
     'breakEvenLockEnabled': True,
     'breakEvenBufferProfit': 10.0,    # Close at $10 min profit to cover fees (was 0.5)
-    'breakEvenActivationShare': 0.30, # Arm protection at 30% of peak not 50% (was 0.5)
+    'breakEvenActivationShare': 0.25, # Arm protection at 25% of peak not 30% (closes sooner to lock gains)
     'protectedSymbolCooldownMinutes': 5.0,
     'zeroLossLockEnabled': True,      # Close immediately when a previously-profitable trade returns to 0
     'neverNegativeAfterProfitEnabled': True,
@@ -33313,6 +34193,15 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         )
         protection_hold_satisfied = time_in_position >= protection_min_hold_minutes
         early_profit_exit_allowed = protection_hold_satisfied or not (is_exness_forex_position or is_exness_index_runner_position)
+        # Portfolio loser rotation is allowed to bypass the full protection hold when
+        # stronger peers are active, but Exness live forex/index positions still need a
+        # short minimum age so spread noise does not create instant open/close churn.
+        loser_rotation_min_age_minutes = 0.0
+        if is_exness_forex_position:
+            loser_rotation_min_age_minutes = 3.0 if base_symbol in {'GBPUSD', 'AUDUSD'} else 5.0
+        elif is_exness_index_runner_position:
+            loser_rotation_min_age_minutes = 5.0
+        loser_rotation_age_satisfied = time_in_position >= loser_rotation_min_age_minutes
         loser_rotation_min_loss = max(0.0, _safe_float(effective_protection.get('loserRotationMinLoss'), 0.0))
         loser_rotation_loss_reached = (
             current_profit <= -loser_rotation_min_loss
@@ -33335,6 +34224,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         if (
             not close_reason
             and loser_rotation_armed
+            and loser_rotation_age_satisfied
             and loser_rotation_loss_reached
             and (protection_hold_satisfied or profitable_focus_ready)
             and not _recent_close_request(tracked)
@@ -34160,6 +35050,16 @@ LIVE_CAPITAL_SAFETY_BANDS = [
         'signalFloor': 45,
         'allowedVolatility': ['Very Low', 'Low', 'Medium', 'High'],
     },
+    {
+        'name': 'micro_guard',
+        'min_zar': 0,  # CATCHES ALL ACCOUNTS - starts from $0
+        'riskPerTradeCap': 15.0,  # 1.5% risk max for micro accounts
+        'dailyLossPct': 0.025,  # 2.5% of account daily loss limit
+        'maxOpenPositions': 1,  # Only 1 position at a time
+        'maxPositionsPerSymbol': 1,
+        'signalFloor': 40,  # Lower threshold for signal quality
+        'allowedVolatility': ['Very Low', 'Low'],  # Only safest volatility
+    },
 ]
 
 
@@ -34204,6 +35104,8 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
         'sameDirectionLossCooldownMinutes': 8.0,
         'symbolChurnCooldownMinutes': 4.0,
         'symbolChurnCooldownWithOpenPositionsMinutes': 8.0,
+        'sessionPerfStrongOverrideSignal': SESSION_PERF_STRONG_OVERRIDE_SIGNAL,
+        'sessionPerfStrongOverrideScore': SESSION_PERF_STRONG_OVERRIDE_SCORE,
         'lossStreakPauseAfter': LOSS_STREAK_PAUSE_AFTER,
         'lossStreakPauseMinutes': LOSS_STREAK_PAUSE_MINUTES,
         'lossStreakHardPauseAfter': LOSS_STREAK_HARD_PAUSE_AFTER,
@@ -34219,6 +35121,8 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
             'sameDirectionLossCooldownMinutes': 10.0,
             'symbolChurnCooldownMinutes': 5.0,
             'symbolChurnCooldownWithOpenPositionsMinutes': 10.0,
+            'sessionPerfStrongOverrideSignal': 86.0,
+            'sessionPerfStrongOverrideScore': 6.5,
             'lossStreakPauseAfter': 2,
             'lossStreakPauseMinutes': 30,
             'lossStreakHardPauseAfter': 4,
@@ -34232,6 +35136,8 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
             'sameDirectionLossCooldownMinutes': 8.0,
             'symbolChurnCooldownMinutes': 4.0,
             'symbolChurnCooldownWithOpenPositionsMinutes': 8.0,
+            'sessionPerfStrongOverrideSignal': 84.0,
+            'sessionPerfStrongOverrideScore': 6.8,
             'lossStreakPauseAfter': 3,
             'lossStreakPauseMinutes': 20,
             'lossStreakHardPauseAfter': 5,
@@ -34245,6 +35151,8 @@ def _resolve_exness_runtime_risk_profile(bot_config: Dict[str, Any]) -> Dict[str
             'sameDirectionLossCooldownMinutes': 6.0,
             'symbolChurnCooldownMinutes': 4.0,
             'symbolChurnCooldownWithOpenPositionsMinutes': 7.0,
+            'sessionPerfStrongOverrideSignal': 82.0,
+            'sessionPerfStrongOverrideScore': 7.2,
             'lossStreakPauseAfter': 3,
             'lossStreakPauseMinutes': 15,
             'lossStreakHardPauseAfter': 5,
@@ -36082,13 +36990,11 @@ def create_bot():
         if not user_row:
             return jsonify({'success': False, 'error': 'User not found'}), 404
 
-        cursor.execute('''
-            SELECT credential_id, broker_name, account_number, username, is_live, api_key, password, server, is_active,
-                   account_currency, cached_balance, cached_margin_free
-            FROM broker_credentials
-            WHERE credential_id = ? AND user_id = ?
-        ''', (credential_id, user_id))
-        credential_row = cursor.fetchone()
+        credential_row = _resolve_requested_broker_credential_for_user(
+            user_id,
+            credential_id,
+            data.get('broker') or data.get('broker_name'),
+        )
         if not credential_row:
             return jsonify({'success': False, 'error': f'Broker credential {credential_id} not found or does not belong to this user'}), 404
 
@@ -36096,6 +37002,7 @@ def create_bot():
             return jsonify({'success': False, 'error': 'This broker credential has been deactivated. Please use an active credential.'}), 400
 
         credential_data = dict(credential_row)
+        credential_id = str(credential_data.get('credential_id') or credential_id).strip()
         broker_name = credential_data['broker_name']
         normalized_broker_name = canonicalize_broker_name(broker_name)
         account_number = credential_data['account_number']
@@ -36103,31 +37010,120 @@ def create_bot():
         mode = 'live' if is_live else 'demo'
         cached_balance = _safe_float(credential_data.get('cached_balance'))
         cached_margin_free = _safe_float(credential_data.get('cached_margin_free'))
+        user_mode_preferences = _get_user_trading_mode_preferences(cursor, user_id)
+        saved_trading_mode = str(user_mode_preferences.get('trading_mode') or 'DEMO').upper()
+        saved_live_account = str(user_mode_preferences.get('live_account') or '').strip()
 
         with bot_creation_guard(
             requires_lock=is_mt5_broker_name(normalized_broker_name),
             label=f'create:{normalized_broker_name}:{credential_id}',
         ):
 
-            # The request should explicitly state the intended mode to avoid demo/live credential mixups.
-            requested_mode = data.get('mode') or data.get('botMode')
-            if requested_mode is not None:
-                requested_mode = str(requested_mode).strip().lower()
-            elif 'is_live' in data:
-                requested_mode = 'live' if bool(data.get('is_live')) else 'demo'
+            # If the dashboard is in LIVE mode but the client posts a stale demo MT5 credential,
+            # prefer the saved live account to avoid creating a live-intended bot on demo.
+            if (
+                is_mt5_broker_name(normalized_broker_name)
+                and saved_trading_mode == 'LIVE'
+                and saved_live_account
+                and not bool(normalize_mt5_is_live_flag(normalized_broker_name, is_live, credential_data.get('server')))
+            ):
+                preferred_live_credential = _resolve_active_broker_credential_for_bot(
+                    user_id,
+                    broker_name,
+                    saved_live_account,
+                    'live',
+                    '',
+                )
+                if preferred_live_credential:
+                    preferred_live_credential_id = str(preferred_live_credential.get('credential_id') or '').strip()
+                    preferred_live_account_number = str(preferred_live_credential.get('account_number') or '').strip()
+                    logger.warning(
+                        f"Bot create received MT5 credential {credential_id} in demo mode while user {user_id} "
+                        f"has saved LIVE account {saved_live_account}; overriding to credential "
+                        f"{preferred_live_credential_id or '[unknown]'} ({preferred_live_account_number or saved_live_account})"
+                    )
+                    credential_id = preferred_live_credential_id or credential_id
+                    credential_data = preferred_live_credential
+                    broker_name = preferred_live_credential.get('broker_name') or broker_name
+                    normalized_broker_name = canonicalize_broker_name(broker_name)
+                    account_number = preferred_live_account_number or account_number
+                    is_live = bool(normalize_mt5_is_live_flag(
+                        normalized_broker_name,
+                        preferred_live_credential.get('is_live'),
+                        preferred_live_credential.get('server'),
+                    ))
+                    mode = 'live' if is_live else 'demo'
+                    cached_balance = _safe_float(credential_data.get('cached_balance'))
+                    cached_margin_free = _safe_float(credential_data.get('cached_margin_free'))
 
+            # Resolve the requested mode, but keep the selected credential authoritative.
+            # Some clients send a stale dashboard mode even when the user picked a specific account.
+            requested_mode, explicit_mode_supplied = _resolve_requested_bot_mode(data, user_id)
+            used_selected_credential_mode = False
             if requested_mode and requested_mode not in ['demo', 'live']:
                 return jsonify({'success': False, 'error': 'mode must be either "demo" or "live"'}), 400
-
-            if requested_mode and requested_mode != mode:
-                return jsonify({
-                    'success': False,
-                    'error': f'Credential mode mismatch: credential is {mode} but request mode is {requested_mode}. Use the correct credentialId for demo or live accounts.'
-                }), 400
-
-            if not requested_mode:
+            if requested_mode != mode:
+                if explicit_mode_supplied:
+                    logger.warning(
+                        f"Bot create request mode {requested_mode} did not match selected credential {credential_id} ({mode}); "
+                        f"using credential mode to avoid remapping the bot to the wrong account"
+                    )
+                else:
+                    logger.info(
+                        f"Bot create request omitted mode or fell back to saved preferences; selected credential {credential_id} "
+                        f"is {mode}, so bot creation will stay on that credential"
+                    )
+                    used_selected_credential_mode = True
                 requested_mode = mode
-                logger.info(f"Bot create request did not specify mode; inferring mode={requested_mode} from credential {credential_id}")
+
+            preferred_account_for_mode = ''
+            if requested_mode == 'live':
+                preferred_account_for_mode = user_mode_preferences.get('live_account', '')
+
+            resolved_credential = _resolve_active_broker_credential_for_bot(
+                user_id,
+                broker_name,
+                preferred_account_for_mode or None,
+                requested_mode,
+                credential_id,
+            )
+            if resolved_credential:
+                resolved_credential_id = str(resolved_credential.get('credential_id') or '').strip()
+                resolved_broker_name = resolved_credential.get('broker_name') or broker_name
+                resolved_account_number = resolved_credential.get('account_number') or account_number
+                resolved_is_live = bool(normalize_mt5_is_live_flag(
+                    canonicalize_broker_name(resolved_broker_name),
+                    resolved_credential.get('is_live'),
+                    resolved_credential.get('server'),
+                ))
+                resolved_mode = 'live' if resolved_is_live else 'demo'
+
+                if resolved_credential_id and resolved_credential_id != credential_id:
+                    logger.info(
+                        f"Bot create remapped credential {credential_id} -> {resolved_credential_id} "
+                        f"for requested mode {requested_mode} (account {resolved_account_number})"
+                    )
+                    credential_id = resolved_credential_id
+                    credential_data = resolved_credential
+                    broker_name = resolved_broker_name
+                    normalized_broker_name = canonicalize_broker_name(broker_name)
+                    account_number = resolved_account_number
+                    is_live = resolved_is_live
+                    mode = resolved_mode
+                    cached_balance = _safe_float(credential_data.get('cached_balance'))
+                    cached_margin_free = _safe_float(credential_data.get('cached_margin_free'))
+
+            if not explicit_mode_supplied:
+                if used_selected_credential_mode:
+                    logger.info(
+                        f"Bot create request did not specify mode; using selected credential mode {requested_mode} "
+                        f"for user {user_id}"
+                    )
+                else:
+                    logger.info(
+                        f"Bot create request did not specify mode; using saved user trading mode {requested_mode} "
+                        f"for user {user_id}"
+                    )
 
             if normalized_broker_name == 'FXCM':
                 username = str(credential_data.get('username') or '').strip()
@@ -36188,8 +37184,7 @@ def create_bot():
                 merged_bot_data['maxDrawdownPercent'] = saved_risk_settings['max_drawdown_percent']
 
             # Bot configuration
-            import time
-            bot_id = data.get('botId') or f"bot_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+            bot_id = str(data.get('botId') or '').strip() or _generate_persisted_bot_id('bot')
             auto_start = data.get('autoStart', True)  # ✅ ENABLED: Bots start automatically after creation
             if isinstance(auto_start, str):
                 auto_start = auto_start.lower() in ['true', '1', 'yes', 'y']
@@ -36215,6 +37210,9 @@ def create_bot():
             
             # ✅ GET ACCOUNT CURRENCY from credentials (demo USD vs live ZAR)
             account_currency = credential_data.get('account_currency', 'USD').upper()
+            # Binance always trades in USDT — never inherit ZAR from a linked MT5/Exness credential
+            if canonicalize_broker_name(broker_name) == 'Binance' and account_currency not in ('USDT', 'USDC', 'BUSD', 'USD'):
+                account_currency = 'USDT'
             live_balance_basis = max(cached_balance, cached_margin_free)
             effective_data, symbols, guard_warnings, small_account_guard = enforce_small_live_account_guard(
                 merged_bot_data,
@@ -36374,129 +37372,29 @@ def create_bot():
             status = 'active'
 
             try:
-                def _save_bot_records_once():
-                    nonlocal conn, cursor, bot_id
-                    if conn:
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
-                    conn = get_bot_create_db_connection()
-                    cursor = conn.cursor()
-
-                    bot_create_saved = False
-                    for bot_create_attempt in range(4):
-                        try:
-                            logger.info(
-                                f"🔒 [BOT INSERT LOCK] Acquiring immediate write lock for {bot_id}... "
-                                f"(attempt {bot_create_attempt + 1}/4)"
-                            )
-                            cursor.execute('BEGIN IMMEDIATE')
-
-                            cursor.execute('SELECT bot_id FROM user_bots WHERE bot_id = ?', (bot_id,))
-                            if cursor.fetchone():
-                                logger.warning(f"Bot ID {bot_id} already exists, regenerating...")
-                                bot_id = f"bot_{int(time.time() * 1000) + 1}_{uuid.uuid4().hex[:8]}"
-
-                            logger.info(
-                                f"🔧 [BOT INSERT] Inserting bot {bot_id} for user {user_id} into user_bots table... "
-                                f"(attempt {bot_create_attempt + 1}/4)"
-                            )
-                            cursor.execute('''
-                                INSERT INTO user_bots (bot_id, user_id, name, strategy, status, enabled, broker_account_id, symbols, is_live, created_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (bot_id, user_id, data.get('name', strategy), strategy, status, 1 if trading_enabled else 0, account_id, ','.join(symbols), 1 if is_live else 0, created_at, created_at))
-                            logger.info("✅ [BOT INSERT SUCCESS] user_bots row inserted")
-
-                            logger.info("🔧 [CREDENTIALS INSERT] Inserting bot credentials...")
-                            cursor.execute('''
-                                INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
-                                VALUES (?, ?, ?, ?)
-                            ''', (bot_id, credential_id, user_id, created_at))
-                            logger.info("✅ [CREDENTIALS INSERT SUCCESS] bot_credentials row inserted")
-
-                            logger.info("🔧 [DB COMMIT] Committing transaction...")
-                            conn.commit()
-                            logger.info("✅ [DB COMMIT SUCCESS] Transaction committed to database")
-                            bot_create_saved = True
-                            break
-                        except sqlite3.OperationalError as lock_error:
-                            lock_message = str(lock_error).lower()
-                            if ('locked' not in lock_message and 'busy' not in lock_message) or bot_create_attempt >= 3:
-                                raise
-                            logger.warning(
-                                f"Bot creation DB write lock unavailable for {bot_id}; retrying save after rollback "
-                                f"({bot_create_attempt + 1}/4): {lock_error}"
-                            )
-                            conn.rollback()
-                            cursor = conn.cursor()
-                            time.sleep(0.35 * (bot_create_attempt + 1))
-
-                    if not bot_create_saved:
-                        raise sqlite3.OperationalError('database is locked')
-
-                _run_with_sqlite_malformed_retry(
-                    f"create bot records for {user_id}",
-                    _save_bot_records_once,
-                    retries=1,
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = None
+                bot_id = _persist_new_bot_records(
+                    bot_id=bot_id,
+                    user_id=user_id,
+                    bot_name=data.get('name', strategy),
+                    strategy=strategy,
+                    status=status,
+                    trading_enabled=trading_enabled,
+                    account_id=account_id,
+                    symbols=symbols,
+                    is_live=bool(is_live),
+                    created_at=created_at,
+                    credential_id=credential_id,
+                    id_prefix='bot',
                 )
-
-                verify_conn = None
-                try:
-                    verify_conn = get_bot_create_db_connection()
-                    verify_cursor = verify_conn.cursor()
-                    verify_cursor.execute(
-                        'SELECT 1 FROM user_bots WHERE bot_id = ? AND user_id = ?',
-                        (bot_id, user_id),
-                    )
-                    bot_row_exists = verify_cursor.fetchone() is not None
-                    verify_cursor.execute(
-                        'SELECT 1 FROM bot_credentials WHERE bot_id = ? AND credential_id = ? AND user_id = ?',
-                        (bot_id, credential_id, user_id),
-                    )
-                    bot_credential_exists = verify_cursor.fetchone() is not None
-
-                    if not bot_row_exists or not bot_credential_exists:
-                        logger.warning(
-                            f"Bot creation verification failed for {bot_id} on {DATABASE_PATH}; repairing missing rows "
-                            f"(bot_row={bot_row_exists}, credential_row={bot_credential_exists})"
-                        )
-                        verify_cursor.execute('BEGIN IMMEDIATE')
-                        if not bot_row_exists:
-                            verify_cursor.execute('''
-                                INSERT INTO user_bots (bot_id, user_id, name, strategy, status, enabled, broker_account_id, symbols, is_live, created_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (bot_id, user_id, data.get('name', strategy), strategy, status, 1 if trading_enabled else 0, account_id, ','.join(symbols), 1 if is_live else 0, created_at, created_at))
-                        if not bot_credential_exists:
-                            verify_cursor.execute('''
-                                INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
-                                VALUES (?, ?, ?, ?)
-                            ''', (bot_id, credential_id, user_id, created_at))
-                        verify_conn.commit()
-                finally:
-                    if verify_conn is not None:
-                        verify_conn.close()
             except Exception as e:
                 logger.error(f"❌ [DB ERROR] Exception during bot creation: {type(e).__name__}: {str(e)}")
-                if 'UNIQUE constraint' in str(e):
-                    logger.error("Bot creation failed - duplicate ID. Retrying with new ID...")
-                    bot_id = f"bot_{int(time.time() * 1000000)}_{uuid.uuid4().hex[:6]}"
-                    try:
-                        cursor.execute('''
-                            INSERT INTO user_bots (bot_id, user_id, name, strategy, status, enabled, broker_account_id, symbols, is_live, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (bot_id, user_id, data.get('name', strategy), strategy, status, 1 if trading_enabled else 0, account_id, ','.join(symbols), 1 if is_live else 0, created_at, created_at))
-                        cursor.execute('''
-                            INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
-                            VALUES (?, ?, ?, ?)
-                        ''', (bot_id, credential_id, user_id, created_at))
-                        conn.commit()
-                        logger.info(f"✅ [RETRY SUCCESS] Bot retry successful with new ID: {bot_id}")
-                    except Exception as retry_e:
-                        logger.error(f"❌ [RETRY FAILED] Retry also failed: {type(retry_e).__name__}: {str(retry_e)}")
-                        raise
-                else:
-                    raise
+                raise
 
             now = datetime.now()
             # Start with clean stats — no fake sample trades that pollute analytics
@@ -36597,6 +37495,23 @@ def create_bot():
                 'profit': 0,
                 'open_positions': {},  # Track open positions for closure detection
             }
+            
+            # 🎯 APPLY EXNESS PERMANENT FIX FRAMEWORK: Ensure all new Exness bots get corrected defaults
+            # This prevents broken defaults (signal threshold 1, position size 6.0, reversed TP/SL) from reaching production
+            if EXNESS_DEFAULTS_AVAILABLE and normalized_broker_name == 'Exness':
+                try:
+                    active_bots[bot_id] = apply_exness_defaults_to_runtime_state(
+                        active_bots[bot_id],
+                        bot_id=bot_id,
+                        user_id=user_id,
+                        broker_account_id=account_number,
+                        credential_id=credential_id,
+                        is_live=bool(is_live),
+                    )
+                    logger.info(f"✅ Applied Exness permanent fixes to bot {bot_id}")
+                except Exception as exness_fix_error:
+                    logger.warning(f"⚠️  Exness defaults application failed for {bot_id}: {exness_fix_error} - proceeding with request defaults")
+            
             # Force immediate persistence so bot settings survive restarts
             # even before the periodic runtime-state debounce cycle.
             persist_bot_runtime_state(bot_id, force=True)
@@ -36610,98 +37525,13 @@ def create_bot():
                 mark_bot_start_pending(bot_id)
 
                 # ==================== WORKER POOL DISPATCH ====================
-                if worker_pool_manager and worker_pool_manager.enabled and is_mt5_broker_name(broker_name):
-                    # Dispatch to a worker subprocess instead of local thread
-                    _worker_creds = None
-                    if credential_id:
-                        try:
-                            _wc_conn = get_db_connection()
-                            _wc_cursor = _wc_conn.cursor()
-                            _wc_cursor.execute('SELECT account_number, password, server FROM broker_credentials WHERE credential_id = ? AND user_id = ?', (credential_id, user_id))
-                            _wc_row = _wc_cursor.fetchone()
-                            _wc_conn.close()
-                            if _wc_row:
-                                _wc_row = decrypt_credential_row(_wc_row)
-                                _worker_creds = normalize_mt5_bot_credentials({
-                                    'account': _wc_row['account_number'] or account_number,
-                                    'account_number': _wc_row['account_number'] or account_number,
-                                    'password': _wc_row['password'],
-                                    'server': _wc_row['server'],
-                                    'is_live': bool(is_live),
-                                    'broker': broker_name,
-                                    'credential_id': credential_id,
-                                })
-                        except Exception as e:
-                            logger.warning(f'Worker dispatch: could not fetch credentials: {e}')
-                    worker_pool_manager.dispatch_bot(bot_id, user_id, active_bots[bot_id], _worker_creds)
-                    logger.info(f"🚀 Bot {bot_id}: Dispatched to worker pool")
-                else:
-                    # Legacy single-process mode
-                    def _async_start_bot():
-                        """Start bot in background without blocking the API response"""
-                        try:
-                            time.sleep(0.5)
-
-                            bot_credentials = None
-                            if credential_id:
-                                conn_local = None
-                                try:
-                                    conn_local = get_db_connection()
-                                    cursor_local = conn_local.cursor()
-                                    cursor_local.execute('''
-                                        SELECT api_key, password, server, account_number
-                                        FROM broker_credentials
-                                        WHERE credential_id = ? AND user_id = ?
-                                    ''', (credential_id, user_id))
-                                    cred_row = cursor_local.fetchone()
-
-                                    if cred_row:
-                                        if canonicalize_broker_name(broker_name) == 'Binance':
-                                            resolved_market = _resolve_binance_market_for_context(
-                                                credential_row=cred_row,
-                                                bot_id=bot_id,
-                                                bot_config=active_bots.get(bot_id),
-                                            )
-                                            bot_credentials = {
-                                                'api_key': cred_row['api_key'],
-                                                'api_secret': cred_row['password'],
-                                                'account_number': cred_row['account_number'] or account_number,
-                                                'server': resolved_market,
-                                                'market': resolved_market,
-                                                'is_live': bool(is_live),
-                                            }
-                                        else:
-                                            bot_credentials = normalize_mt5_bot_credentials({
-                                                'account': cred_row['account_number'] or account_number,
-                                                'account_number': cred_row['account_number'] or account_number,
-                                                'password': cred_row['password'],
-                                                'server': cred_row['server'],
-                                                'is_live': bool(is_live),
-                                                'broker': broker_name,
-                                                'credential_id': credential_id,
-                                            })
-                                except Exception as e:
-                                    logger.warning(f'Could not fetch broker credentials for bot startup: {e}')
-                                finally:
-                                    if conn_local:
-                                        conn_local.close()
-
-                            if bot_id not in bot_threads or not bot_threads[bot_id].is_alive():
-                                bot_thread = threading.Thread(
-                                    target=continuous_bot_trading_loop,
-                                    args=(bot_id, user_id, bot_credentials),
-                                    daemon=True,
-                                    name=f"BotThread-{bot_id}"
-                                )
-                                bot_threads[bot_id] = bot_thread
-                                bot_thread.start()
-                                logger.info(f"🚀 Bot {bot_id}: Background thread launched (async start)")
-                        except Exception as e:
-                            clear_bot_start_pending(bot_id)
-                            logger.error(f"Error in async bot start: {e}")
-
-                    startup_thread = threading.Thread(target=_async_start_bot, daemon=True)
-                    startup_thread.start()
+                _queue_or_launch_bot_runtime(
+                    bot_id,
+                    user_id,
+                    active_bots[bot_id],
+                    startup_delay=0.5,
+                    log_label='Bot',
+                )
             else:
                 running_bots[bot_id] = False
                 bot_stop_flags[bot_id] = False
@@ -36712,6 +37542,8 @@ def create_bot():
             active_bots[bot_id]['accountEquity'] = account_balance
             auto_withdrawal_status = None
             try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
                 auto_withdrawal_config = data.get('autoWithdrawal')
                 if isinstance(auto_withdrawal_config, dict) and _coerce_bool(auto_withdrawal_config.get('enabled', False), False):
                     try:
@@ -37489,20 +38321,20 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         continue
 
                                 # ==================== AUTO-PAUSE CHECK: MT5 AutoTrading ====================
-                                # If MT5 is ready but AutoTrading is disabled, warn and skip cycle
-                                # (Do NOT permanently disable bot - AutoTrading may be re-enabled)
+                                # Advisory only: shared MT5 terminal_info() can report a stale flag while
+                                # the backend is switching live/demo sessions. The authoritative signal is
+                                # an actual order/close retcode 10027, which place_order()/close_position()
+                                # already convert into a per-connection cooldown.
                                 try:
                                     import MetaTrader5 as mt5_check
                                     term_info = mt5_check.terminal_info()
                                     if term_info and not term_info.trade_allowed:
-                                        logger.warning(f"⚠️ Bot {bot_id}: MT5 AutoTrading is DISABLED - skipping cycle (will retry)")
-                                        logger.warning(f"   Enable AutoTrading in MT5 toolbar to resume trading")
-                                        if DEPLOYMENT_MODE != 'VPS':
-                                            time.sleep(trading_interval)
-                                            continue
                                         logger.warning(
-                                            f"   Proceeding anyway in VPS mode because MT5 readiness already confirmed the order path; "
-                                            f"the terminal AutoTrading flag can be stale during account switching"
+                                            f"⚠️ Bot {bot_id}: MT5 terminal_info() reports AutoTrading disabled; continuing because "
+                                            f"this flag can be stale during account switching"
+                                        )
+                                        logger.warning(
+                                            f"   If trading is actually disabled, MT5 will return retcode 10027 and this bot will pause automatically"
                                         )
                                 except Exception as auto_pause_e:
                                     logger.debug(f"Bot {bot_id}: AutoTrading check: {auto_pause_e}")
@@ -38055,8 +38887,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 )
                                 fixed_trade_amount = capped_trade_amount
                             position_size = 1.0
+                            resolved_market_price = 0.0
                             if not (is_mt5 and mt5_api is not None):
-                                resolved_market_price = 0.0
                                 if canonicalize_broker_name(broker_type) == 'Binance' and active_conn is not None:
                                     try:
                                         if str(binance_market_name or '').strip().lower() == 'futures' and hasattr(active_conn, '_get_futures_symbol_price'):
@@ -38684,6 +39516,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         logger.info(f"📍 Bot {bot_id}: Placing {order_type} order on {symbol} via {broker_type} | Cycle: {trade_cycle}")
                         
                         order_result = None
+                        order_kwargs: Dict[str, Any] = {}
                         
                         if is_ig:
                             # IG Markets - place order via REST API
@@ -39120,6 +39953,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     )
                                     adjusted_volume = final_symbol_cap
 
+                            order_kwargs: Dict[str, Any] = {}
                             mt5_submission_attempted = False
                             for index, attempt_symbol in enumerate(symbols_to_try):
                                 try:
@@ -39289,7 +40123,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
 
                                 order_kwargs = {
                                     'quote_amount': float(fixed_trade_amount or 0.0),
-                                    'market_price': float(market_data.get('current_price', 0.0) or 0.0),
+                                    'market_price': float(resolved_market_price if resolved_market_price > 0 else (market_data.get('current_price', 0.0) or 0.0)),
                                 }
                                 if canonicalize_broker_name(execution_broker_type) == 'Binance' and execution_binance_market_name == 'futures':
                                     if execution_futures_controls.get('enabled'):
@@ -40010,15 +40844,27 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     }
                                     
                                     # Store open trade in database
+                                    # Binance futures uses symbol name as ticket key (e.g. "SOLUSDT") which is
+                                    # not numeric — store NULL for the DB integer ticket column and use
+                                    # a generated trade_id so the close path can match by trade_id.
+                                    _ticket_is_numeric = str(pos_ticket).lstrip('-').isdigit()
+                                    _ticket_db_value = int(pos_ticket) if _ticket_is_numeric else None
+                                    _open_trade_id = f"trade_{int(datetime.now().timestamp()*1000)}_{bot_id[-8:]}"
                                     try:
                                         trade_conn = build_sqlite_connection(timeout=30.0)
                                         trade_cursor = trade_conn.cursor()
-                                        trade_cursor.execute(
-                                            "SELECT 1 FROM trades WHERE ticket = ? AND bot_id = ? AND status = 'open' LIMIT 1",
-                                            (str(pos_ticket), bot_id)
-                                        )
+                                        if _ticket_is_numeric:
+                                            trade_cursor.execute(
+                                                "SELECT 1 FROM trades WHERE ticket = ? AND bot_id = ? AND status = 'open' LIMIT 1",
+                                                (str(pos_ticket), bot_id)
+                                            )
+                                        else:
+                                            trade_cursor.execute(
+                                                "SELECT 1 FROM trades WHERE symbol = ? AND bot_id = ? AND status = 'open' LIMIT 1",
+                                                (pos_symbol, bot_id)
+                                            )
                                         if trade_cursor.fetchone() is None:
-                                            trade_id = f"trade_{int(datetime.now().timestamp()*1000)}_{bot_id[-8:]}"
+                                            trade_id = _open_trade_id
                                             trade_cursor.execute('''
                                                 INSERT INTO trades (trade_id, bot_id, user_id, symbol, order_type, volume, price, profit, ticket, time_open, time_close, status, created_at, trade_data, timestamp, broker)
                                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -40031,7 +40877,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 matched_pos.get('volume', 0),
                                                 matched_pos.get('openPrice', 0),
                                                 0,  # Profit is 0 until position closes
-                                                str(pos_ticket),
+                                                _ticket_db_value,
                                                 matched_pos.get('openTime', datetime.now().isoformat()),
                                                 None,  # No close time yet
                                                 'open',  # Mark as OPEN, not closed
@@ -40040,6 +40886,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 int(datetime.now().timestamp() * 1000),
                                                 broker_type,
                                             ))
+                                            # Store the db trade_id in open_positions so the close path can match exactly
+                                            bot_config['open_positions'][str(pos_ticket)]['_db_trade_id'] = trade_id
                                         trade_conn.commit()
                                         trade_conn.close()
                                     except Exception as e:
@@ -40302,23 +41150,61 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     'broker': tracked.get('broker', broker_type),
                                 }
                                 
-                                # Update trade in database from open to closed
+                                # Update trade in database from open to closed.
+                                # Binance futures uses symbol name as ticket key (e.g. "SOLUSDT") which
+                                # is not numeric — match by _db_trade_id or by symbol to avoid a
+                                # PostgreSQL "invalid input syntax for type bigint" error.
                                 try:
                                     trade_conn = build_sqlite_connection(timeout=30.0)
                                     trade_cursor = trade_conn.cursor()
-                                    trade_cursor.execute('''
-                                        UPDATE trades SET profit = ?, commission = ?, swap = ?, status = 'closed', time_close = ?, trade_data = ?, updated_at = ?
-                                        WHERE ticket = ? AND bot_id = ? AND status = 'open'
-                                    ''', (
-                                        real_profit,
-                                        trade_commission,
-                                        trade_swap,
-                                        close_time_iso,
-                                        json.dumps(trade),
-                                        datetime.now().isoformat(),
-                                        str(ticket_str),
-                                        bot_id
-                                    ))
+                                    _close_ticket_is_numeric = str(ticket_str).lstrip('-').isdigit()
+                                    if _close_ticket_is_numeric:
+                                        trade_cursor.execute('''
+                                            UPDATE trades SET profit = ?, commission = ?, swap = ?, status = 'closed', time_close = ?, trade_data = ?, updated_at = ?
+                                            WHERE ticket = ? AND bot_id = ? AND status = 'open'
+                                        ''', (
+                                            real_profit,
+                                            trade_commission,
+                                            trade_swap,
+                                            close_time_iso,
+                                            json.dumps(trade),
+                                            datetime.now().isoformat(),
+                                            str(ticket_str),
+                                            bot_id
+                                        ))
+                                    else:
+                                        # Non-numeric ticket (Binance futures symbol key): match by
+                                        # stored trade_id when available, else fall back to symbol.
+                                        _close_db_trade_id = tracked.get('_db_trade_id')
+                                        if _close_db_trade_id:
+                                            trade_cursor.execute('''
+                                                UPDATE trades SET profit = ?, commission = ?, swap = ?, status = 'closed', time_close = ?, trade_data = ?, updated_at = ?
+                                                WHERE trade_id = ? AND bot_id = ? AND status = 'open'
+                                            ''', (
+                                                real_profit,
+                                                trade_commission,
+                                                trade_swap,
+                                                close_time_iso,
+                                                json.dumps(trade),
+                                                datetime.now().isoformat(),
+                                                _close_db_trade_id,
+                                                bot_id
+                                            ))
+                                        else:
+                                            _close_symbol = str(tracked.get('symbol') or ticket_str)
+                                            trade_cursor.execute('''
+                                                UPDATE trades SET profit = ?, commission = ?, swap = ?, status = 'closed', time_close = ?, trade_data = ?, updated_at = ?
+                                                WHERE bot_id = ? AND symbol = ? AND status = 'open'
+                                            ''', (
+                                                real_profit,
+                                                trade_commission,
+                                                trade_swap,
+                                                close_time_iso,
+                                                json.dumps(trade),
+                                                datetime.now().isoformat(),
+                                                bot_id,
+                                                _close_symbol
+                                            ))
                                     trade_conn.commit()
                                     trade_conn.close()
                                 except Exception as db_e:
@@ -41059,6 +41945,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
 
                         poll_symbol_universe = build_scanner_symbol_universe(bot_config, tradable_symbol_keys)
 
+                        # Symbols added by the top-movers SCAN augmentation only — these are not
+                        # in the bot's tradable set, so a qualifying signal on them must not trigger
+                        # an immediate trade cycle (the cycle can't act on them) unless direct
+                        # top-mover trading is enabled.
+                        _scan_only_mover_symbols: Set[str] = set()
+
                         # --- Top-Movers augmentation (Binance bots with topMoversEnabled) ---
                         _is_binance = canonicalize_broker_name(
                             bot_config.get('brokerName') or bot_config.get('broker_type') or ''
@@ -41071,6 +41963,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 _existing = set(poll_symbol_universe)
                                 _new_movers = [s for s in _movers if s not in _existing]
                                 poll_symbol_universe = poll_symbol_universe + _new_movers
+                                _scan_only_mover_symbols.update(_new_movers)
                                 if _new_movers:
                                     logger.debug(f"🔥 Bot {bot_id}: Top-movers added to scan universe: {_new_movers}")
 
@@ -41146,12 +42039,26 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 str(p.get('symbol') or '').upper() == best_signal_symbol.upper()
                                 for p in _cur_open_pos.values()
                             ) if isinstance(_cur_open_pos, dict) else False
+                            _is_scan_only_mover = (
+                                best_signal_symbol in _scan_only_mover_symbols
+                                and not bot_config.get('topMoversDirectTrading', False)
+                                and not _signal_sym_has_pos
+                            )
                             if _pos_limit_full and not _signal_sym_has_pos:
                                 # Position limit full, signal symbol has nothing to manage — skip
                                 logger.debug(
                                     f"⏸️ Bot {bot_id}: Immediate cycle suppressed for {best_signal_symbol} "
                                     f"— position limit full ({len(_cur_open_pos)}/{_eff_max_pos}) "
                                     f"and no existing position on {best_signal_symbol} to manage"
+                                )
+                            elif _is_scan_only_mover:
+                                # Scan-only top mover: the trade cycle only acts on the bot's
+                                # configured symbols, so triggering an immediate cycle here would
+                                # spin without ever placing a trade. Enable topMoversDirectTrading
+                                # to actually trade movers.
+                                logger.debug(
+                                    f"⏸️ Bot {bot_id}: Immediate cycle suppressed for top-mover {best_signal_symbol} "
+                                    f"— not in tradable symbols and topMoversDirectTrading is off"
                                 )
                             else:
                                 logger.info(f"🔥 Bot {bot_id}: Qualified signal detected on {best_signal_symbol} - triggering immediate trade cycle")
@@ -41287,7 +42194,10 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                     'margin': _safe_float(cred.get('cached_margin')),
                     'margin_level': _safe_float(cred.get('cached_margin_level')),
                     'profit': _safe_float(cred.get('cached_profit')),
-                    'currency': str(cred.get('account_currency') or 'USDT').upper(),
+                    'currency': _resolve_binance_display_currency(
+                        fallback_currency=cred.get('account_currency') or 'USDT',
+                        market=resolved_market,
+                    ),
                     'market': resolved_market,
                     'broker': 'Binance',
                 }
@@ -41346,7 +42256,10 @@ def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
                     'margin': _safe_float(cred.get('cached_margin')),
                     'margin_level': _safe_float(cred.get('cached_margin_level')),
                     'profit': _safe_float(cred.get('cached_profit')),
-                    'currency': str(cred.get('account_currency') or 'USDT').upper(),
+                    'currency': _resolve_binance_display_currency(
+                        fallback_currency=cred.get('account_currency') or 'USDT',
+                        market=resolved_market,
+                    ),
                     'market': resolved_market,
                     'broker': 'Binance',
                 }
@@ -41524,16 +42437,16 @@ def quick_create_bot():
         cursor = conn.cursor()
 
         # Verify credential exists and belongs to user AND is Binance
-        cursor.execute('''
-            SELECT credential_id, broker_name, account_number, is_live, api_key, password, server, account_currency
-            FROM broker_credentials
-            WHERE credential_id = ? AND user_id = ?
-        ''', (credential_id, user_id))
-        credential_row = cursor.fetchone()
+        credential_row = _resolve_requested_broker_credential_for_user(
+            user_id,
+            credential_id,
+            'Binance',
+        )
         if not credential_row:
             return jsonify({'success': False, 'error': 'Broker credential not found'}), 404
 
         credential_data = dict(credential_row)
+        credential_id = str(credential_data.get('credential_id') or credential_id).strip()
         broker_name = credential_data['broker_name']
 
         if canonicalize_broker_name(broker_name) != 'Binance':
@@ -41607,7 +42520,7 @@ def quick_create_bot():
             }
 
             # Bot configuration (optimized for crypto)
-            bot_id = f"quick_bot_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+            bot_id = _generate_persisted_bot_id('quick_bot')
             strategy = 'Momentum Trading'  # Best for crypto
             risk_per_trade = 3   # Conservative: ~$21 risk on $700 trade — survives 3 losses before pausing
             max_daily_loss = 90  # Room for 3 losses before daily pause
@@ -41629,23 +42542,22 @@ def quick_create_bot():
                     conn.close()
                 except Exception:
                     pass
-            conn = get_bot_create_db_connection()
-            cursor = conn.cursor()
+                conn = None
 
-            # Store bot in database
-            cursor.execute('BEGIN IMMEDIATE')
-            cursor.execute('''
-                INSERT INTO user_bots (bot_id, user_id, name, strategy, status, enabled, broker_account_id, symbols, is_live, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (bot_id, user_id, f'Quick {preset}', strategy, 'active', trading_enabled, account_id, ','.join(symbols), 1 if is_live else 0, created_at, created_at))
-
-            # Link bot to credential
-            cursor.execute('''
-                INSERT INTO bot_credentials (bot_id, credential_id, user_id, created_at)
-                VALUES (?, ?, ?, ?)
-            ''', (bot_id, credential_id, user_id, created_at))
-            
-            conn.commit()
+            bot_id = _persist_new_bot_records(
+                bot_id=bot_id,
+                user_id=user_id,
+                bot_name=f'Quick {preset}',
+                strategy=strategy,
+                status='active',
+                trading_enabled=trading_enabled,
+                account_id=account_id,
+                symbols=symbols,
+                is_live=bool(is_live),
+                created_at=created_at,
+                credential_id=credential_id,
+                id_prefix='quick_bot',
+            )
 
             now = datetime.now()
             # Start with clean stats — no fake sample trades
@@ -41707,66 +42619,36 @@ def quick_create_bot():
                 'peakProfit': 0,
                 'profit': 0,
             }
+            
+            # 🎯 APPLY EXNESS PERMANENT FIX FRAMEWORK: Ensure all new Exness bots get corrected defaults
+            # (currently quick_create_bot is Binance-only, but future-proof for other brokers)
+            if EXNESS_DEFAULTS_AVAILABLE and canonicalize_broker_name(broker_name) == 'Exness':
+                try:
+                    active_bots[bot_id] = apply_exness_defaults_to_runtime_state(
+                        active_bots[bot_id],
+                        bot_id=bot_id,
+                        user_id=user_id,
+                        broker_account_id=account_number,
+                        credential_id=credential_id,
+                        is_live=bool(is_live),
+                    )
+                    logger.info(f"✅ Applied Exness permanent fixes to bot {bot_id}")
+                except Exception as exness_fix_error:
+                    logger.warning(f"⚠️  Exness defaults application failed for {bot_id}: {exness_fix_error} - proceeding with request defaults")
+            
             persist_bot_runtime_state(bot_id)
 
             running_bots[bot_id] = True
             bot_stop_flags[bot_id] = False
 
             # ==================== WORKER POOL DISPATCH (QUICK BOT) ====================
-            if worker_pool_manager and worker_pool_manager.enabled and is_mt5_broker_name(broker_name):
-                _qb_creds = None
-                if credential_id:
-                    try:
-                        _qbc = get_db_connection()
-                        _qbr = _qbc.cursor()
-                        _qbr.execute('SELECT account_number, password, server, is_live FROM broker_credentials WHERE credential_id = ?', (credential_id,))
-                        _qrow = _qbr.fetchone()
-                        _qbc.close()
-                        if _qrow:
-                            _qrow = decrypt_credential_row(_qrow)
-                            _qb_creds = {'account_number': _qrow['account_number'], 'password': _qrow['password'], 'server': _qrow.get('server', ''), 'is_live': bool(_qrow['is_live'])}
-                    except Exception as e:
-                        logger.warning(f'Quick bot worker dispatch: could not fetch credentials: {e}')
-                worker_pool_manager.dispatch_bot(bot_id, user_id, active_bots[bot_id], _qb_creds)
-                logger.info(f"🚀 Quick bot {bot_id}: Dispatched to worker pool")
-            else:
-                def _async_start_quick_bot():
-                    try:
-                        time.sleep(0.5)
-
-                        bot_credentials = None
-                        if credential_id:
-                            conn_local = None
-                            try:
-                                conn_local = get_db_connection()
-                                cursor_local = conn_local.cursor()
-                                cursor_local.execute('SELECT api_key, password, server, is_live, account_number FROM broker_credentials WHERE credential_id = ?', (credential_id,))
-                                cred_row = cursor_local.fetchone()
-
-                                if cred_row:
-                                    cred_dict = decrypt_credential_row(cred_row)
-                                    bot_credentials = {
-                                        'api_key': cred_dict['api_key'],
-                                        'api_secret': cred_dict['password'],
-                                        'account_number': cred_dict['account_number'],
-                                        'server': cred_dict.get('server', 'spot'),
-                                        'broker': broker_name,
-                                        'is_live': bool(cred_dict['is_live'])
-                                    }
-                            except Exception as e:
-                                logger.warning(f"Could not load credential details: {e}")
-                            finally:
-                                if conn_local:
-                                    conn_local.close()
-
-                        continuous_bot_trading_loop(bot_id, user_id, bot_credentials)
-                    except Exception as e:
-                        logger.error(f"Error auto-starting quick bot {bot_id}: {e}")
-                        running_bots[bot_id] = False
-
-                bot_thread = threading.Thread(target=_async_start_quick_bot, daemon=True)
-                bot_threads[bot_id] = bot_thread
-                bot_thread.start()
+            _queue_or_launch_bot_runtime(
+                bot_id,
+                user_id,
+                active_bots[bot_id],
+                startup_delay=0.5,
+                log_label='Quick bot',
+            )
 
             logger.info(f"✅ Quick bot created: {bot_id} for user {user_id}")
             logger.info(f"   Preset: {preset} | Symbols: {symbols}")
@@ -41996,6 +42878,23 @@ def start_bot():
                     'activeBots': active_count,
                     'capacity': MAX_CONCURRENT_ACTIVE_BOTS,
                 }), 429
+            if _bot_broker_name == 'Binance':
+                binance_active_count = get_running_bot_count(exclude_bot_id=bot_id, broker_name='Binance')
+                if binance_active_count >= MAX_CONCURRENT_BINANCE_BOTS:
+                    logger.warning(
+                        f"Bot {bot_id}: Start denied - Binance active cap reached "
+                        f"({binance_active_count}/{MAX_CONCURRENT_BINANCE_BOTS})"
+                    )
+                    return jsonify({
+                        'success': False,
+                        'error': (
+                            f'Binance VPS is at active bot capacity '
+                            f'({MAX_CONCURRENT_BINANCE_BOTS}). Please stop another Binance bot first.'
+                        ),
+                        'status': 'BINANCE_CAPACITY_LIMIT',
+                        'activeBots': binance_active_count,
+                        'capacity': MAX_CONCURRENT_BINANCE_BOTS,
+                    }), 429
 
             # Bot thread not running — connect to broker and start a new thread (INSIDE LOCK)
             # ✅ AUTOMATIC BROKER DETECTION
@@ -42147,13 +43046,39 @@ def bot_status():
         mode_filter = request.args.get('mode', '').upper()  # LIVE, DEMO, or '' (all)
         bot_id_filter = (request.args.get('bot_id') or '').strip()
         include_history = _coerce_bool(request.args.get('include_history', 'false'))
+        persisted_lookup_ready = False
+        persisted_bot_ids = set()
+        persisted_db_bots = []
+
+        try:
+            _conn = get_db_connection()
+            _cur = _conn.cursor()
+            _cur.execute('SELECT * FROM user_bots WHERE user_id = ?', [user_id])
+            persisted_db_bots = [dict(r) for r in _cur.fetchall()]
+            persisted_bot_ids = {
+                str(r.get('bot_id') or '').strip()
+                for r in persisted_db_bots
+                if str(r.get('bot_id') or '').strip()
+            }
+            persisted_lookup_ready = True
+            _conn.close()
+        except Exception as persisted_lookup_error:
+            logger.warning(f"Error loading persisted bots for dashboard status: {persisted_lookup_error}")
         
         bots_list = []
         for bot in active_bots.values():
+            runtime_bot_id = str(bot.get('botId') or '').strip()
+
             # Only return bots for authenticated user
             if bot.get('user_id') != user_id:
                 continue
-            if bot_id_filter and bot.get('botId') != bot_id_filter:
+            if bot_id_filter and runtime_bot_id != bot_id_filter:
+                continue
+            if persisted_lookup_ready and runtime_bot_id and runtime_bot_id not in persisted_bot_ids:
+                logger.warning(
+                    f"Skipping runtime-only ghost bot {runtime_bot_id} from /api/bot/status for user {user_id} "
+                    f"because no backing user_bots row exists"
+                )
                 continue
             
             # Filter by trading mode if specified
@@ -42294,13 +43219,8 @@ def bot_status():
         # ── Include stopped/archived bots from DB that are not in active_bots ──
         try:
             active_ids_in_list = {b['botId'] for b in bots_list}
-            _conn = get_db_connection()
-            _cur = _conn.cursor()
-            _cur.execute('SELECT * FROM user_bots WHERE user_id = ?', [user_id])
-            _db_bots = [dict(r) for r in _cur.fetchall()]
-            _conn.close()
             today = datetime.now().strftime('%Y-%m-%d')
-            for _db_row in _db_bots:
+            for _db_row in persisted_db_bots:
                 _bid = _db_row['bot_id']
                 if _bid in active_ids_in_list:
                     continue  # already included from active_bots
@@ -43913,6 +44833,22 @@ def bot_summary():
         # Support mode=ALL (or empty) to return bots of any mode so that Binance
         # live bots are visible even when the app's stored trading_mode is DEMO.
         mode_filter = _raw_mode if _raw_mode in ('LIVE', 'DEMO') else ''
+        persisted_lookup_ready = False
+        persisted_bot_ids = set()
+
+        try:
+            _persisted_conn = get_db_connection()
+            _persisted_cur = _persisted_conn.cursor()
+            _persisted_cur.execute('SELECT bot_id FROM user_bots WHERE user_id = ?', [user_id])
+            persisted_bot_ids = {
+                str(row['bot_id'] or '').strip()
+                for row in _persisted_cur.fetchall()
+                if str(row['bot_id'] or '').strip()
+            }
+            persisted_lookup_ready = True
+            _persisted_conn.close()
+        except Exception as persisted_lookup_error:
+            logger.warning(f"Error loading persisted bots for bot summary: {persisted_lookup_error}")
 
         trade_stats_loader = globals().get('_get_trades_table_stats_by_bot')
         if not callable(trade_stats_loader):
@@ -43922,6 +44858,9 @@ def bot_summary():
         has_matching_runtime_bot = False
         for bot in list(active_bots.values()):
             if bot.get('user_id') != user_id:
+                continue
+            runtime_bot_id = str(bot.get('botId') or '').strip()
+            if persisted_lookup_ready and runtime_bot_id and runtime_bot_id not in persisted_bot_ids:
                 continue
             if mode_filter in ('LIVE', 'DEMO'):
                 bot_mode = str(bot.get('mode') or 'demo').upper()
@@ -43958,11 +44897,17 @@ def bot_summary():
         for runtime_bot in list(active_bots.values()):
             if runtime_bot.get('user_id') != user_id:
                 continue
+            runtime_bot_id = str(runtime_bot.get('botId') or '').strip()
+            if persisted_lookup_ready and runtime_bot_id and runtime_bot_id not in persisted_bot_ids:
+                logger.warning(
+                    f"Skipping runtime-only ghost bot {runtime_bot_id} from /api/bot/summary for user {user_id} "
+                    f"because no backing user_bots row exists"
+                )
+                continue
             if mode_filter in ('LIVE', 'DEMO'):
                 runtime_mode = (runtime_bot.get('mode') or 'demo').upper()
                 if runtime_mode != mode_filter:
                     continue
-            runtime_bot_id = str(runtime_bot.get('botId') or '').strip()
             if runtime_bot_id:
                 runtime_bot_ids.append(runtime_bot_id)
         trade_stats_by_bot = trade_stats_loader(runtime_bot_ids)
@@ -43974,6 +44919,14 @@ def bot_summary():
             if bot.get('user_id') != user_id:
                 continue
 
+            bot_id = str(bot.get('botId') or '').strip()
+            if persisted_lookup_ready and bot_id and bot_id not in persisted_bot_ids:
+                logger.warning(
+                    f"Skipping runtime-only ghost bot {bot_id} from /api/bot/summary for user {user_id} "
+                    f"because no backing user_bots row exists"
+                )
+                continue
+
             if mode_filter in ('LIVE', 'DEMO'):
                 bot_mode = (bot.get('mode') or 'demo').upper()
                 if bot_mode != mode_filter:
@@ -43982,7 +44935,6 @@ def bot_summary():
             if bot.get('tradeHistory'):
                 _rebuild_bot_profit_tracking(bot)
 
-            bot_id = str(bot.get('botId') or '').strip()
             trade_stats = trade_stats_by_bot.get(bot_id, {})
 
             current_now = datetime.now()
@@ -44025,12 +44977,35 @@ def bot_summary():
             bot_is_live = str(bot_mode_value).lower() == 'live'
             display_currency = _resolve_display_currency_for_mode(bot_mode_value, bot.get('displayCurrency', 'USD'))
             broker_name = canonicalize_broker_name(bot.get('brokerName') or bot.get('broker_type') or bot.get('broker') or 'MT5')
-            # NOTE: bot_summary is a lightweight polling endpoint — skip live broker
-            # snapshot connections (MT5/Binance/FXCM) here. They add 2-8 s per bot
-            # and cause the Flutter app's 10 s timeout to fire. Use the runtime
-            # positions and cached balance that the trading loop already maintains.
             broker_snapshot_source = 'runtime-cache'
-            # Live broker snapshots skipped here — the trading loop keeps positions current.
+            if broker_name == 'FXCM':
+                fxcm_snapshot = _build_fxcm_bot_broker_snapshot(
+                    user_id,
+                    bot,
+                    snapshot_cache=fxcm_snapshot_cache,
+                )
+                broker_snapshot_source = fxcm_snapshot.get('dataSource', broker_snapshot_source)
+                if fxcm_snapshot.get('fetched'):
+                    broker_confirmed_positions = list(fxcm_snapshot.get('positions') or [])
+                    broker_recent_trades = list(fxcm_snapshot.get('recentTrades') or [])
+                    open_positions = broker_confirmed_positions
+                    fxcm_account_info = fxcm_snapshot.get('accountInfo') or {}
+                    account_balance = round(_safe_float(fxcm_account_info.get('balance'), account_balance), 2)
+                    account_equity = round(_safe_float(fxcm_account_info.get('equity'), account_equity), 2)
+            elif broker_name == 'Binance':
+                binance_snapshot = _build_binance_bot_broker_snapshot(
+                    user_id,
+                    bot,
+                    snapshot_cache=binance_snapshot_cache,
+                )
+                broker_snapshot_source = binance_snapshot.get('dataSource', broker_snapshot_source)
+                if binance_snapshot.get('fetched'):
+                    broker_confirmed_positions = list(binance_snapshot.get('positions') or [])
+                    broker_recent_trades = list(binance_snapshot.get('recentTrades') or [])
+                    open_positions = broker_confirmed_positions
+                    binance_account_info = binance_snapshot.get('accountInfo') or {}
+                    account_balance = round(_safe_float(binance_account_info.get('balance'), account_balance), 2)
+                    account_equity = round(_safe_float(binance_account_info.get('equity'), account_equity), 2)
 
             account_number = str(bot.get('accountNumber') or bot.get('account_number') or '').strip()
             if not account_number:
@@ -44120,6 +45095,9 @@ def bot_summary():
                 )
 
             temporal_guard = _build_temporal_guard_summary(bot)
+            bot_enabled = bool(bot.get('enabled', True))
+            display_account_balance = account_balance if bot_enabled else 0.0
+            display_account_equity = account_equity if bot_enabled else 0.0
 
             bots_list.append({
                 'botId': bot.get('botId', 'unknown'),
@@ -44144,8 +45122,8 @@ def bot_summary():
                 'avgProfitPerTrade': round(total_profit / total_trades, 2) if total_trades > 0 else 0,
                 'maxDrawdown': round(bot.get('maxDrawdown', 0), 2),
                 'runtimeFormatted': f"{int(runtime_hours)}h {int(runtime_minutes)}m",
-                'enabled': bot.get('enabled', True),
-                'status': 'Active' if bot.get('enabled', True) else 'Inactive',
+                'enabled': bot_enabled,
+                'status': 'Active' if bot_enabled else 'Inactive',
                 'pauseReason': bot.get('pauseReason'),
                 'lastNoTradeReason': last_no_trade_reason,
                 'lastNoTradeAt': bot.get('lastNoTradeAt'),
@@ -44181,8 +45159,8 @@ def bot_summary():
                 'account_number': account_number,
                 'mode': str(bot_mode_value).upper(),
                 'is_live': bot_is_live,
-                'accountBalance': account_balance,
-                'accountEquity': account_equity,
+                'accountBalance': display_account_balance,
+                'accountEquity': display_account_equity,
                 'tradeAmount': bot.get('tradeAmount'),
                 'openPositionsCount': len(normalized_open_positions),
                 'pyramidOpenCount': pyramid_open_count,
@@ -44314,7 +45292,14 @@ def bot_summary():
                     continue
                 display_currency = _resolve_display_currency_for_mode(
                     resolved_mode,
-                    row['account_currency'] or ('USDT' if broker_name == 'Binance' else 'USD'),
+                    (
+                        _resolve_binance_display_currency(
+                            fallback_currency=row['account_currency'] or 'USDT',
+                            market=row['broker_server'],
+                        )
+                        if broker_name == 'Binance'
+                        else (row['account_currency'] or 'USD')
+                    ),
                 )
                 total_profit = round(float(trade_stats['net_profit'] if trade_stats else (row['total_profit'] or 0)) or 0, 2)
                 daily_profit = round(
@@ -44329,6 +45314,11 @@ def bot_summary():
                 cached_equity = round(float(row['cached_equity'] or cached_balance) or 0, 2)
                 enabled = bool(row['enabled'])
                 persisted_status = str(row['status'] or '').strip() or ('active' if enabled else 'inactive')
+                if not enabled or persisted_status.lower() != 'active':
+                    # Stopped bots share the same broker credential cache, so showing the
+                    # live account balance on each stopped card is misleading.
+                    cached_balance = 0.0
+                    cached_equity = 0.0
                 primary_symbol = symbols[0] if len(symbols) == 1 else ('MULTI' if len(symbols) > 1 else 'EURUSDm')
                 total_trades = int(trade_stats['closed_trades'] if trade_stats else 0)
                 winning_trades = int(trade_stats['winning_trades'] if trade_stats else 0)
@@ -45057,9 +46047,31 @@ def bot_status_public():
     """
     try:
         bots_list = []
+        persisted_lookup_ready = False
+        persisted_bot_ids = set()
+
+        try:
+            _conn = get_db_connection()
+            _cur = _conn.cursor()
+            _cur.execute('SELECT bot_id FROM user_bots')
+            persisted_bot_ids = {
+                str(r['bot_id'] or '').strip()
+                for r in _cur.fetchall()
+                if str(r['bot_id'] or '').strip()
+            }
+            persisted_lookup_ready = True
+            _conn.close()
+        except Exception as persisted_lookup_error:
+            logger.warning(f"Error loading persisted bots for public bot status: {persisted_lookup_error}")
         
         # Only include ENABLED (running) bots
         for bot_id, bot in active_bots.items():
+            if persisted_lookup_ready and str(bot_id or '').strip() not in persisted_bot_ids:
+                logger.warning(
+                    f"Skipping runtime-only ghost bot {bot_id} from /api/bot/status-public because no backing user_bots row exists"
+                )
+                continue
+
             # Include bot if:
             # 1. It's explicitly marked as running in running_bots OR
             # 2. It's enabled in active_bots (just created, background thread starting)
@@ -45349,6 +46361,81 @@ def get_bot_last_pause(bot_id: str):
             }), 200
     except Exception as e:
         logger.error(f"Error getting last pause: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bot/<bot_id>/clear-drawdown-cooldown', methods=['POST'])
+@require_session
+def clear_bot_drawdown_cooldown(bot_id: str):
+    """Clear a bot's drawdown cooldown and reset its drawdown baseline."""
+    try:
+        user_id = request.user_id
+
+        if bot_id not in active_bots:
+            db_row = _fetch_restorable_bot_row(bot_id, user_id)
+            if db_row:
+                active_bots[bot_id] = _restore_bot_runtime_state(db_row)
+
+        bot = active_bots.get(bot_id)
+        if not isinstance(bot, dict):
+            return jsonify({'success': False, 'error': f'Bot {bot_id} not found'}), 404
+        if bot.get('user_id') != user_id:
+            return jsonify({'success': False, 'error': 'Unauthorized: Bot does not belong to this user'}), 403
+
+        previous_pause_until = bot.get('drawdownPauseUntil')
+        previous_pause_set_at = bot.get('drawdownPauseSetAt')
+        current_total_profit = _safe_float(bot.get('totalProfit'), 0.0)
+        current_equity = _safe_float(
+            bot.get('accountEquity', bot.get('accountBalance', 0.0)),
+            0.0,
+        )
+
+        bot['drawdownPauseUntil'] = None
+        bot['drawdownPauseSetAt'] = None
+        bot['maxDrawdown'] = 0.0
+        bot['peakProfit'] = current_total_profit
+
+        pause_reason = str(bot.get('pauseReason') or '')
+        if 'drawdown' in pause_reason.lower():
+            bot['pauseReason'] = None
+
+        last_pause_event = bot.get('lastPauseEvent')
+        if isinstance(last_pause_event, dict):
+            event_reason = str(last_pause_event.get('reason') or last_pause_event.get('message') or '')
+            event_type = str(last_pause_event.get('type') or last_pause_event.get('pause_type') or '')
+            if 'drawdown' in event_reason.lower() or 'drawdown' in event_type.lower():
+                bot['lastPauseEvent'] = None
+
+        if current_equity > 0:
+            bot['accountEquityHighWatermark'] = round(current_equity, 2)
+
+        bot['lastNoTradeReason'] = 'drawdown cooldown cleared manually'
+        bot['lastNoTradeAt'] = datetime.now().isoformat()
+        persist_bot_runtime_state(bot_id, force=True)
+
+        logger.warning(
+            f"[RISK] Bot {bot_id}: drawdown cooldown cleared manually by user {user_id}; "
+            f"previous_pause_until={previous_pause_until}, previous_pause_set_at={previous_pause_set_at}, "
+            f"baseline_profit={current_total_profit:.2f}, equity_hwm={bot.get('accountEquityHighWatermark')}"
+        )
+
+        return jsonify({
+            'success': True,
+            'botId': bot_id,
+            'message': 'Drawdown cooldown cleared',
+            'previousDrawdownPauseUntil': previous_pause_until,
+            'status': {
+                'drawdownPauseUntil': bot.get('drawdownPauseUntil'),
+                'drawdownPauseSetAt': bot.get('drawdownPauseSetAt'),
+                'maxDrawdown': round(_safe_float(bot.get('maxDrawdown'), 0.0), 2),
+                'peakProfit': round(_safe_float(bot.get('peakProfit'), 0.0), 2),
+                'accountEquityHighWatermark': round(_safe_float(bot.get('accountEquityHighWatermark'), 0.0), 2),
+                'pauseReason': bot.get('pauseReason'),
+            },
+            'timestamp': datetime.now().isoformat(),
+        }), 200
+    except Exception as e:
+        logger.error(f"Error clearing drawdown cooldown for bot {bot_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -46175,6 +47262,104 @@ def disable_auto_withdrawal(bot_id):
 
 # ==================== REFERRAL API ENDPOINTS ====================
 
+def _read_user_sessions_columns(conn):
+    """Return the live user_sessions columns for the active database backend."""
+    schema_cursor = conn.cursor()
+    try:
+        if using_postgres():
+            schema_cursor.execute('''
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = ?
+                ORDER BY ordinal_position
+            ''', ('user_sessions',))
+            rows = schema_cursor.fetchall()
+            columns = []
+            for row in rows:
+                if row is None:
+                    continue
+                if isinstance(row, dict):
+                    column_name = row.get('column_name')
+                else:
+                    try:
+                        column_name = row['column_name']
+                    except Exception:
+                        column_name = row[0] if row else None
+                if column_name:
+                    columns.append(str(column_name))
+            return tuple(columns)
+
+        schema_cursor.execute('PRAGMA table_info(user_sessions)')
+        rows = schema_cursor.fetchall()
+        columns = []
+        for row in rows:
+            if row is None:
+                continue
+            if isinstance(row, dict):
+                column_name = row.get('name')
+            else:
+                try:
+                    column_name = row['name']
+                except Exception:
+                    column_name = row[1] if len(row) > 1 else None
+            if column_name:
+                columns.append(str(column_name))
+        return tuple(columns)
+    finally:
+        try:
+            schema_cursor.close()
+        except Exception:
+            pass
+
+
+def _insert_user_session(conn, user_id, token, expires_at, session_id=None, created_at=None,
+                         is_active=True, ip_address=None, user_agent=None):
+    """Insert a user session using whichever columns exist in the live schema."""
+    session_id = session_id or str(uuid.uuid4())
+    created_at = created_at or datetime.now().isoformat()
+    columns = _read_user_sessions_columns(conn)
+    if not columns:
+        columns = ('session_id', 'user_id', 'token', 'created_at', 'expires_at', 'is_active')
+
+    values_by_column = {
+        'session_id': session_id,
+        'user_id': user_id,
+        'token': token,
+        'created_at': created_at,
+        'expires_at': expires_at,
+        'is_active': 1 if is_active else 0,
+        'ip_address': ip_address,
+        'user_agent': user_agent,
+    }
+
+    insert_columns = []
+    insert_values = []
+    for column_name in ('session_id', 'user_id', 'token', 'created_at', 'expires_at', 'is_active', 'ip_address', 'user_agent'):
+        if column_name in columns:
+            insert_columns.append(column_name)
+            insert_values.append(values_by_column[column_name])
+
+    session_cursor = conn.cursor()
+    try:
+        placeholders = ', '.join(['?'] * len(insert_columns))
+        session_cursor.execute(
+            f"INSERT INTO user_sessions ({', '.join(insert_columns)}) VALUES ({placeholders})",
+            tuple(insert_values)
+        )
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            session_cursor.close()
+        except Exception:
+            pass
+
+    return session_id
+
 @app.route('/api/user/login', methods=['POST'])
 def login_user():
     """Login user by email with password verification and optional 2FA"""
@@ -46294,15 +47479,23 @@ def login_user():
         session_saved = False
         for _session_attempt in range(2):
             try:
-                cursor.execute('''
-                    INSERT INTO user_sessions (session_id, user_id, token, created_at, expires_at, is_active)
-                    VALUES (?, ?, ?, ?, ?, 1)
-                ''', (session_id, user_id, token, created_at, expires_at))
+                _insert_user_session(
+                    conn,
+                    user_id=user_id,
+                    token=token,
+                    expires_at=expires_at,
+                    session_id=session_id,
+                    created_at=created_at,
+                    is_active=True,
+                    ip_address=request.remote_addr,
+                    user_agent=request.headers.get('User-Agent'),
+                )
                 conn.commit()
                 session_saved = True
                 break
-            except sqlite3.OperationalError as session_err:
-                if 'locked' not in str(session_err).lower():
+            except Exception as session_err:
+                session_error = str(session_err).lower()
+                if 'locked' not in session_error and 'busy' not in session_error:
                     raise
                 conn.rollback()
                 if _session_attempt >= 1:
@@ -46436,10 +47629,17 @@ def verify_2fa():
         token = hashlib.sha256(f"{user_id}{datetime.now().isoformat()}".encode()).hexdigest()
         expires_at = (datetime.now() + timedelta(days=30)).isoformat()
         
-        cursor.execute('''
-            INSERT INTO user_sessions (session_id, user_id, token, created_at, expires_at, is_active)
-            VALUES (?, ?, ?, ?, ?, 1)
-        ''', (session_id, user_id, token, datetime.now().isoformat(), expires_at))
+        _insert_user_session(
+            conn,
+            user_id=user_id,
+            token=token,
+            expires_at=expires_at,
+            session_id=session_id,
+            created_at=datetime.now().isoformat(),
+            is_active=True,
+            ip_address=request.remote_addr,
+            user_agent=request.headers.get('User-Agent'),
+        )
         
         conn.commit()
         conn.close()
@@ -47828,7 +49028,11 @@ def get_withdrawal_analytics():
 
         # Get user commission config, tolerating older DBs that still use developer_id.
         cursor.execute("PRAGMA table_info(commission_config)")
-        commission_config_columns = {str(row['name']) for row in cursor.fetchall()}
+        commission_config_columns = {
+            str(row[1] if isinstance(row, (tuple, list)) and len(row) > 1 else row.get('name'))
+            for row in cursor.fetchall()
+            if row is not None and (row[1] if isinstance(row, (tuple, list)) and len(row) > 1 else row.get('name'))
+        }
         cfg_row = None
         if commission_config_columns:
             config_fields = ['ig_developer_rate', 'recruiter_rate']
@@ -48624,11 +49828,14 @@ def register_user():
             session_token = str(uuid.uuid4())
             session_expires = (datetime.now() + timedelta(days=30)).isoformat()
             conn2 = get_db_connection()
-            cur2 = conn2.cursor()
-            cur2.execute('''
-                INSERT INTO user_sessions (token, user_id, expires_at, is_active, created_at)
-                VALUES (?, ?, ?, 1, ?)
-            ''', (session_token, user_id, session_expires, datetime.now().isoformat()))
+            _insert_user_session(
+                conn2,
+                user_id=user_id,
+                token=session_token,
+                expires_at=session_expires,
+                created_at=datetime.now().isoformat(),
+                is_active=True,
+            )
             conn2.commit()
             conn2.close()
         except Exception as sess_err:
@@ -49017,15 +50224,16 @@ def commission_summary():
         user_id = request.user_id
         conn = get_db_connection()
         cursor = conn.cursor()
+        thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
         
         # Total commissions
         cursor.execute('''
             SELECT 
                 COUNT(*) as count,
                 SUM(commission_amount) as total,
-                SUM(CASE WHEN created_at > datetime('now', '-30 days') THEN commission_amount ELSE 0 END) as last_30_days
+                SUM(CASE WHEN created_at >= ? THEN commission_amount ELSE 0 END) as last_30_days
             FROM commissions WHERE earner_id = ?
-        ''', (user_id,))
+        ''', (thirty_days_ago, user_id))
         
         comm_stats = cursor.fetchone()
         
@@ -51807,9 +53015,11 @@ def shutdown_backup():
         if skip_startup_db_recovery:
             logger.info("⏭️ Skipping final backup because ZWESTA_SKIP_STARTUP_DB_RECOVERY is enabled")
             return
-        # Shutdown worker pool first
+        # Shutdown worker pools first
         if worker_pool_manager and worker_pool_manager.enabled:
             worker_pool_manager.shutdown()
+        if binance_worker_pool_manager and binance_worker_pool_manager.enabled:
+            binance_worker_pool_manager.shutdown()
         # Stop socket bridges
         if socket_bridge_manager and socket_bridge_manager.enabled:
             socket_bridge_manager.shutdown()
@@ -51950,21 +53160,17 @@ if __name__ == '__main__':
     logger.info("Connections will be established when users provide broker credentials")
     
     # ==================== STARTUP PRECHECK: MT5 AutoTrading ====================
-    # Verify MT5 terminal has AutoTrading enabled BEFORE starting any bots
-    # This prevents bots from spinning up, connecting, seeing retcode 10027, and failing
+    # Advisory only: terminal_info().trade_allowed is global/shared state and can be stale
+    # when this process switches between live/demo terminals. Actual order retcode 10027 is
+    # the authoritative signal and is handled per connection during trading.
     try:
         import MetaTrader5 as mt5_precheck
         term_info = mt5_precheck.terminal_info()
         if term_info:
             if not term_info.trade_allowed:
-                logger.error("❌ [STARTUP] CRITICAL: MT5 AutoTrading is DISABLED")
-                logger.error("   Enable AutoTrading by:")
-                logger.error("   1. Open MT5 terminal(s)")
-                logger.error("   2. Click the AutoTrading button on toolbar (should be GREEN)")
-                logger.error("   3. Go to Tools > Options > Expert Advisors > Enable 'Allow algorithmic trading'")
-                logger.error("   4. Restart the backend")
-                logger.error("   Exiting now to prevent bot failures...")
-                sys.exit(1)
+                logger.warning("⚠️  [STARTUP] MT5 terminal_info() reports AutoTrading disabled")
+                logger.warning("   Continuing startup because shared MT5 state can be stale during terminal/account switching")
+                logger.warning("   If trading is actually disabled, MT5 order requests will return retcode 10027 and the bot will back off")
             else:
                 logger.info("✅ [STARTUP] MT5 AutoTrading ENABLED - bots will be able to trade")
         else:
@@ -52021,13 +53227,25 @@ if __name__ == '__main__':
     threading.Thread(target=_bg_bot_startup, daemon=True).start()
     logger.info("[OK] Bot startup running in background - Flask starting now")
     
-    # ==================== START WORKER POOL ====================
+    # ==================== START WORKER POOLS ====================
     if worker_pool_manager and worker_pool_manager.enabled:
         logger.info(f"🏭 Starting worker pool with {WORKER_COUNT} workers...")
         worker_pool_manager.start_all()
         logger.info(f"[OK] Worker pool started ({WORKER_COUNT} workers, max {MAX_BOTS_PER_WORKER} bots/worker)")
     else:
         logger.info("[OK] Worker pool disabled (WORKER_COUNT=0) - using single-process mode")
+
+    if binance_worker_pool_manager and binance_worker_pool_manager.enabled:
+        logger.info(
+            f"🟡 Starting Binance worker pool with {CONFIGURED_BINANCE_WORKER_COUNT} workers..."
+        )
+        binance_worker_pool_manager.start_all()
+        logger.info(
+            f"[OK] Binance worker pool started ({CONFIGURED_BINANCE_WORKER_COUNT} workers, "
+            f"max {MAX_BOTS_PER_BINANCE_WORKER} bots/worker)"
+        )
+    else:
+        logger.info("[OK] Binance worker pool disabled (BINANCE_WORKER_COUNT=0) - using local Binance threads")
     
     # ==================== START SOCKET BRIDGES ====================
     if socket_bridge_manager and socket_bridge_manager._bridges:

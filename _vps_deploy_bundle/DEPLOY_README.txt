@@ -1,7 +1,12 @@
 # VPS DEPLOY INSTRUCTIONS (run as Administrator on VPS via RDP)
-# Bundle date: 2026-05-17 (volatility override fix + maxDailyLoss/riskPerTrade auto-scaling)
+# Bundle date: 2026-06-04 (bot summary live Binance snapshot refresh + duplicate-backend cleanup)
 
 # WHAT THIS DEPLOY ADDS (over previous VPS state):
+#   * [CRITICAL] `/api/bot/summary` now refreshes Binance/FXCM bot cards from cached live broker snapshots
+#       - Fixes app bot cards staying unchanged for hours while Binance workers continue trading
+#       - Applies to dashboard/bot-list cards; analytics already used live Binance snapshots
+#   * [CRITICAL] `start_zwesta_backend.ps1` now kills duplicate `multi_broker_backend_updated.py` processes
+#       - Prevents stale runtime state from surviving behind a healthy port 9000 listener
 #   * [CRITICAL] Binance volatility override threshold: 64.0 -> 40.0
 #       - Fixes "Medium volatility not in allowed set" block on Binance crypto bots
 #       - Allows Medium-volatility entries when signal strength >= 40 (was 64)
@@ -44,17 +49,22 @@
    cd C:\backend
    & "C:\Program Files\Python311\python.exe" _optimize_exness.py
 
-7. Restart backend:
-   cd C:\backend
-   Start-Process -FilePath "C:\Program Files\Python311\python.exe" -ArgumentList "multi_broker_backend_updated.py" -RedirectStandardOutput C:\backend\backend.log -RedirectStandardError C:\backend\backend.err -WindowStyle Hidden
+7. Copy the single-instance launcher:
+   Copy-Item C:\Temp\_vps_deploy_bundle\start_zwesta_backend.ps1 C:\backend\start_zwesta_backend.ps1 -Force
 
-8. Verify (after ~60s):
+8. Restart backend through the launcher (preferred; cleans duplicate backend processes first):
+   powershell -NoProfile -ExecutionPolicy Bypass -File C:\backend\start_zwesta_backend.ps1
+
+9. Verify (after ~60s):
    Get-Content C:\backend\backend.err -Tail 60
+   wmic process where "name='python.exe' and commandline like '%multi_broker_backend_updated.py%'" get ProcessId,CreationDate,CommandLine /format:list
+   netstat -ano | findstr :9000
    # Expected new log lines:
    #   "[BALANCE] Bot xxx: equity trend = growing/flat/shrinking ..."
    #   "[RISK] Bot xxx ..."         (existing risk gate)
    #   "POSITION_AGE_TIMEOUT"       (Binance spot, only when a stale position auto-SELLs)
    #   "Post-close cooldown set on <SYM> for 60m"  (Exness only, after a close)
+   # Bot cards should now show brokerSnapshotDataSource of live/cached-live instead of runtime-cache for Binance bots.
    # Should NOT see:
    #   "HIT CUMULATIVE"             (gated by winningTrades>=5)
    #   "drawdown XX%" before bot has any wins
