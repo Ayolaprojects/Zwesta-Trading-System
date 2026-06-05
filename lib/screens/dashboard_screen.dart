@@ -268,21 +268,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final normalized = value?.toString().trim().toLowerCase() ?? '';
     if (normalized == 'live' || normalized == 'real') return 'live';
     if (normalized == 'demo' || normalized == 'trial') return 'demo';
-    return defaultLive ? 'live' : 'demo';
+    // ✅ Return empty string for unrecognized values (let caller handle fallback)
+    // Don't apply defaultLive here - let caller decide fallback logic
+    return '';
   }
 
   String _accountMode(Map<String, dynamic> account) {
-    return _normalizedModeValue(
-      account['mode'],
-      defaultLive: account['is_live'] == true,
-    );
+    // ✅ Same explicit logic as _botMode: prefer 'mode' field, fallback to is_live
+    final mode = account['mode'];
+    if (mode != null) {
+      final normalized = _normalizedModeValue(mode);
+      if (normalized.isNotEmpty) {
+        return normalized;
+      }
+    }
+    return account['is_live'] == true ? 'live' : 'demo';
   }
 
   String _botMode(Map<String, dynamic> bot) {
-    return _normalizedModeValue(
-      bot['mode'],
-      defaultLive: bot['is_live'] == true,
-    );
+    // ✅ PRIMARY: Use the 'mode' field if it exists and is not null
+    final mode = bot['mode'];
+    if (mode != null) {
+      final normalized = _normalizedModeValue(mode);
+      if (normalized.isNotEmpty) {
+        return normalized;
+      }
+    }
+    
+    // ✅ FALLBACK: Only use is_live flag if mode field is missing or empty
+    // This ensures bots with explicit 'mode' field are never overridden by is_live
+    return bot['is_live'] == true ? 'live' : 'demo';
   }
 
   String _modeLabel(String mode) => mode == 'live' ? 'Live' : 'Demo';
