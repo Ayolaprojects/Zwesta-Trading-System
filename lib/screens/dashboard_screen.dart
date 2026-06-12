@@ -66,6 +66,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _realBotsList = [];
   Timer? _refreshTimer;
   int _refreshFailureCount = 0;
+  int _consecutiveEmptyBotPayloads = 0;
   String _preferredBrokerDisplay = 'Exness';
   String _reportingCurrency = 'USD';
 
@@ -608,9 +609,53 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _runInitialDashboardLoads() {
+    _loadCachedBots();
     _fetchRealBots();
     _fetchBrokerBalances();
     _fetchRecentWithdrawals();
+  }
+
+  Future<String> _dashboardBotsCacheKey() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = (prefs.getString('user_id') ?? '').trim();
+    return userId.isEmpty ? 'dashboard_bots_snapshot' : 'dashboard_bots_snapshot_$userId';
+  }
+
+  Future<void> _loadCachedBots() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cacheKey = await _dashboardBotsCacheKey();
+      final rawSnapshot = prefs.getString(cacheKey);
+      if (rawSnapshot == null || rawSnapshot.trim().isEmpty) {
+        return;
+      }
+
+      final decoded = jsonDecode(rawSnapshot);
+      if (decoded is! List || decoded.isEmpty || !mounted) {
+        return;
+      }
+
+      final cachedBots = List<Map<String, dynamic>>.from(decoded);
+      setState(() {
+        _realBotsList = cachedBots;
+      });
+    } catch (e) {
+      print('⚠️ Failed to load cached dashboard bots: $e');
+    }
+  }
+
+  Future<void> _persistCachedBots(List<Map<String, dynamic>> bots) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cacheKey = await _dashboardBotsCacheKey();
+      if (bots.isEmpty) {
+        await prefs.remove(cacheKey);
+        return;
+      }
+      await prefs.setString(cacheKey, jsonEncode(bots));
+    } catch (e) {
+      print('⚠️ Failed to persist dashboard bots cache: $e');
+    }
   }
 
   @override
@@ -926,6 +971,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token');
       final userId = prefs.getString('user_id');
+      final previousBots = List<Map<String, dynamic>>.from(
+        _realBotsList.whereType<Map<String, dynamic>>(),
+      );
       if (sessionToken == null || sessionToken.isEmpty) {
         throw Exception('Session token missing. Please login again.');
       }
@@ -952,12 +1000,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
         throw Exception(data['error'] ?? 'Failed to load bots');
       }
 
+      final fetchedBots = List<Map<String, dynamic>>.from(data['bots'] ?? []);
+      if (fetchedBots.isEmpty && previousBots.isNotEmpty) {
+        _consecutiveEmptyBotPayloads += 1;
+        if (_consecutiveEmptyBotPayloads < 2) {
+          print('⚠️ Ignoring transient empty bot payload during refresh');
+          return;
+        }
+      } else {
+        _consecutiveEmptyBotPayloads = 0;
+      }
+
       if (mounted) {
         setState(() {
-          _realBotsList = List<Map<String, dynamic>>.from(data['bots'] ?? []);
+          _realBotsList = fetchedBots;
           print('✅ Loaded ${_realBotsList.length} bots from backend');
         });
       }
+      await _persistCachedBots(fetchedBots);
     } catch (e) {
       // Don't wipe existing bot data on refresh errors - preserve previous data
       print('⚠️ Bot refresh error (keeping previous data): $e');

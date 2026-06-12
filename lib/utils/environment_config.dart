@@ -3,10 +3,10 @@ import 'package:flutter/foundation.dart';
 enum Environment { development, staging, production }
 
 class EnvironmentConfig {
-  // Default API URLs point to the VPS backend unless overridden with
-  // --dart-define=API_URL=... at build or run time.
-  static const String _devApiUrl = 'http://148.113.5.39:9000';
-  static const String _stagingApiUrl = 'http://148.113.5.39:9000';
+  // Production builds default to the VPS backend. Development and staging
+  // keep a local fallback so the app can still run in test setups.
+  static const String _devApiUrl = 'http://localhost:9000';
+  static const String _stagingApiUrl = 'http://localhost:9000';
   static const String _prodApiUrl = 'http://148.113.5.39:9000';
   static const int _localApiPort = 9000;
   static const bool _defaultUseLocalWebApi = false;
@@ -181,6 +181,19 @@ class EnvironmentConfig {
       'Authorization': 'Bearer ${EnvironmentConfig.apiKey}',
       'Accept': 'application/json',
     };
+  }
+
+  static void validateLaunchConfiguration() {
+    if (_currentEnvironment == Environment.production) {
+      const String envVar = String.fromEnvironment('API_URL', defaultValue: '');
+      if (_overrideApiUrl != null && _overrideApiUrl!.trim().isNotEmpty) {
+        return;
+      }
+      if (envVar.trim().isNotEmpty) {
+        return;
+      }
+      // Production can fall back to the VPS default without a build define.
+    }
   }
 
   static String? _deriveLocalWebApiUrl() {

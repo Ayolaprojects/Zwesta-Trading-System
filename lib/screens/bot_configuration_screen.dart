@@ -2776,15 +2776,29 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           )
           .timeout(const Duration(seconds: 90));
 
+      final startData = _decodeJsonObject(startResponse.body);
       final startSucceeded = startResponse.statusCode == 200;
+      final startDeniedByCapacity =
+          startResponse.statusCode == 429 &&
+          {
+            'BINANCE_CAPACITY_LIMIT',
+            'CAPACITY_LIMIT',
+          }.contains(
+            (startData['status'] ?? '').toString().trim().toUpperCase(),
+          );
       String message;
       if (!startSucceeded) {
-        final startError = jsonDecode(startResponse.body);
+        final startErrorMessage =
+            startData['error']?.toString() ?? 'Unknown startup failure';
         message =
             'Template bot created and synced successfully.\n'
             'Bot ID: $createdBotId\n'
             'Source template: ${template['name'] ?? sourceBotId}\n\n'
-            'The bot did not start automatically: ${startError['error'] ?? 'Unknown startup failure'}';
+            '${startDeniedByCapacity
+                ? 'Automatic start was skipped because bot capacity is full. '
+                      'Stop another bot, then start this one from your bot list. '
+                      'Reason: $startErrorMessage'
+                : 'The bot did not start automatically: $startErrorMessage'}';
       } else {
         message =
             'Template bot created, synced, and started successfully.\n'
@@ -3555,22 +3569,34 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
           )
           .timeout(const Duration(seconds: 90));
 
+      final startData = _decodeJsonObject(startResponse.body);
       final startSucceeded = startResponse.statusCode == 200;
+      final startDeniedByCapacity =
+          startResponse.statusCode == 429 &&
+          {
+            'BINANCE_CAPACITY_LIMIT',
+            'CAPACITY_LIMIT',
+          }.contains(
+            (startData['status'] ?? '').toString().trim().toUpperCase(),
+          );
       if (!startSucceeded) {
-        final startError = jsonDecode(startResponse.body);
-        print('⚠️ Bot created but failed to start: ${startError['error']}');
-        // Don't throw - bot is created, just warn about start failure
+        final startErrorMessage =
+            startData['error']?.toString() ?? 'Unknown startup failure';
+        print('⚠️ Bot created but failed to start: $startErrorMessage');
         setState(() {
           _successMessage =
               'Bot created successfully! 🎉\n'
               'Bot ID: $createdBotId\n'
               '${_isBinanceBroker ? 'Pairs' : 'Symbols'}: ${_selectedSymbols.join(', ')}\n\n'
-              '⚠️ Bot was created but failed to start automatically. '
-              'Reason: ${startError['error'] ?? 'Unknown startup failure'}\n'
-              'Please start it manually from your bot list after fixing the issue.';
+              '${startDeniedByCapacity
+                  ? 'Automatic start was skipped because bot capacity is full. '
+                        'Stop another bot, then start this one from your bot list. '
+                        'Reason: $startErrorMessage'
+                  : '⚠️ Bot was created but failed to start automatically. '
+                        'Reason: $startErrorMessage\n'
+                        'Please start it manually from your bot list after fixing the issue.'}';
         });
       } else {
-        final startData = jsonDecode(startResponse.body);
         print('✅ Bot started successfully: ${startData['message']}');
         setState(() {
           _successMessage =
@@ -3595,16 +3621,20 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
             content: Text(
               startSucceeded
                   ? '✅ Bot created and started. It will appear in your bot list.'
+                  : startDeniedByCapacity
+                  ? '✅ Bot created. Auto-start was skipped because capacity is full.'
                   : '⚠️ Bot created, but automatic start failed. Check the warning on this screen.',
             ),
-            backgroundColor: startSucceeded ? Colors.green : Colors.orange,
+            backgroundColor: startSucceeded
+                ? Colors.green
+                : (startDeniedByCapacity ? Colors.blue : Colors.orange),
             duration: const Duration(seconds: 3),
           ),
         );
       }
 
-      // Only navigate away when the bot actually started.
-      if (mounted && startSucceeded) {
+      // Treat capacity-full as a successful creation flow so the new bot is visible.
+      if (mounted && (startSucceeded || startDeniedByCapacity)) {
         Navigator.of(context).popUntil((route) => route.isFirst);
         Navigator.of(context).push(
           MaterialPageRoute(builder: (context) => const DashboardScreen()),
@@ -3619,6 +3649,23 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   void _showError(String message) {
     setState(() => _errorMessage = message);
+  }
+
+  Map<String, dynamic> _decodeJsonObject(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+      if (decoded is Map) {
+        return decoded.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+      }
+    } catch (_) {
+      return const <String, dynamic>{};
+    }
+    return const <String, dynamic>{};
   }
 
   // ========== AUTOMATED RISK MANAGEMENT METHODS ==========

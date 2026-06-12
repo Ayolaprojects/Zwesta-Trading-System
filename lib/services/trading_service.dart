@@ -14,17 +14,12 @@ class TradingService extends ChangeNotifier {
 
   TradingService(String? token) : _token = token {
     _apiUrl = EnvironmentConfig.apiUrl;
-    // Try to use API in production, fall back to mock data
     _useApi = !EnvironmentConfig.offlineMode;
-    
-    try {
-      if (_useApi) {
-        _checkApiConnection();
-      } else {
-        _initializeMockData();
-      }
-    } catch (e) {
+
+    if (EnvironmentConfig.offlineMode) {
       _initializeMockData();
+    } else {
+      _checkApiConnection();
     }
     
     // Start auto-refresh of trades every 30 seconds
@@ -104,6 +99,22 @@ class TradingService extends ChangeNotifier {
         .where((t) => t.status == TradeStatus.closed)
         .fold(0, (sum, trade) => sum + (trade.profit ?? 0));
 
+  bool get _allowMockFallback =>
+      EnvironmentConfig.offlineMode || EnvironmentConfig.currentEnvironment != Environment.production;
+
+  void _handleApiUnavailable(String reason) {
+    _isConnected = false;
+    _useApi = false;
+    _errorMessage = reason;
+    if (_allowMockFallback) {
+      _initializeMockData();
+      return;
+    }
+    _accounts = [];
+    _trades = [];
+    notifyListeners();
+  }
+
   int get winningTrades => _trades.where((t) => t.status == TradeStatus.closed && t.profit != null && t.profit! > 0).length;
 
   // Check API connection
@@ -120,13 +131,11 @@ class TradingService extends ChangeNotifier {
         await fetchAccounts();
         await fetchTrades();
       } else {
-        _useApi = false;
-        _initializeMockData();
+        _handleApiUnavailable('Backend returned status ${response.statusCode}');
       }
     } catch (e) {
-      print('Could not connect to API: $e, falling back to mock data');
-      _useApi = false;
-      _initializeMockData();
+      print('Could not connect to API: $e');
+      _handleApiUnavailable('Could not connect to API: $e');
     }
   }
 
@@ -395,8 +404,12 @@ class TradingService extends ChangeNotifier {
         _trades = [];
       }
     } else {
-      // Use mock data
-      _initializeMockData();
+      if (_allowMockFallback) {
+        _initializeMockData();
+      } else {
+        _errorMessage = 'Trading backend is unavailable';
+        _trades = [];
+      }
     }
 
     _isLoading = false;
@@ -458,7 +471,12 @@ class TradingService extends ChangeNotifier {
         _accounts = [];
       }
     } else {
-      _initializeMockData();
+      if (_allowMockFallback) {
+        _initializeMockData();
+      } else {
+        _errorMessage = 'Trading backend is unavailable';
+        _accounts = [];
+      }
     }
 
     _isLoading = false;
@@ -504,26 +522,29 @@ class TradingService extends ChangeNotifier {
           _errorMessage = 'Server error: ${response.statusCode} - ${response.body}';
         }
       } else {
-        // Mock data
-        await Future.delayed(const Duration(seconds: 1));
+        if (_allowMockFallback) {
+          await Future.delayed(const Duration(seconds: 1));
 
-        final newTrade = Trade(
-          id: '${DateTime.now().millisecondsSinceEpoch}',
-          symbol: symbol,
-          type: type,
-          quantity: quantity,
-          entryPrice: entryPrice,
-          currentPrice: entryPrice,
-          takeProfit: takeProfit,
-          stopLoss: stopLoss,
-          status: TradeStatus.open,
-          openedAt: DateTime.now(),
-        );
+          final newTrade = Trade(
+            id: '${DateTime.now().millisecondsSinceEpoch}',
+            symbol: symbol,
+            type: type,
+            quantity: quantity,
+            entryPrice: entryPrice,
+            currentPrice: entryPrice,
+            takeProfit: takeProfit,
+            stopLoss: stopLoss,
+            status: TradeStatus.open,
+            openedAt: DateTime.now(),
+          );
 
-        _trades.add(newTrade);
-        _isLoading = false;
-        notifyListeners();
-        return true;
+          _trades.add(newTrade);
+          _isLoading = false;
+          notifyListeners();
+          return true;
+        }
+
+        _errorMessage = 'Trading backend is unavailable';
       }
     } catch (e) {
       _errorMessage = e.toString();
@@ -564,35 +585,38 @@ class TradingService extends ChangeNotifier {
           _errorMessage = 'Server error: ${response.statusCode}';
         }
       } else {
-        // Mock data
-        await Future.delayed(const Duration(seconds: 1));
+        if (_allowMockFallback) {
+          await Future.delayed(const Duration(seconds: 1));
 
-        final tradeIndex = _trades.indexWhere((t) => t.id == tradeId);
-        if (tradeIndex != -1) {
-          final trade = _trades[tradeIndex];
-          final profit = (closingPrice - trade.entryPrice) * trade.quantity;
-          final profitPercentage = ((closingPrice - trade.entryPrice) / trade.entryPrice) * 100;
+          final tradeIndex = _trades.indexWhere((t) => t.id == tradeId);
+          if (tradeIndex != -1) {
+            final trade = _trades[tradeIndex];
+            final profit = (closingPrice - trade.entryPrice) * trade.quantity;
+            final profitPercentage = ((closingPrice - trade.entryPrice) / trade.entryPrice) * 100;
 
-          _trades[tradeIndex] = Trade(
-            id: trade.id,
-            symbol: trade.symbol,
-            type: trade.type,
-            quantity: trade.quantity,
-            entryPrice: trade.entryPrice,
-            currentPrice: closingPrice,
-            takeProfit: trade.takeProfit,
-            stopLoss: trade.stopLoss,
-            status: TradeStatus.closed,
-            openedAt: trade.openedAt,
-            closedAt: DateTime.now(),
-            profit: profit,
-            profitPercentage: profitPercentage,
-          );
+            _trades[tradeIndex] = Trade(
+              id: trade.id,
+              symbol: trade.symbol,
+              type: trade.type,
+              quantity: trade.quantity,
+              entryPrice: trade.entryPrice,
+              currentPrice: closingPrice,
+              takeProfit: trade.takeProfit,
+              stopLoss: trade.stopLoss,
+              status: TradeStatus.closed,
+              openedAt: trade.openedAt,
+              closedAt: DateTime.now(),
+              profit: profit,
+              profitPercentage: profitPercentage,
+            );
+          }
+
+          _isLoading = false;
+          notifyListeners();
+          return true;
         }
 
-        _isLoading = false;
-        notifyListeners();
-        return true;
+        _errorMessage = 'Trading backend is unavailable';
       }
     } catch (e) {
       _errorMessage = e.toString();
@@ -610,31 +634,38 @@ class TradingService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await Future.delayed(const Duration(seconds: 1));
+      if (_allowMockFallback) {
+        await Future.delayed(const Duration(seconds: 1));
 
-      final tradeIndex = _trades.indexWhere((t) => t.id == tradeId);
-      if (tradeIndex != -1) {
-        final trade = _trades[tradeIndex];
-        _trades[tradeIndex] = Trade(
-          id: trade.id,
-          symbol: trade.symbol,
-          type: trade.type,
-          quantity: trade.quantity,
-          entryPrice: trade.entryPrice,
-          currentPrice: trade.currentPrice,
-          takeProfit: takeProfit ?? trade.takeProfit,
-          stopLoss: stopLoss ?? trade.stopLoss,
-          status: trade.status,
-          openedAt: trade.openedAt,
-          closedAt: trade.closedAt,
-          profit: trade.profit,
-          profitPercentage: trade.profitPercentage,
-        );
+        final tradeIndex = _trades.indexWhere((t) => t.id == tradeId);
+        if (tradeIndex != -1) {
+          final trade = _trades[tradeIndex];
+          _trades[tradeIndex] = Trade(
+            id: trade.id,
+            symbol: trade.symbol,
+            type: trade.type,
+            quantity: trade.quantity,
+            entryPrice: trade.entryPrice,
+            currentPrice: trade.currentPrice,
+            takeProfit: takeProfit ?? trade.takeProfit,
+            stopLoss: stopLoss ?? trade.stopLoss,
+            status: trade.status,
+            openedAt: trade.openedAt,
+            closedAt: trade.closedAt,
+            profit: trade.profit,
+            profitPercentage: trade.profitPercentage,
+          );
+        }
+
+        _isLoading = false;
+        notifyListeners();
+        return true;
       }
 
+      _errorMessage = 'Trading backend is unavailable';
       _isLoading = false;
       notifyListeners();
-      return true;
+      return false;
     } catch (e) {
       _errorMessage = e.toString();
       _isLoading = false;
@@ -694,8 +725,12 @@ class TradingService extends ChangeNotifier {
         await fetchAccounts();
         await fetchTrades();
       } else {
-        // Simulate fetching live trades from broker
-        await Future.delayed(const Duration(milliseconds: 500));
+        if (_allowMockFallback) {
+          // Simulate fetching live trades from broker
+          await Future.delayed(const Duration(milliseconds: 500));
+        } else {
+          _errorMessage = 'Trading backend is unavailable';
+        }
       }
 
       _isLoading = false;
@@ -716,26 +751,30 @@ class TradingService extends ChangeNotifier {
       if (_useApi && _isConnected) {
         await fetchTrades(); // Fresh data from API
       } else {
-        // Simulate fetching updated trades from broker
-        await Future.delayed(const Duration(milliseconds: 300));
+        if (_allowMockFallback) {
+          // Simulate fetching updated trades from broker
+          await Future.delayed(const Duration(milliseconds: 300));
 
-        // For mock data, update timestamp to show refresh happened
-        for (var i = 0; i < _trades.length; i++) {
-          _trades[i] = Trade(
-            id: _trades[i].id,
-            symbol: _trades[i].symbol,
-            type: _trades[i].type,
-            quantity: _trades[i].quantity,
-            entryPrice: _trades[i].entryPrice,
-            currentPrice: (_trades[i].currentPrice ?? 0) +
-                (DateTime.now().millisecondsSinceEpoch % 10) / 10000,
-            takeProfit: _trades[i].takeProfit,
-            stopLoss: _trades[i].stopLoss,
-            status: _trades[i].status,
-            openedAt: _trades[i].openedAt,
-            profit: _trades[i].profit,
-            profitPercentage: _trades[i].profitPercentage,
-          );
+          // For mock data, update timestamp to show refresh happened
+          for (var i = 0; i < _trades.length; i++) {
+            _trades[i] = Trade(
+              id: _trades[i].id,
+              symbol: _trades[i].symbol,
+              type: _trades[i].type,
+              quantity: _trades[i].quantity,
+              entryPrice: _trades[i].entryPrice,
+              currentPrice: (_trades[i].currentPrice ?? 0) +
+                  (DateTime.now().millisecondsSinceEpoch % 10) / 10000,
+              takeProfit: _trades[i].takeProfit,
+              stopLoss: _trades[i].stopLoss,
+              status: _trades[i].status,
+              openedAt: _trades[i].openedAt,
+              profit: _trades[i].profit,
+              profitPercentage: _trades[i].profitPercentage,
+            );
+          }
+        } else {
+          _errorMessage = 'Trading backend is unavailable';
         }
       }
 

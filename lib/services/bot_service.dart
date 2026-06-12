@@ -31,6 +31,7 @@ class BotService extends ChangeNotifier {
   DateTime? _lastFetchAt;
   String? _lastTradingMode;
   Future<void>? _inFlightFetch;
+  int _consecutiveEmptyPayloads = 0;
 
   Bot? get bot => _bot;
   BotStats? get stats => _stats;
@@ -45,7 +46,49 @@ class BotService extends ChangeNotifier {
     return _prefs!;
   }
 
-  void startPolling({String? tradingMode, Duration interval = const Duration(seconds: 15)}) {
+  String _activeBotsCacheKey(SharedPreferences prefs) {
+    final userId = (prefs.getString('user_id') ?? '').trim();
+    return userId.isEmpty ? 'active_bots' : 'active_bots_$userId';
+  }
+
+  Future<void> _hydrateCachedActiveBotsIfNeeded(SharedPreferences prefs) async {
+    if (_activeBots.isNotEmpty) {
+      return;
+    }
+
+    try {
+      final rawSnapshot = prefs.getString(_activeBotsCacheKey(prefs));
+      if (rawSnapshot == null || rawSnapshot.trim().isEmpty) {
+        return;
+      }
+
+      final decoded = jsonDecode(rawSnapshot);
+      if (decoded is! List || decoded.isEmpty) {
+        return;
+      }
+
+      _activeBots = List<Map<String, dynamic>>.from(decoded);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Failed to hydrate cached bots: $e');
+    }
+  }
+
+  Future<void> _persistActiveBotsCache(SharedPreferences prefs, List<Map<String, dynamic>> bots) async {
+    try {
+      final cacheKey = _activeBotsCacheKey(prefs);
+      if (bots.isEmpty) {
+        await prefs.remove(cacheKey);
+        return;
+      }
+      await prefs.setString(cacheKey, jsonEncode(bots));
+      await prefs.setString('last_bot_sync', DateTime.now().toIso8601String());
+    } catch (e) {
+      debugPrint('Failed to persist bot cache: $e');
+    }
+  }
+
+  void startPolling({String? tradingMode, Duration interval = const Duration(seconds: 5)}) {
     final mode = tradingMode ?? _lastTradingMode;
     _pollTimer?.cancel();
     if (_authPollingDisabled) {
@@ -144,8 +187,9 @@ class BotService extends ChangeNotifier {
   Future<void> _fetchActiveBotsInternal({String? tradingMode, bool force = false, bool includeHistory = false}) async {
     final prefs = await _getPrefs();
     final mode = tradingMode ?? prefs.getString('trading_mode') ?? 'DEMO';
+    await _hydrateCachedActiveBotsIfNeeded(prefs);
     final now = DateTime.now();
-    if (!force && _lastFetchAt != null && _lastTradingMode == mode && now.difference(_lastFetchAt!) < const Duration(seconds: 3)) {
+    if (!force && _lastFetchAt != null && _lastTradingMode == mode && now.difference(_lastFetchAt!) < const Duration(seconds: 1)) {
       return;
     }
 
@@ -201,13 +245,26 @@ class BotService extends ChangeNotifier {
         _authPollingDisabled = false;
         final data = jsonDecode(response.body);
         if (data['success'] == true) {
-          _activeBots = List<Map<String, dynamic>>.from(data['bots'] ?? []);
+          final fetchedBots = List<Map<String, dynamic>>.from(data['bots'] ?? []);
+          if (fetchedBots.isEmpty && previousBots.isNotEmpty) {
+            _consecutiveEmptyPayloads += 1;
+            if (_consecutiveEmptyPayloads < 2) {
+              debugPrint('Ignoring transient empty bot payload during refresh');
+              _isLoading = false;
+              return;
+            }
+          } else {
+            _consecutiveEmptyPayloads = 0;
+          }
+
+          _activeBots = fetchedBots;
           _lastFetchAt = now;
           _errorMessage = null;
           debugPrint('Fetched ${_activeBots.length} active bots from backend');
+          await _persistActiveBotsCache(prefs, _activeBots);
         } else {
           _errorMessage = data['error'] ?? 'Failed to fetch bots';
-          _activeBots = [];
+          // Preserve previous bot data when the backend returns a logical error.
         }
       } else {
         _errorMessage = 'Backend returned status ${response.statusCode}';

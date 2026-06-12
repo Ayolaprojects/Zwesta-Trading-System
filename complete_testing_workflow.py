@@ -6,9 +6,11 @@ Complete Testing Workflow for LIVE/DEMO Mode System
 3. Test the backend and verify setup
 4. Generate status report
 
-Usage: python complete_testing_workflow.py [--keep-bots] [--live]
+Usage: python complete_testing_workflow.py [--keep-bots] [--live] [--backend-url http://localhost:9000]
 """
 
+import argparse
+import os
 import subprocess
 import sqlite3
 import sys
@@ -25,7 +27,7 @@ except ImportError:
 # ==================== Configuration ====================
 
 DB_PATH = get_database_path()
-BACKEND_URL = "http://localhost:9000"
+DEFAULT_BACKEND_URL = "http://localhost:9000"
 SESSION_TOKEN = "debug_token_49b6b05ad32648759f26f6ac37eebcef"
 
 
@@ -42,6 +44,18 @@ def get_connection(row_factory: bool = False):
 
 def param(backend: str) -> str:
     return '%s' if backend == 'postgres' else '?'
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Complete testing workflow for Zwesta trading app')
+    parser.add_argument('--keep-bots', action='store_true', help='Skip clearing bots from the database')
+    parser.add_argument('--live', action='store_true', help='Keep credentials in live mode')
+    parser.add_argument(
+        '--backend-url',
+        default=os.getenv('ZWESTA_BACKEND_URL', DEFAULT_BACKEND_URL),
+        help='Backend base URL to verify during the workflow',
+    )
+    return parser.parse_args()
 
 # ANSI Color Codes
 class Colors:
@@ -261,15 +275,15 @@ def verify_database_setup():
 
 # ==================== STEP 4: Test Backend Connectivity ====================
 
-def test_backend_connectivity():
+def test_backend_connectivity(backend_url):
     """Test backend connectivity"""
     print_step(4, "Test Backend Connectivity")
     
     try:
         import requests
         
-        print_info(f"Testing connection to {BACKEND_URL}...")
-        response = requests.get(f"{BACKEND_URL}/api/health", timeout=5)
+        print_info(f"Testing connection to {backend_url}...")
+        response = requests.get(f"{backend_url}/api/health", timeout=5)
         
         if response.status_code == 200:
             print_success(f"Backend is running ✓")
@@ -387,19 +401,21 @@ def generate_status_report():
 def main():
     """Execute the complete testing workflow"""
     
+    args = parse_args()
+
     print_header("COMPLETE TESTING WORKFLOW")
     print_info(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_info(f"Database: {DB_PATH}")
     print_info(f"Database Backend: {'POSTGRES' if using_postgres() else 'SQLITE'}")
+    print_info(f"Backend URL: {args.backend_url}")
     
     # Check if database exists
     if not using_postgres() and not Path(DB_PATH).exists():
         print_error(f"Database not found: {DB_PATH}")
         sys.exit(1)
     
-    # Parse arguments
-    keep_bots = '--keep-bots' in sys.argv
-    live_mode = '--live' in sys.argv
+    keep_bots = args.keep_bots
+    live_mode = args.live
     
     if keep_bots:
         print_warning("--keep-bots flag detected, skipping bot clearing")
@@ -412,7 +428,7 @@ def main():
         ("Clear Bots", clear_bots_from_database if not keep_bots else lambda: (print_info("Skipped"), True)[1]),
         ("Switch to DEMO", switch_credentials_to_demo if not live_mode else lambda: (print_info("Skipped"), True)[1]),
         ("Verify Database", verify_database_setup),
-        ("Test Backend", test_backend_connectivity),
+        ("Test Backend", lambda: test_backend_connectivity(args.backend_url)),
         ("Generate Report", generate_status_report),
     ]
     

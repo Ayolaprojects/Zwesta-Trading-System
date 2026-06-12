@@ -36,6 +36,7 @@ void main() async {
             : Environment.staging,
       );
     }
+    EnvironmentConfig.validateLaunchConfiguration();
     runApp(const MyApp());
   } catch (e, st) {
     print('Main init error: $e\n$st');
