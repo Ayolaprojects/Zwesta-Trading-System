@@ -20,9 +20,15 @@ def _load_local_dotenv() -> None:
     try:
         from dotenv import load_dotenv
 
-        env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-        if os.path.exists(env_file):
-            load_dotenv(env_file, override=True)
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        env_candidates = [
+            os.path.join(module_dir, '.env'),
+            r'C:\backend\.env',
+        ]
+
+        for env_file in env_candidates:
+            if os.path.exists(env_file):
+                load_dotenv(env_file, override=True)
     except ImportError:
         pass
 
