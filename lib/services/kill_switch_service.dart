@@ -89,7 +89,7 @@ class KillSwitchService {
     }
   }
 
-  /// POST /api/bots/kill-switch/clear — clears kill switch (bots stay stopped).
+  /// POST /api/bots/resume-all — clears kill switch (bots stay stopped).
   static Future<KillSwitchResult> clear() async {
     try {
       final headers = await _authHeaders();
@@ -98,8 +98,7 @@ class KillSwitchService {
       }
       final resp = await http
           .post(
-            Uri.parse(
-                '${EnvironmentConfig.apiUrl}/api/bots/kill-switch/clear'),
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bots/resume-all'),
             headers: headers,
           )
           .timeout(const Duration(seconds: 8));
