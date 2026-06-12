@@ -15,12 +15,33 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from runtime_infrastructure import build_sqlite_connection, get_database_path, get_database_url, using_postgres
+
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 
 # ==================== Configuration ====================
 
-DB_PATH = r"C:\backend\zwesta_trading.db"
+DB_PATH = get_database_path()
 BACKEND_URL = "http://localhost:9000"
 SESSION_TOKEN = "debug_token_49b6b05ad32648759f26f6ac37eebcef"
+
+
+def get_connection(row_factory: bool = False):
+    if using_postgres():
+        if psycopg2 is None:
+            raise RuntimeError('psycopg2 is required for PostgreSQL mode')
+        database_url = get_database_url()
+        if not database_url:
+            raise RuntimeError('DATABASE_URL is required for PostgreSQL mode')
+        return psycopg2.connect(database_url), 'postgres'
+    return build_sqlite_connection(database_path=get_database_path(), row_factory=row_factory), 'sqlite'
+
+
+def param(backend: str) -> str:
+    return '%s' if backend == 'postgres' else '?'
 
 # ANSI Color Codes
 class Colors:
@@ -44,16 +65,16 @@ def print_step(step_num, text):
     print("-" * 70)
 
 def print_success(msg):
-    print(f"{Colors.GREEN}✅ {msg}{Colors.RESET}")
+    print(f"{Colors.GREEN}[OK] {msg}{Colors.RESET}")
 
 def print_error(msg):
-    print(f"{Colors.RED}❌ {msg}{Colors.RESET}")
+    print(f"{Colors.RED}[ERROR] {msg}{Colors.RESET}")
 
 def print_warning(msg):
-    print(f"{Colors.YELLOW}⚠️  {msg}{Colors.RESET}")
+    print(f"{Colors.YELLOW}[WARN] {msg}{Colors.RESET}")
 
 def print_info(msg):
-    print(f"{Colors.BLUE}ℹ️  {msg}{Colors.RESET}")
+    print(f"{Colors.BLUE}[INFO] {msg}{Colors.RESET}")
 
 # ==================== STEP 1: Clear Bots ====================
 
@@ -62,7 +83,7 @@ def clear_bots_from_database():
     print_step(1, "Clear All Bots from Database")
     
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn, backend = get_connection()
         cursor = conn.cursor()
         
         # Get count before deletion
@@ -103,7 +124,7 @@ def switch_credentials_to_demo():
     print_step(2, "Switch All Credentials to DEMO Mode")
     
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn, backend = get_connection()
         cursor = conn.cursor()
         
         # Get current mode distribution
@@ -137,20 +158,21 @@ def switch_credentials_to_demo():
         
         for broker_name, servers in brokers_config.items():
             # Get all credentials for this broker
-            cursor.execute('''
+            placeholder = param(backend)
+            cursor.execute(f'''
                 SELECT credential_id, account_number, is_live, server
                 FROM broker_credentials
-                WHERE broker_name = ?
+                WHERE broker_name = {placeholder}
             ''', (broker_name,))
             
             credentials = cursor.fetchall()
             
             for cred_id, account, is_live, server in credentials:
                 if is_live == 1:  # Currently in LIVE mode
-                    cursor.execute('''
+                    cursor.execute(f'''
                         UPDATE broker_credentials
-                        SET is_live = 0, server = ?
-                        WHERE credential_id = ?
+                        SET is_live = 0, server = {placeholder}
+                        WHERE credential_id = {placeholder}
                     ''', (servers['demo_server'], cred_id))
                     
                     print_info(f"   Switched {broker_name} {account} to DEMO")
@@ -178,13 +200,24 @@ def verify_database_setup():
     print_step(3, "Verify Database Setup")
     
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn, backend = get_connection()
         cursor = conn.cursor()
         
         # Check schema
-        cursor.execute("PRAGMA table_info(broker_credentials)")
-        columns = cursor.fetchall()
-        column_names = [col[1] for col in columns]
+        if backend == 'postgres':
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'broker_credentials'
+                """
+            )
+            columns = cursor.fetchall()
+            column_names = [col[0] for col in columns]
+        else:
+            cursor.execute("PRAGMA table_info(broker_credentials)")
+            columns = cursor.fetchall()
+            column_names = [col[1] for col in columns]
         
         required_fields = ['credential_id', 'broker_name', 'is_live', 'server', 'account_number']
         missing = [f for f in required_fields if f not in column_names]
@@ -207,7 +240,10 @@ def verify_database_setup():
         print_info(f"   • Bots: {bot_count}")
         
         # Verify all credentials are in DEMO mode
-        cursor.execute('SELECT COUNT(*) FROM broker_credentials WHERE is_live = 1')
+        if backend == 'postgres':
+            cursor.execute('SELECT COUNT(*) FROM broker_credentials WHERE is_live = TRUE')
+        else:
+            cursor.execute('SELECT COUNT(*) FROM broker_credentials WHERE is_live = 1')
         live_count = cursor.fetchone()[0]
         
         if live_count > 0:
@@ -233,7 +269,7 @@ def test_backend_connectivity():
         import requests
         
         print_info(f"Testing connection to {BACKEND_URL}...")
-        response = requests.get(f"{BACKEND_URL}/health", timeout=5)
+        response = requests.get(f"{BACKEND_URL}/api/health", timeout=5)
         
         if response.status_code == 200:
             print_success(f"Backend is running ✓")
@@ -256,20 +292,32 @@ def generate_status_report():
     print_step(5, "Generate Status Report")
     
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn, backend = get_connection()
         cursor = conn.cursor()
         
         # Get detailed credential status
-        cursor.execute('''
-            SELECT 
-                credential_id,
-                account_number,
-                CASE WHEN is_live = 0 THEN 'DEMO' ELSE 'LIVE' END as mode,
-                server,
-                created_at
-            FROM broker_credentials
-            ORDER BY is_live DESC
-        ''')
+        if backend == 'postgres':
+            cursor.execute('''
+                SELECT 
+                    credential_id,
+                    account_number,
+                    CASE WHEN is_live = FALSE THEN 'DEMO' ELSE 'LIVE' END as mode,
+                    server,
+                    created_at
+                FROM broker_credentials
+                ORDER BY is_live DESC
+            ''')
+        else:
+            cursor.execute('''
+                SELECT 
+                    credential_id,
+                    account_number,
+                    CASE WHEN is_live = 0 THEN 'DEMO' ELSE 'LIVE' END as mode,
+                    server,
+                    created_at
+                FROM broker_credentials
+                ORDER BY is_live DESC
+            ''')
         
         credentials = cursor.fetchall()
         
@@ -286,7 +334,8 @@ def generate_status_report():
         ''')
         
         bots = cursor.fetchall()
-        bot_count = cursor.execute('SELECT COUNT(*) FROM user_bots').fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM user_bots')
+        bot_count = cursor.fetchone()[0]
         
         conn.close()
         
@@ -341,9 +390,10 @@ def main():
     print_header("COMPLETE TESTING WORKFLOW")
     print_info(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_info(f"Database: {DB_PATH}")
+    print_info(f"Database Backend: {'POSTGRES' if using_postgres() else 'SQLITE'}")
     
     # Check if database exists
-    if not Path(DB_PATH).exists():
+    if not using_postgres() and not Path(DB_PATH).exists():
         print_error(f"Database not found: {DB_PATH}")
         sys.exit(1)
     
