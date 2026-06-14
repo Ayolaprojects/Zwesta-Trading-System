@@ -454,7 +454,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'winRate': 55.0,
       'liquidityScore': 79.0,
       'risk': 'Medium',
-      'analysis': 'Swing setup',
+      'analysis': 'Swing setup • micro-safe',
     },
     'LINKUSDT': {
       'edgePct': 5.8,
@@ -475,7 +475,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'winRate': 56.0,
       'liquidityScore': 74.0,
       'risk': 'Low',
-      'analysis': 'Stable mover',
+      'analysis': 'Stable mover • micro-safe',
     },
     'DOTUSDT': {
       'edgePct': 5.0,
@@ -496,7 +496,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'winRate': 51.0,
       'liquidityScore': 78.0,
       'risk': 'High',
-      'analysis': 'Speculative bursts',
+      'analysis': 'Speculative bursts • micro-safe',
     },
     'UNIUSDT': {
       'edgePct': 5.7,
@@ -590,13 +590,6 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'analysis': 'Range rotations',
     },
     // --- Micro-account viable symbols (low per-unit price, $20 min notional reachable at 5x) ---
-    'TRXUSDT': {
-      'edgePct': 4.3,
-      'winRate': 56.0,
-      'liquidityScore': 74.0,
-      'risk': 'Low',
-      'analysis': 'Stable mover • micro-safe',
-    },
     'XLMUSDT': {
       'edgePct': 4.6,
       'winRate': 54.0,
@@ -611,13 +604,6 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'risk': 'Low',
       'analysis': 'Network momentum • micro-safe',
     },
-    'SHIBUSDT': {
-      'edgePct': 7.0,
-      'winRate': 51.0,
-      'liquidityScore': 78.0,
-      'risk': 'High',
-      'analysis': 'Speculative bursts • micro-safe',
-    },
     'PEPEUSDT': {
       'edgePct': 7.2,
       'winRate': 50.0,
@@ -631,13 +617,6 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'liquidityScore': 73.0,
       'risk': 'Medium',
       'analysis': 'Ecosystem growth • micro-safe',
-    },
-    'MATICUSDT': {
-      'edgePct': 5.4,
-      'winRate': 55.0,
-      'liquidityScore': 79.0,
-      'risk': 'Medium',
-      'analysis': 'Swing setup • micro-safe',
     },
   };
 
