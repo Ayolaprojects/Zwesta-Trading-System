@@ -2,7 +2,7 @@ name: Build & Release APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, pre-2026-06-04-app ]
     paths:
       - 'lib/**'
       - 'android/**'
