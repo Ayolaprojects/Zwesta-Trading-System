@@ -1108,6 +1108,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final brokerType = bot['broker_type'] ?? bot['broker'] ?? 'MT5';
     final brokerLabel = _botConnectionLabel(bot);
     final isBinanceBot = _normalizeBrokerLabel(bot['brokerName'] ?? brokerType).toLowerCase() == 'binance';
+    final isMicroAccount = isBinanceBot && !isDemoBot && accountBalance > 0 && accountBalance < 20.0;
     final brokerAccent = _brokerAccentColor(_normalizeBrokerLabel(bot['brokerName'] ?? brokerType));
     final displayCurrency = _botDisplayCurrency(bot);
     final presetName = (bot['presetName'] ?? '').toString().trim();
@@ -1357,6 +1358,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                   temporalGuardColor,
                 ),
               _buildAdaptationChip(bot),
+              if (isMicroAccount)
+                _buildMetaChip('⚡ Micro Mode', const Color(0xFFFFB300)),
               if (isDemoBot && promotionStatus != 'not_applicable')
                 _buildPromotionChip(bot),
             ],
@@ -2127,6 +2130,13 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '🚀 Top Edge (6 pairs)',
               'Best win rates: BTC, ETH, SOL, XRP, BNB, LTC',
               'top_edge',
+            ),
+            const SizedBox(height: 10),
+            _binancePresetOption(
+              dialogContext,
+              '💎 Micro Account (< \$20)',
+              'Auto-selected cheap pairs: XRP, ADA, DOGE, TRX, XLM',
+              'micro_account',
             ),
             const SizedBox(height: 10),
             _binancePresetOption(

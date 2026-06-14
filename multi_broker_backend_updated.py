@@ -411,8 +411,8 @@ def _get_pg_pool():
             import psycopg2.pool as _pg_pool_mod
         except ImportError as exc:
             raise RuntimeError('psycopg2 is required when PostgreSQL mode is enabled') from exc
-        requested_max_conns = int(os.environ.get('PG_POOL_MAX', '25'))
-        requested_min_conns = int(os.environ.get('PG_POOL_MIN', '2'))
+        requested_max_conns = int(os.environ.get('PG_POOL_MAX', '50'))
+        requested_min_conns = int(os.environ.get('PG_POOL_MIN', '5'))
         safe_pool_cap_raw = str(os.environ.get('PG_POOL_SAFE_CAP', '')).strip()
         safe_pool_cap = max(1, int(safe_pool_cap_raw)) if safe_pool_cap_raw else 0
         max_conns = max(1, min(requested_max_conns, safe_pool_cap)) if safe_pool_cap else max(1, requested_max_conns)
@@ -3950,7 +3950,18 @@ def _build_dynamic_trade_plan(
     raw_sl = max(base_sl * 0.9, atr_pips * 1.5, swing_distance_pips)
     sl_pips = round(min(max(raw_sl, min_sl), max_sl), 2)
 
-    rr_target = 2.8 if signal_strength >= 85 else (2.5 if signal_strength >= 70 else 2.0)
+    # For Binance live: require minimum R:R of 3.0 so expected profit well exceeds
+    # round-trip fees (0.08% taker + funding). For all other modes keep existing targets.
+    _is_live_binance = False
+    if isinstance(bot_config, dict):
+        _bn = canonicalize_broker_name(
+            bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+        )
+        _is_live_binance = _bn == 'Binance' and str(bot_config.get('mode') or '').strip().lower() == 'live'
+    if _is_live_binance:
+        rr_target = 3.5 if signal_strength >= 85 else (3.2 if signal_strength >= 70 else 3.0)
+    else:
+        rr_target = 2.8 if signal_strength >= 85 else (2.5 if signal_strength >= 70 else 2.0)
     tp_pips = round(max(base_tp * 0.9, sl_pips * rr_target), 2)
 
     recent_high = max(swing_window)
@@ -4202,7 +4213,7 @@ def _score_signal_setup(
         (direction == 'BUY' and trend == 'UP') or (direction == 'SELL' and trend == 'DOWN')
     )
     if live_binance_mode and not trend_aligned:
-        extreme_countertrend_exception = strength >= 50 and score >= 5.0 and rr_value >= 2.0
+        extreme_countertrend_exception = strength >= 43 and score >= 3.0 and rr_value >= 2.0
         if extreme_countertrend_exception:
             reasons.append('Counter-trend high conviction allowed')
         else:
@@ -4588,7 +4599,7 @@ def require_session(f):
                     request.user_id = cached_user_id
                     if should_log_session_event(f"session_lock_cache_fallback:{request.endpoint}:{request.remote_addr}", 15):
                         logger.warning(
-                            f"[SESSION WARN] SQLite locked during session validation for {request.endpoint}; "
+                            f"[SESSION WARN] DB locked during session validation for {request.endpoint}; "
                             f"using {cache_source} cache for user {cached_user_id}"
                         )
                     return f(*args, **kwargs)
@@ -9996,6 +10007,14 @@ class BinanceConnection(BrokerConnection):
 
             if self.market == 'futures':
                 desired_leverage = max(1, min(125, int(_safe_float(kwargs.get('exchange_leverage'), 10.0))))
+                # Micro-account protection: cap leverage at 5x when balance < $20
+                # to prevent liquidation from a single small adverse move.
+                _account_bal = _safe_float(
+                    (self.account_info or {}).get('balance', (self.account_info or {}).get('availableBalance', 0.0)),
+                    0.0,
+                )
+                if 0 < _account_bal < 20.0:
+                    desired_leverage = min(desired_leverage, 5)
                 desired_margin_type = self._normalize_margin_type(kwargs.get('margin_type') or 'ISOLATED')
                 controls_ok, controls_error, effective_leverage = self._apply_futures_trade_controls(
                     instrument,
@@ -10010,13 +10029,20 @@ class BinanceConnection(BrokerConnection):
                 desired_leverage = max(1, int(effective_leverage or desired_leverage))
 
             if self.market == 'futures':
-                # Hardcoded known step sizes as a last-resort fallback when exchangeInfo
-                # is unavailable. Keep these aligned with Binance futures MARKET_LOT_SIZE.
+                # Hardcoded known step sizes as a minimum floor — these are the Binance
+                # production LOT_SIZE stepSize values. Binance demo/testnet can report
+                # smaller (incorrect) values that cause -1111 precision errors.
                 _KNOWN_FUTURES_STEP = {
-                    'SOLUSDT': 0.1, 'DOGEUSDT': 1.0, 'XRPUSDT': 0.1, 'ADAUSDT': 1.0,
-                    'AVAXUSDT': 0.1, 'DOTUSDT': 0.1, 'MATICUSDT': 1.0, 'LINKUSDT': 0.01,
-                    'BNBUSDT': 0.01, 'LTCUSDT': 0.001, 'ETHUSDT': 0.001, 'BTCUSDT': 0.001,
-                    'BCHUSDT': 0.01, 'OPUSDT': 0.1, 'ARBUSDT': 1.0,
+                    'SOLUSDT': 1.0, 'DOGEUSDT': 1.0, 'XRPUSDT': 1.0, 'ADAUSDT': 1.0,
+                    'AVAXUSDT': 0.1, 'DOTUSDT': 0.1, 'MATICUSDT': 1.0, 'LINKUSDT': 0.1,
+                    'BNBUSDT': 0.01, 'LTCUSDT': 0.001, 'ETHUSDT': 0.01, 'BTCUSDT': 0.001,
+                    'BCHUSDT': 0.001, 'OPUSDT': 1.0, 'ARBUSDT': 1.0,
+                    # Extended symbol set
+                    'TONUSDT': 1.0, 'XLMUSDT': 1.0, 'TRXUSDT': 1.0, 'HBARUSDT': 1.0,
+                    'ETCUSDT': 0.01, 'UNIUSDT': 0.1, 'NEARUSDT': 0.1, 'INJUSDT': 0.1,
+                    'SUIUSDT': 1.0, 'APTUSDT': 0.1, 'AAVEUSDT': 0.01, 'FTMUSDT': 1.0,
+                    'SEIUSDT': 1.0, 'ATOMUSDT': 0.01, 'SHIBUSDT': 1000.0, 'PEPEUSDT': 1000.0,
+                    'WIFUSDT': 1.0,
                 }
                 _known_step = _KNOWN_FUTURES_STEP.get(instrument.upper(), 0.0)
                 # MARKET_LOT_SIZE is the tighter constraint for market orders on many
@@ -10041,12 +10067,37 @@ class BinanceConnection(BrokerConnection):
                         futures_quantity_precision = None
                 futures_step = _safe_float(futures_lot.get('stepSize'), 0.0)
                 futures_min = _safe_float(futures_lot.get('minQty'), 0.0)
+                # If MARKET_LOT_SIZE is more permissive (smaller step) than LOT_SIZE, prefer
+                # the more restrictive LOT_SIZE so we never send fractional quantities that
+                # Binance rejects with -1111 on symbols like SOLUSDT (which require integers).
+                if isinstance(futures_filters, dict):
+                    _lot_size_filter = futures_filters.get('LOT_SIZE', {})
+                    _lot_step = _safe_float(_lot_size_filter.get('stepSize'), 0.0)
+                    if _lot_step > 0 and (_lot_step > futures_step or futures_step <= 0):
+                        futures_step = _lot_step
+                        _lot_min = _safe_float(_lot_size_filter.get('minQty'), _lot_step)
+                        if _lot_min > futures_min or futures_min <= 0:
+                            futures_min = _lot_min
                 min_notional = _resolve_effective_binance_futures_min_notional(instrument, futures_filters)
                 # Prefer live exchange data, fall back to known map, then original default
                 if futures_step <= 0:
                     futures_step = _known_step if _known_step > 0 else (step_size or 0.001)
                 if futures_min <= 0:
                     futures_min = futures_step  # min qty = 1 step
+                # For symbols with a known minimum step, never use a step smaller than that
+                # minimum. Binance demo/testnet endpoints sometimes report a smaller step size
+                # than production (e.g. SOLUSDT may show 0.001 on demo but requires integers
+                # on execution), causing -1111 precision rejections. Enforce the known floor.
+                if _known_step > 0 and 0 < futures_step < _known_step:
+                    futures_step = _known_step
+                if futures_min < futures_step:
+                    futures_min = futures_step
+                # Derive quantity precision from the resolved step when the exchange doesn't
+                # provide it — prevents -1111 errors on symbols with integer-only quantities.
+                if futures_quantity_precision is None and futures_step > 0:
+                    from decimal import Decimal as _QD
+                    _step_exp = _QD(str(futures_step)).normalize().as_tuple().exponent
+                    futures_quantity_precision = max(0, -_step_exp)
                 if market_price <= 0:
                     market_price = self._get_futures_symbol_price(instrument)
                 normalized_qty = self._normalize_spot_quantity(quantity, futures_step, futures_min)
@@ -10063,6 +10114,8 @@ class BinanceConnection(BrokerConnection):
                     }
                 proposed_notional = normalized_qty * market_price if market_price > 0 else 0.0
                 if min_notional > 0 and proposed_notional > 0 and proposed_notional < min_notional:
+                    # Auto-bump quantity to meet exchange minimum notional instead of rejecting.
+                    # The subsequent margin-availability check will catch genuinely unaffordable orders.
                     required_qty = self._normalize_spot_quantity(
                         min_notional / max(market_price, 1e-9),
                         futures_step,
@@ -10071,15 +10124,30 @@ class BinanceConnection(BrokerConnection):
                     )
                     required_notional = required_qty * market_price if market_price > 0 else min_notional
                     min_margin_budget = required_notional / max(float(desired_leverage or 1.0), 1.0)
-                    return {
-                        'success': False,
-                        'is_validation_block': True,
-                        'error': (
-                            f'Binance futures order on {instrument} is below the exchange minimum '
-                            f'notional ({proposed_notional:.4f} < {min_notional:.4f}). '
-                            f'Need about {min_margin_budget:.2f} USDT margin at {desired_leverage}x leverage.'
-                        ),
-                    }
+                    # Only bump if the required margin is within 90% of available account balance.
+                    # If the account is too small even for the minimum notional, reject now.
+                    _avail_for_bump = _safe_float(
+                        (self.account_info or {}).get('balance',
+                            (self.account_info or {}).get('availableBalance', 0.0)),
+                        0.0,
+                    )
+                    if _avail_for_bump > 0 and min_margin_budget > _avail_for_bump * 0.90:
+                        return {
+                            'success': False,
+                            'is_validation_block': True,
+                            'error': (
+                                f'Binance futures order on {instrument} is below the exchange minimum '
+                                f'notional ({proposed_notional:.4f} < {min_notional:.4f}). '
+                                f'Need about {min_margin_budget:.2f} USDT margin at {desired_leverage}x leverage '
+                                f'but only {_avail_for_bump:.2f} USDT available.'
+                            ),
+                        }
+                    logger.info(
+                        f"[BINANCE FUTURES] Bumping {instrument} qty {normalized_qty:.6f}->{required_qty:.6f} "
+                        f"to meet min notional {min_notional:.2f} (margin ~{min_margin_budget:.2f} USDT at {desired_leverage}x)"
+                    )
+                    normalized_qty = required_qty
+                    proposed_notional = required_notional
                 account_snapshot = self.get_account_info() or self.account_info or {}
                 available_margin = _safe_float(
                     account_snapshot.get('margin_free', account_snapshot.get('availableBalance')),
@@ -10121,15 +10189,45 @@ class BinanceConnection(BrokerConnection):
             else:
                 quantity_value = self._format_spot_quantity(quantity, step_size, min_qty)
 
-            params = {
-                'symbol': instrument,
-                'side': order_type.upper(),
-                'type': 'MARKET',
-            }
-            if self.market != 'futures' and order_type.upper() == 'BUY' and use_quote_order_qty and quote_amount > 0:
-                params['quoteOrderQty'] = format(quote_amount, '.8f').rstrip('0').rstrip('.')
+            # For live Binance futures, use LIMIT_MAKER (post-only) so the order goes into
+            # the book as a maker and pays 0% fee instead of 0.04% taker. If the market has
+            # moved past our price by the time the order lands, Binance rejects it (code -5022)
+            # rather than filling as a taker — we then fall back to MARKET.
+            _use_limit_maker = (
+                self.market == 'futures'
+                and getattr(self, 'is_live', False)
+                and market_price > 0
+            )
+            if _use_limit_maker:
+                # Price the limit 0.02% inside the current spread so it fills immediately
+                # as a maker without waiting — acts like a limit-at-market but earns maker rebate.
+                _slip_pct = 0.0002
+                if order_type.upper() == 'BUY':
+                    _limit_px = round(market_price * (1 + _slip_pct), 2)
+                else:
+                    _limit_px = round(market_price * (1 - _slip_pct), 2)
+                params = {
+                    'symbol': instrument,
+                    'side': order_type.upper(),
+                    'type': 'LIMIT',
+                    'timeInForce': 'GTX',  # GTX = post-only; rejected if would take
+                    'price': str(_limit_px),
+                    'quantity': quantity_value,
+                }
+                logger.debug(
+                    f"[BINANCE FUTURES] POST LIMIT_MAKER order {instrument} {order_type.upper()} "
+                    f"qty='{quantity_value}' price={_limit_px} (maker, 0% fee)"
+                )
             else:
-                params['quantity'] = quantity_value
+                params = {
+                    'symbol': instrument,
+                    'side': order_type.upper(),
+                    'type': 'MARKET',
+                }
+                if self.market != 'futures' and order_type.upper() == 'BUY' and use_quote_order_qty and quote_amount > 0:
+                    params['quoteOrderQty'] = format(quote_amount, '.8f').rstrip('0').rstrip('.')
+                else:
+                    params['quantity'] = quantity_value
             endpoint = f"{self.fapi_url}/v1/order" if self.market == 'futures' else f"{self.base_url}/v3/order"
             if self.market == 'futures':
                 logger.debug(
@@ -10138,6 +10236,25 @@ class BinanceConnection(BrokerConnection):
                     f"precision={futures_quantity_precision}"
                 )
             resp = self._request_with_time_retry('POST', endpoint, headers=self._headers(), params=params, timeout=15)
+            # GTX (post-only) rejected means price moved and would fill as taker.
+            # Fall back to MARKET so the trade still executes (taker fee is better than missing the entry).
+            if (
+                _use_limit_maker
+                and resp.status_code != 200
+                and resp.content
+                and any(code in resp.text for code in ['-5022', '-1111', '-2010'])
+            ):
+                logger.info(
+                    f"[BINANCE FUTURES] GTX post-only rejected for {instrument} (price moved) "
+                    f"— falling back to MARKET order"
+                )
+                fallback_params = {
+                    'symbol': instrument,
+                    'side': order_type.upper(),
+                    'type': 'MARKET',
+                    'quantity': quantity_value,
+                }
+                resp = self._request_with_time_retry('POST', endpoint, headers=self._headers(), params=fallback_params, timeout=15)
             # Binance -1111 = quantity precision over limit. Refresh exchangeInfo and retry once
             # in case our cached/fallback step size is stale (Binance can tighten precision).
             if (
@@ -10155,6 +10272,12 @@ class BinanceConnection(BrokerConnection):
                     )
                     fresh_step = _safe_float(fresh_lot.get('stepSize'), futures_step)
                     fresh_min = _safe_float(fresh_lot.get('minQty'), futures_min)
+                    # Apply the same known-step floor used in the primary path to prevent
+                    # the retry from suffering the same demo-endpoint precision mismatch.
+                    if _known_step > 0 and 0 < fresh_step < _known_step:
+                        fresh_step = _known_step
+                    if fresh_min < fresh_step:
+                        fresh_min = fresh_step
                     fresh_precision = fresh_filters.get('__quantityPrecision')
                     try:
                         fresh_precision = int(fresh_precision) if fresh_precision is not None else futures_quantity_precision
@@ -10353,13 +10476,21 @@ class BinanceConnection(BrokerConnection):
                     resp = self._request_with_time_retry('GET', endpoint, headers=self._headers(), params={'symbol': symbol, 'limit': 20}, timeout=10)
                     if resp.status_code == 200:
                         for trade in resp.json():
+                            # Binance userTrades: realizedPnl is gross (before trading fees).
+                            # commission is the actual fee deducted from the wallet.
+                            # net_profit = realizedPnl - abs(commission) reflects true wallet impact.
+                            gross_pnl = float(trade.get('realizedPnl', 0))
+                            commission = abs(float(trade.get('commission', 0)))
+                            net_profit = gross_pnl - commission
                             result.append({
                                 'deal_id': str(trade.get('id', '')),
                                 'symbol': trade.get('symbol', ''),
                                 'type': 'BUY' if trade.get('isBuyer') else 'SELL',
                                 'volume': float(trade.get('qty', 0)),
                                 'price': float(trade.get('price', 0)),
-                                'profit': float(trade.get('realizedPnl', 0)),
+                                'profit': net_profit,
+                                'commission': -commission,  # negative: cost to trader
+                                'commissionAsset': trade.get('commissionAsset', 'USDT'),
                                 'time': trade.get('time'),
                                 'broker': 'Binance',
                             })
@@ -11960,7 +12091,7 @@ def persist_account_snapshot(
     credential_id: str = None,
     user_id: str = None,
 ) -> None:
-    """Persist a live account snapshot to in-memory and SQLite caches."""
+    """Persist a live account snapshot to in-memory and DB (Postgres) caches."""
     if not account_info or account_number in [None, '']:
         return
 
@@ -12026,7 +12157,7 @@ def persist_account_snapshot(
 
     if is_mt5_bot_creation_active():
         logger.info(
-            f"⏸️ Deferring SQLite balance snapshot for {normalized_broker} {resolved_account_number} "
+            f"⏸️ Deferring DB balance snapshot for {normalized_broker} {resolved_account_number} "
             f"while bot creation lock is active"
         )
         return
@@ -12072,7 +12203,7 @@ def persist_account_snapshot(
                 'timestamp': now_ts,
             }
     except Exception as exc:
-        logger.warning(f"Could not persist SQLite balance cache for {normalized_broker} {resolved_account_number}: {exc}")
+        logger.warning(f"Could not persist DB balance cache for {normalized_broker} {resolved_account_number}: {exc}")
 
 
 def _cache_snapshot_age_seconds(snapshot_value) -> Optional[float]:
@@ -14480,7 +14611,7 @@ def get_account_balances():
         if int(account_entry.get('active_bots') or 0) > 0:
             return True
         data_source = str(account_entry.get('dataSource') or '').strip().lower()
-        if data_source in ['sqlite_cache', 'stale_cache', 'not_connected']:
+        if data_source in ['db_cache', 'stale_cache', 'not_connected']:
             return False
         return True
 
@@ -14625,7 +14756,7 @@ def get_account_balances():
                             # Log as info only; SQLite fallback may still provide a valid cached balance.
                             if now_unix - last_zar_warning > 3600:
                                 logger.info(
-                                    f"[DIAGNOSTIC] In-memory cache empty for {broker_name} {account_num}; will evaluate SQLite cache fallback."
+                                    f"[DIAGNOSTIC] In-memory cache empty for {broker_name} {account_num}; will evaluate DB cache fallback."
                                 )
                                 if not hasattr(get_account_balances, '_last_warnings'):
                                     get_account_balances._last_warnings = {}
@@ -14931,7 +15062,7 @@ def get_account_balances():
                                 cache_source = 'memory_cache'
                                 logger.info(f"✅ Balance cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={cache_snapshot_age:.0f}s)")
                 
-                # Fallback: try SQLite cached_balance column
+                # Fallback: try DB cached_balance column (broker_credentials table in Postgres)
                 if (not suppress_cached_balance) and cached_balance == 0 and cred['credential_id'] in cached_data:
                     cache = dict(cached_data[cred['credential_id']])
                     sqlite_age = _cache_snapshot_age_seconds(cache.get('last_update'))
@@ -14942,14 +15073,14 @@ def get_account_balances():
                     cached_margin_free = cache.get('cached_margin_free', 0) or 0
                     cached_margin_level = cache.get('cached_margin_level', 0) or 0
                     cached_profit = cache.get('cached_profit', 0) or 0
-                    cache_source = 'sqlite_cache'
+                    cache_source = 'db_cache'
                     sqlite_cache_used = cached_balance > 0
                     cache_snapshot_age = sqlite_age
                     if sqlite_age is not None and sqlite_age > sqlite_ttl:
-                        logger.info(f"⏳ SQLite cache EXPIRED for {cache_key}: {sqlite_age:.0f}s old (TTL={sqlite_ttl}s)")
+                        logger.info(f"⏳ DB cache EXPIRED for {cache_key}: {sqlite_age:.0f}s old (TTL={sqlite_ttl}s)")
                     else:
                         if cached_balance > 0:
-                            logger.info(f"✅ SQLite cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={sqlite_age:.0f}s)")
+                            logger.info(f"✅ DB cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={sqlite_age:.0f}s)")
                 
                 # If still $0 — account genuinely not connected / not funded
                 if cached_balance == 0:
@@ -14966,10 +15097,10 @@ def get_account_balances():
                 # Show the account portal even when only SQLite-cached balance is
                 # available (no active bot running). This ensures all saved accounts
                 # always appear as portals in the dashboard. Only mark connected=True
-                # when data is fresh (memory cache or non-stale sqlite cache).
+                # when data is fresh (memory cache or non-stale DB cache).
                 is_fresh_connected = bool(cache_source == 'memory_cache' and has_cached_data)
-                is_stale_cached = bool(cache_source == 'sqlite_cache' and has_cached_data and cache_is_stale)
-                is_fresh_sqlite = bool(cache_source == 'sqlite_cache' and has_cached_data and not cache_is_stale)
+                is_stale_cached = bool(cache_source == 'db_cache' and has_cached_data and cache_is_stale)
+                is_fresh_sqlite = bool(cache_source == 'db_cache' and has_cached_data and not cache_is_stale)
                 account_entry.update({
                     'balance': float(cached_balance if has_cached_data else 0),
                     'equity': float(cached_equity if has_cached_data else 0),
@@ -14993,11 +15124,11 @@ def get_account_balances():
                     account_entry['lastKnownEquity'] = float(cached_equity)
                     account_entry['lastKnownCurrency'] = cached_currency
                     logger.warning(
-                        f"⚠️ {cache_key}: Serving stale SQLite snapshot ({cache_snapshot_age:.0f}s old) with disconnected status"
+                        f"⚠️ {cache_key}: Serving stale DB snapshot ({cache_snapshot_age:.0f}s old) with disconnected status"
                     )
                 elif has_cached_data:
                     account_entry.pop('error', None)
-                    if cache_source == 'sqlite_cache':
+                    if cache_source == 'db_cache':
                         account_entry['warning'] = 'Showing cached snapshot only. Open this mode or run a bot to refresh the balance.'
                 else:
                     if failed_auth_status and (is_live or broker_name == 'Binance'):
@@ -17227,7 +17358,7 @@ def get_trades_history():
                 elif broker_name == 'Binance':
                     # Prefer locally tracked closed trades for dashboard/history views.
                     # Re-authing to Binance on every poll adds latency and SSL churn, while
-                    # the bot runtime already persists meaningful closed trades into SQLite.
+                    # the bot runtime already persists meaningful closed trades into Postgres.
                     db_hist_trades = []
                     try:
                         hist_conn = get_db_connection()
@@ -17261,7 +17392,7 @@ def get_trades_history():
                     if db_hist_trades:
                         all_trades.extend(db_hist_trades)
                         logger.info(
-                            f"✅ Fetched {len(db_hist_trades)} Binance trades from SQLite for {account_num} "
+                            f"✅ Fetched {len(db_hist_trades)} Binance trades from DB for {account_num} "
                             f"- skipping live broker history poll"
                         )
                         continue
@@ -17985,6 +18116,8 @@ def get_mt5_ready_symbols_for_broker(broker_name: str) -> List[str]:
     normalized_broker = canonicalize_broker_name(broker_name or '')
     if normalized_broker in ('Exness', 'XM', 'XM Global'):
         return [normalize_symbol_for_broker(symbol, normalized_broker) for symbol in sorted(VALID_SYMBOLS)]
+    if normalized_broker == 'Binance':
+        return sorted(BINANCE_VALID_SYMBOLS)
     if normalized_broker == 'FXCM':
         return list(FXCM_SAFE_SYMBOLS)
     return sorted(VALID_SYMBOLS)
@@ -21937,6 +22070,15 @@ def _resolve_binance_futures_min_margin_budget(
                 futures_lot = futures_market_lot or futures_filters.get('LOT_SIZE', {})
                 futures_step = _safe_float(futures_lot.get('stepSize'), 0.0)
                 futures_min = _safe_float(futures_lot.get('minQty'), 0.0)
+                # Prefer LOT_SIZE when more restrictive (larger step) — avoids computing an
+                # artificially small min_margin_budget based on MARKET_LOT_SIZE micro-steps.
+                _lot_only = futures_filters.get('LOT_SIZE', {})
+                _lot_step_only = _safe_float(_lot_only.get('stepSize'), 0.0)
+                if _lot_step_only > 0 and (_lot_step_only > futures_step or futures_step <= 0):
+                    futures_step = _lot_step_only
+                    _lot_min_only = _safe_float(_lot_only.get('minQty'), _lot_step_only)
+                    if _lot_min_only > futures_min or futures_min <= 0:
+                        futures_min = _lot_min_only
                 if futures_step <= 0:
                     futures_step = 0.001
                 if futures_min <= 0:
@@ -28102,6 +28244,44 @@ def should_trade_today(bot_config, symbol):
                 level='warning',
             )
 
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
+    # Minimum viable balance gate for live Binance futures.
+    # Below $5 USDT it is impossible to meet Binance's $20 minimum notional even at 10x.
+    # Accounts between $5-$20 enter micro-account mode: extra restrictions apply.
+    if broker_name == 'Binance' and str(bot_config.get('mode') or '').strip().lower() == 'live':
+        _bal_basis = max(
+            _safe_float(bot_config.get('accountBalance'), 0.0),
+            _safe_float(bot_config.get('accountEquity'), 0.0),
+            _safe_float(bot_config.get('initialBalance'), 0.0),
+        )
+        _binance_market = str(bot_config.get('binanceMarket') or bot_config.get('market') or 'futures').lower()
+        _min_viable = 5.0 if _binance_market == 'futures' else 2.0
+        if 0 < _bal_basis < _min_viable:
+            return _record_trade_risk_block(
+                bot_config,
+                symbol,
+                f"balance ${_bal_basis:.2f} USDT is below absolute minimum ${_min_viable:.2f} for Binance {_binance_market} "
+                f"(cannot meet $20 minimum notional even at max leverage — deposit more to trade)",
+                level='warning',
+            )
+        # Micro-account mode ($5-$20): block large-unit symbols where minimum order
+        # exceeds safe margin budget at this balance.
+        if 0 < _bal_basis < 20.0 and _binance_market == 'futures':
+            if not _is_symbol_viable_for_micro_account(symbol, 0.0, _bal_basis):
+                # 0.0 price — _is_symbol_viable_for_micro_account will check base whitelist only
+                return _record_trade_risk_block(
+                    bot_config,
+                    symbol,
+                    f"micro-account (${_bal_basis:.2f} USDT): {symbol} blocked — too expensive per unit "
+                    f"for minimum notional at 5x leverage. Use XRPUSDT, ETHUSDT, DOGEUSDT, or ADAUSDT instead.",
+                    level='warning',
+                )
+            # Store the micro-account floor for the signal check below (after signal is evaluated).
+            bot_config['_microAccountSignalFloor'] = 70
+            bot_config['_microAccountBalance'] = _bal_basis
+
     symbol_loss_pressure = _recent_symbol_loss_pressure(bot_config, symbol)
     last_symbol_close = symbol_loss_pressure.get('last_close_at')
     if last_symbol_close and getattr(last_symbol_close, 'tzinfo', None) is not None:
@@ -28145,9 +28325,44 @@ def should_trade_today(bot_config, symbol):
             symbol,
             f"setup score {setup_eval.get('score', 0.0):.1f}/10 below confluence gate: {setup_reasons}",
         )
-    broker_name = canonicalize_broker_name(
-        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
-    )
+    # Micro-account signal floor (applied after signal is evaluated).
+    _micro_signal_floor = int(bot_config.get('_microAccountSignalFloor') or 0)
+    _micro_bal = _safe_float(bot_config.get('_microAccountBalance'), 0.0)
+    if _micro_signal_floor > 0 and 0 < _micro_bal < 20.0 and current_signal_strength < _micro_signal_floor:
+        return _record_trade_risk_block(
+            bot_config,
+            symbol,
+            f"micro-account (${_micro_bal:.2f} USDT): signal {current_signal_strength:.0f}/100 below micro floor {_micro_signal_floor} "
+            f"(small accounts need higher-conviction signals to overcome fee drag)",
+        )
+    # Fee-coverage gate for live Binance futures: expected net profit must exceed 2× the
+    # round-trip taker fee (0.08% of notional) so fees can never be the reason we lose.
+    # Expected profit = (TP distance in price / current price) × trade notional × RR denominator
+    if (
+        broker_name == 'Binance'
+        and str(bot_config.get('mode') or '').strip().lower() == 'live'
+        and current_signal_direction in {'BUY', 'SELL'}
+    ):
+        try:
+            _trade_plan = setup_eval.get('tradePlan') or {}
+            _rr = _safe_float(setup_eval.get('rr'), 0.0)
+            _current_price = _safe_float((current_market_data or {}).get('current_price', 0.0), 0.0)
+            _balance = _safe_float(bot_config.get('accountBalance', bot_config.get('initialBalance', 0.0)), 0.0)
+            _trade_ratio = _safe_float(bot_config.get('tradeAmount', bot_config.get('risk_per_trade', 5.0)), 5.0) / 100.0
+            _notional = _balance * _trade_ratio * _safe_float(bot_config.get('leverage', 10.0), 10.0)
+            _round_trip_fee = _notional * 0.0008  # 0.04% taker × 2 sides
+            _min_tp_price_move_pct = _safe_float(_trade_plan.get('tpPips', 0.0), 0.0) / max(_current_price, 1.0) if _current_price > 0 else 0.0
+            _expected_gross = _notional * _min_tp_price_move_pct if _min_tp_price_move_pct > 0 else 0.0
+            _fee_cover_ratio = 2.5  # expected profit must be ≥ 2.5× fees
+            if _notional > 0 and _round_trip_fee > 0 and 0 < _expected_gross < _round_trip_fee * _fee_cover_ratio:
+                return _record_trade_risk_block(
+                    bot_config,
+                    symbol,
+                    f"fee-coverage gate: expected gross ${_expected_gross:.3f} < {_fee_cover_ratio}× round-trip fee ${_round_trip_fee:.3f} "
+                    f"(notional=${_notional:.1f}, rr={_rr:.1f}) — setup not profitable enough net of fees",
+                )
+        except Exception:
+            pass  # Never block a trade due to an error in the fee gate itself
     exness_runtime_risk = _resolve_exness_runtime_risk_profile(bot_config) if broker_name == 'Exness' else {}
     session_perf = _evaluate_session_hour_performance(bot_config, now)
     active_session_perf = session_perf.get('activeSession') if isinstance(session_perf, dict) else {}
@@ -33851,8 +34066,10 @@ def _default_setup_score_for_broker_profile(
 
     if normalized_broker == 'Binance':
         if normalized_mode == 'live':
-            return 5.5 if normalized_management_mode == 'manual' else 6.0
-        return 5.5 if normalized_management_mode == 'manual' else 6.5
+            # Higher gate for live Binance: fees (0.08% round-trip + funding) require
+            # genuinely strong setups to profit net of costs.
+            return 6.5 if normalized_management_mode == 'manual' else 6.0
+        return 5.5 if normalized_management_mode == 'manual' else 5.0
 
     if normalized_broker == 'Exness' and normalized_mode == 'live':
         if normalized_profile in {'advanced', 'fast_growth'}:
@@ -33912,7 +34129,19 @@ EXNESS_CURATED_SCANNER_SYMBOLS = [
     # Live Exness keep set — blocked symbols handled at validation layer
     'AUDUSDm', 'GBPUSDm', 'WFCm', 'US500m', 'USDCADm', 'US30m',
 ]
-BINANCE_CURATED_SCANNER_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT']
+BINANCE_CURATED_SCANNER_SYMBOLS = [
+    # Tier 1 — Large Cap (highest liquidity, all USDT)
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
+    'ADAUSDT', 'DOGEUSDT', 'TONUSDT', 'XLMUSDT',
+    # Tier 2 — High Volume Altcoins
+    'AVAXUSDT', 'LINKUSDT', 'LTCUSDT', 'DOTUSDT', 'MATICUSDT',
+    'TRXUSDT', 'ATOMUSDT', 'HBARUSDT', 'BCHUSDT', 'ETCUSDT',
+    # Tier 3 — DeFi & Layer-2 leaders
+    'UNIUSDT', 'ARBUSDT', 'NEARUSDT', 'INJUSDT', 'SUIUSDT',
+    'APTUSDT', 'AAVEUSDT', 'OPUSDT', 'FTMUSDT', 'SEIUSDT',
+    # Tier 4 — High-beta / meme liquid
+    'SHIBUSDT', 'PEPEUSDT', 'WIFUSDT',
+]
 
 # ---------------------------------------------------------------------------
 # Binance USDT Top-Movers dynamic scanner
@@ -33933,6 +34162,50 @@ _TOP_MOVERS_EXCLUDE_BASES = {
     'BTCUP', 'BTCDOWN', 'ETHUP', 'ETHDOWN', 'BNBUP', 'BNBDOWN',
     'LINKUP', 'LINKDOWN', 'DEFI', 'BEAR', 'BULL',
 }
+
+# ---------------------------------------------------------------------------
+# Micro-account balance-aware symbol selection
+# ---------------------------------------------------------------------------
+# Bases whose per-unit price is low enough that the Binance $20 minimum
+# notional is reachable with $4 margin (5x leverage) without the position
+# sizing exceeding ~90% of a sub-$20 account balance.
+# BTCUSDT (~$100k/unit) and BNBUSDT (~$640/unit) are excluded because their
+# minimum order size forces notionals far above $20.
+# SOLUSDT (~$170/unit, 0.1-unit step) forces $17–34 notional steps which are
+# borderline and often rejected — excluded for safety.
+# All symbols listed here have unit prices < $20 so $4 margin at 5x ≥ $20 notional.
+_MICRO_ACCOUNT_VIABLE_BASES = {
+    'XRP', 'DOGE', 'ADA', 'TRX', 'SHIB', 'PEPE', 'LUNC', 'WIN', 'HOT',
+    'VET', 'ANKR', 'ONE', 'JASMY', 'GALA', 'CHZ', 'MANA', 'ENJ',
+    'SAND', 'PEOPLE', 'FLOKI', 'BONK', 'WIF', 'NOT', 'TON', 'XLM',
+    'HBAR', 'MATIC', 'OP', 'ARB', 'FTM', 'SEI', 'NEAR', 'ATOM',
+    'SUI', 'APT', 'INJ', 'LINK', 'UNI', 'DOT', 'LTC', 'ETC',
+    'AVAX', 'ETH',  # ETH included: 0.01 step × ~$1660 = $16.6, auto-bumped to 0.02 = $33
+}
+# Symbols that are always blocked for micro-accounts regardless of price tier
+_MICRO_ACCOUNT_HARD_BLOCKED = {'BTCUSDT', 'BNBUSDT', 'SOLUSDT'}
+# Per-unit price cap for a symbol to be considered micro-viable when not in the whitelist above
+_MICRO_ACCOUNT_MAX_UNIT_PRICE_USDT = 50.0
+
+
+def _is_symbol_viable_for_micro_account(symbol: str, last_price: float, balance_usdt: float, leverage: int = 5) -> bool:
+    """Return True if this symbol can be traded at Binance's $20 min notional given the balance.
+
+    Uses a conservative 90% margin budget to leave room for fees and slippage.
+    """
+    sym_upper = str(symbol or '').upper()
+    if sym_upper in _MICRO_ACCOUNT_HARD_BLOCKED:
+        return False
+    # If price is unknown, allow it (gateway checks will catch issues later)
+    if last_price <= 0:
+        return True
+    base = sym_upper[:-4] if sym_upper.endswith('USDT') else sym_upper
+    if base in _MICRO_ACCOUNT_VIABLE_BASES:
+        return True
+    # Dynamic check: can we fit $20 min notional within 90% of balance at given leverage?
+    max_margin_budget = balance_usdt * 0.90
+    max_notional = max_margin_budget * leverage
+    return max_notional >= 20.0 and last_price <= _MICRO_ACCOUNT_MAX_UNIT_PRICE_USDT
 
 
 def _select_diversified_top_movers(candidates: List[tuple], max_symbols: int) -> List[tuple]:
@@ -34107,6 +34380,18 @@ def _get_top_movers_direct_trade_candidates(
             if str(tracked.get('symbol') or '').upper() in _TOP_MOVERS_MAJOR_SYMBOLS:
                 open_major_positions += 1
 
+    # Micro-account balance check: filter out symbols not viable for the account size
+    _dm_bal = max(
+        _safe_float(bot_config.get('accountBalance'), 0.0),
+        _safe_float(bot_config.get('accountEquity'), 0.0),
+        _safe_float(bot_config.get('initialBalance'), 0.0),
+    )
+    _dm_is_micro = (
+        0 < _dm_bal < 20.0
+        and str(bot_config.get('mode') or '').strip().lower() == 'live'
+        and not spot
+    )
+
     min_pct = float(bot_config.get('topMoverMinChangePct', 4.0))  # configurable, default 4%
     major_cap = max(0, min(2, int(_safe_float(bot_config.get('topMoverDirectMaxMajors', 1), 1))))
     cooldown_minutes = max(0.0, _safe_float(bot_config.get('topMoverDirectSymbolCooldownMinutes', 15.0), 15.0))
@@ -34119,6 +34404,12 @@ def _get_top_movers_direct_trade_candidates(
         if sym_upper in open_symbols:
             continue  # already holding this symbol
         if data['abs_pct'] < min_pct:
+            continue
+        # Micro-account: skip symbols whose per-unit price would make the minimum
+        # notional unachievable within the bot's margin budget
+        if _dm_is_micro and not _is_symbol_viable_for_micro_account(
+            sym_upper, data.get('last_price', 0.0), _dm_bal
+        ):
             continue
 
         cooldown_until_raw = cooldown_map.get(sym_upper)
@@ -36327,11 +36618,15 @@ def _clamp_int_value(field_name: str, raw_value, minimum: int, maximum: int, def
 
 
 def _resolve_assisted_cycle_symbol_cap(bot_config: Dict[str, Any]) -> int:
-    configured_cap = bot_config.get('assistedCycleSymbolCap', DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE)
+    normalized_broker = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or ''
+    )
+    binance_default = 25 if normalized_broker == 'Binance' else DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE
+    configured_cap = bot_config.get('assistedCycleSymbolCap', binance_default)
     try:
         cycle_cap = int(round(float(configured_cap)))
     except (TypeError, ValueError):
-        cycle_cap = DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE
+        cycle_cap = binance_default
     return max(1, min(MAX_ASSISTED_SYMBOLS_PER_CYCLE, cycle_cap))
 
 
@@ -42841,6 +43136,9 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 # (e.g. Binance spot, partial fills, or stale closed-trade lookup)
                                 # compute it from tracked entry/exit prices so trades don't
                                 # persist with profit=0 despite a real price differential.
+                                # For Binance futures we also deduct the round-trip taker fee
+                                # (0.04% entry + 0.04% exit = 0.08% of notional) so the computed
+                                # fallback profit matches the actual wallet impact.
                                 if abs(_safe_float(real_profit, 0.0)) < 1e-9:
                                     _entry_px = _safe_float(
                                         tracked.get('entryPrice')
@@ -42868,6 +43166,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             real_profit = round((_exit_px - _entry_px) * _vol_px, 4)
                                         elif 'SELL' in _dir_px:
                                             real_profit = round((_entry_px - _exit_px) * _vol_px, 4)
+                                        # Deduct round-trip trading fee for Binance futures (taker 0.04% each side)
+                                        if broker_type == 'Binance' and getattr(active_conn, 'market', 'spot') == 'futures':
+                                            _notional = _entry_px * _vol_px
+                                            _fee = round(_notional * 0.0008, 6)  # 0.08% round-trip
+                                            trade_commission = round(-_fee, 6)
+                                            real_profit = round(real_profit - _fee, 4)
                                         if abs(real_profit) > 1e-9:
                                             logger.info(
                                                 f"Bot {bot_id}: Computed fallback close P&L for {tracked.get('symbol')} "
@@ -43423,10 +43727,18 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 _safe_float(bot_config.get('totalFundingFees'), 0.0) + _new_ff_total, 4
                                             )
                                             bot_config['_lastFundingFeeTs'] = _new_last_ts
+                                            # Apply funding fees to totalProfit so the dashboard
+                                            # reflects the true wallet impact (funding fees are
+                                            # debited directly from the Binance wallet every 8h).
+                                            bot_config['totalProfit'] = round(
+                                                _safe_float(bot_config.get('totalProfit'), 0.0) + _new_ff_total, 4
+                                            )
+                                            bot_config['profit'] = bot_config['totalProfit']
                                             logger.info(
                                                 f"Bot {bot_id}: Binance funding fees this period: "
                                                 f"{_new_ff_total:+.4f} USDT "
-                                                f"(total: {bot_config['totalFundingFees']:+.4f})"
+                                                f"(total: {bot_config['totalFundingFees']:+.4f}) "
+                                                f"| Applied to totalProfit -> {bot_config['totalProfit']:+.4f}"
                                             )
                                     bot_config['_lastFundingFeeCheckTs'] = _now_ts
                             except Exception as _ff_err:
@@ -43736,6 +44048,42 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
 
                         poll_symbol_universe = build_scanner_symbol_universe(bot_config, tradable_symbol_keys)
 
+                        # Micro-account auto-augmentation: if balance < $20 on Binance live futures
+                        # and the bot's entire symbol universe only contains blocked/expensive symbols,
+                        # automatically inject cheap-per-unit symbols so the bot can actually trade.
+                        _aug_is_binance_live_fut = (
+                            canonicalize_broker_name(
+                                bot_config.get('brokerName') or bot_config.get('broker_type') or ''
+                            ) == 'Binance'
+                            and str(bot_config.get('mode') or '').strip().lower() == 'live'
+                            and str(bot_config.get('marketType') or bot_config.get('market') or '').lower() == 'futures'
+                        )
+                        if _aug_is_binance_live_fut:
+                            _aug_bal = max(
+                                _safe_float(bot_config.get('accountBalance'), 0.0),
+                                _safe_float(bot_config.get('accountEquity'), 0.0),
+                                _safe_float(bot_config.get('initialBalance'), 0.0),
+                            )
+                            if 0 < _aug_bal < 20.0:
+                                # Check how many configured symbols are viable for this balance
+                                _viable_in_list = [
+                                    s for s in poll_symbol_universe
+                                    if _is_symbol_viable_for_micro_account(s, 0.0, _aug_bal)
+                                ]
+                                if not _viable_in_list:
+                                    # None of the configured symbols are viable — auto-inject micro-safe ones
+                                    _auto_micro_symbols = [
+                                        'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'TRXUSDT', 'XLMUSDT',
+                                        'HBARUSDT', 'MATICUSDT', 'SHIBUSDT', 'PEPEUSDT',
+                                    ]
+                                    _injected = [s for s in _auto_micro_symbols if s not in set(poll_symbol_universe)]
+                                    if _injected:
+                                        poll_symbol_universe = list(poll_symbol_universe) + _injected
+                                        logger.info(
+                                            f"[MicroAccount] Bot {bot_id}: balance ${_aug_bal:.2f} — "
+                                            f"no viable symbols in config, auto-injecting micro-safe symbols: {_injected}"
+                                        )
+
                         # Symbols added by the top-movers SCAN augmentation only — these are not
                         # in the bot's tradable set, so a qualifying signal on them must not trigger
                         # an immediate trade cycle (the cycle can't act on them) unless direct
@@ -43749,7 +44097,36 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         # Default ON for all Binance bots; set topMoversEnabled=False to opt out
                         if _is_binance and bot_config.get('topMoversEnabled', True):
                             _is_futures = str(bot_config.get('marketType') or bot_config.get('market') or '').lower() == 'futures'
-                            _movers = _fetch_binance_top_movers(spot=not _is_futures)
+                            # For micro-accounts (< $20), fetch full data so we can price-filter movers
+                            _tm_bal = max(
+                                _safe_float(bot_config.get('accountBalance'), 0.0),
+                                _safe_float(bot_config.get('accountEquity'), 0.0),
+                                _safe_float(bot_config.get('initialBalance'), 0.0),
+                            )
+                            _is_micro_tm = (
+                                0 < _tm_bal < 20.0
+                                and str(bot_config.get('mode') or '').strip().lower() == 'live'
+                                and _is_futures
+                            )
+                            if _is_micro_tm:
+                                # Use data-enriched fetch so we can filter by unit price
+                                _movers_data = _fetch_binance_top_movers_with_data(spot=not _is_futures)
+                                _movers = [
+                                    sym for sym, info in _movers_data.items()
+                                    if _is_symbol_viable_for_micro_account(sym, info.get('last_price', 0.0), _tm_bal)
+                                ]
+                                if _movers_data and not _movers:
+                                    logger.info(
+                                        f"[TopMovers] Bot {bot_id}: micro-account ${_tm_bal:.2f} — "
+                                        f"all top movers filtered (none viable at balance). Will use bot symbol list only."
+                                    )
+                                elif _movers:
+                                    logger.debug(
+                                        f"[TopMovers] Bot {bot_id}: micro-account ${_tm_bal:.2f} — "
+                                        f"balance-filtered movers: {_movers}"
+                                    )
+                            else:
+                                _movers = _fetch_binance_top_movers(spot=not _is_futures)
                             if _movers:
                                 _existing = set(poll_symbol_universe)
                                 _new_movers = [s for s in _movers if s not in _existing]
@@ -44296,7 +44673,17 @@ def quick_create_bot():
                 ],
                 'large_cap_only': [
                     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ADAUSDT', 'XRPUSDT'
-                ]
+                ],
+                # Micro-account preset: low per-unit price so $20 min notional is reachable
+                # at 5x leverage even with < $20 balance. BTC/SOL/BNB are excluded.
+                'micro_account': [
+                    'XRPUSDT',   # ~$2.4/unit — very liquid, low step size
+                    'ADAUSDT',   # ~$0.78/unit — excellent for tiny margin
+                    'DOGEUSDT',  # ~$0.24/unit — ultra cheap per unit
+                    'TRXUSDT',   # ~$0.28/unit — high volume, cheap
+                    'XLMUSDT',   # ~$0.30/unit — stable mover
+                    'HBARUSDT',  # ~$0.25/unit — good liquidity
+                ],
             }
 
             symbols = BINANCE_PRESETS.get(preset, BINANCE_PRESETS['top_edge'])

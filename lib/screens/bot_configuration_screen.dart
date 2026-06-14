@@ -589,6 +589,77 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'risk': 'Medium',
       'analysis': 'Range rotations',
     },
+    // --- Micro-account viable symbols (low per-unit price, $20 min notional reachable at 5x) ---
+    'XRPUSDT': {
+      'edgePct': 5.6,
+      'winRate': 57.0,
+      'liquidityScore': 89.0,
+      'risk': 'Low',
+      'analysis': 'Range breakout • micro-safe',
+    },
+    'ADAUSDT': {
+      'edgePct': 5.1,
+      'winRate': 56.0,
+      'liquidityScore': 84.0,
+      'risk': 'Low',
+      'analysis': 'Mean reversion • micro-safe',
+    },
+    'DOGEUSDT': {
+      'edgePct': 6.5,
+      'winRate': 54.0,
+      'liquidityScore': 86.0,
+      'risk': 'Medium',
+      'analysis': 'Volatility spikes • micro-safe',
+    },
+    'TRXUSDT': {
+      'edgePct': 4.3,
+      'winRate': 56.0,
+      'liquidityScore': 74.0,
+      'risk': 'Low',
+      'analysis': 'Stable mover • micro-safe',
+    },
+    'XLMUSDT': {
+      'edgePct': 4.6,
+      'winRate': 54.0,
+      'liquidityScore': 72.0,
+      'risk': 'Low',
+      'analysis': 'Breakout pulses • micro-safe',
+    },
+    'HBARUSDT': {
+      'edgePct': 4.5,
+      'winRate': 53.0,
+      'liquidityScore': 68.0,
+      'risk': 'Low',
+      'analysis': 'Network momentum • micro-safe',
+    },
+    'SHIBUSDT': {
+      'edgePct': 7.0,
+      'winRate': 51.0,
+      'liquidityScore': 78.0,
+      'risk': 'High',
+      'analysis': 'Speculative bursts • micro-safe',
+    },
+    'PEPEUSDT': {
+      'edgePct': 7.2,
+      'winRate': 50.0,
+      'liquidityScore': 70.0,
+      'risk': 'High',
+      'analysis': 'Meme momentum • micro-safe',
+    },
+    'TONUSDT': {
+      'edgePct': 5.2,
+      'winRate': 54.0,
+      'liquidityScore': 73.0,
+      'risk': 'Medium',
+      'analysis': 'Ecosystem growth • micro-safe',
+    },
+    'MATICUSDT': {
+      'edgePct': 5.4,
+      'winRate': 55.0,
+      'liquidityScore': 79.0,
+      'risk': 'Medium',
+      'analysis': 'Swing setup • micro-safe',
+    },
   };
 
   Future<String> _currentTradingMode() async {
@@ -4983,6 +5054,36 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
                                                             color: Colors.blueAccent,
                                                             fontWeight: FontWeight.w700,
                                                           ),
+                                                        ),
+                                                      ),
+                                                    // Micro-account warning badge for expensive symbols
+                                                    if (isBinanceSymbol &&
+                                                        const {'BTCUSDT', 'BNBUSDT', 'SOLUSDT'}.contains(symbolCode.toUpperCase()))
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                        decoration: BoxDecoration(
+                                                          color: Colors.orange.withOpacity(0.18),
+                                                          borderRadius: BorderRadius.circular(3),
+                                                          border: Border.all(color: Colors.orange.withOpacity(0.5)),
+                                                        ),
+                                                        child: const Text(
+                                                          '⚠ Not for < \$20',
+                                                          style: TextStyle(fontSize: 9, color: Colors.orange, fontWeight: FontWeight.w700),
+                                                        ),
+                                                      ),
+                                                    // Micro-safe badge for recommended low-price symbols
+                                                    if (isBinanceSymbol &&
+                                                        const {'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'TRXUSDT', 'XLMUSDT', 'HBARUSDT', 'MATICUSDT', 'SHIBUSDT', 'PEPEUSDT', 'TONUSDT'}.contains(symbolCode.toUpperCase()))
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                        decoration: BoxDecoration(
+                                                          color: Colors.green.withOpacity(0.14),
+                                                          borderRadius: BorderRadius.circular(3),
+                                                          border: Border.all(color: Colors.green.withOpacity(0.4)),
+                                                        ),
+                                                        child: const Text(
+                                                          '⚡ Micro-safe',
+                                                          style: TextStyle(fontSize: 9, color: Colors.green, fontWeight: FontWeight.w700),
                                                         ),
                                                       ),
                                                     Container(
