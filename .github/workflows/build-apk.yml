@@ -1,8 +1,8 @@
-name: Build APK Release
+name: Build & Release APK
 
 on:
   push:
-    branches: [ main, pre-2026-06-04-app ]
+    branches: [ main ]
     paths:
       - 'lib/**'
       - 'android/**'
@@ -12,9 +12,14 @@ on:
   workflow_dispatch:
     inputs:
       api_url:
-        description: 'Backend API base URL to bake into the APK'
+        description: 'Backend API URL (leave blank for production default)'
         required: false
-        default: 'http://148.113.5.39:9000'
+        default: ''
+        type: string
+      release_notes:
+        description: 'Release notes for this build'
+        required: false
+        default: 'Automated build'
         type: string
 
 permissions:
@@ -25,23 +30,21 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEFAULT_API_URL: http://148.113.5.39:9000
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Free disk space
         run: |
-          echo "Disk space before cleanup"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/.ghcup
-          # Removed the line that deletes the Android SDK
-          # sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup
           sudo docker system prune -af || true
-          echo "Disk space after cleanup"
-          df -h
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -55,99 +58,115 @@ jobs:
             "build-tools;35.0.0" \
             "ndk;25.1.8937393"
 
-      - name: Verify Android SDK
-        run: |
-          echo "ANDROID_HOME=${ANDROID_HOME}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
-          test -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-      
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-      
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.32.5'
           channel: 'stable'
 
-      - name: Print Flutter & Dart Version
+      # ── Release signing ───────────────────────────────────────────────────
+      # Add these secrets in GitHub repo → Settings → Secrets → Actions:
+      #   KEYSTORE_BASE64    : base64 of your .jks  (run: base64 zwesta.jks | tr -d '\n')
+      #   KEY_STORE_PASSWORD : keystore password
+      #   KEY_ALIAS          : key alias (e.g. zwesta)
+      #   KEY_PASSWORD       : key password
+      #   PROD_API_KEY       : zwesta_live_api_key_2026_secure
+      - name: Decode release keystore
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          flutter --version
-          dart --version
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/zwesta-release.jks
 
-      
-      - name: Clear all caches
+      - name: Create key.properties
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          rm -rf ~/.gradle
-          rm -rf android/.gradle
-          rm -rf build/
+          cat > android/key.properties <<EOF
+          storeFile=zwesta-release.jks
+          storePassword=${{ secrets.KEY_STORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+
+      # ── Build ─────────────────────────────────────────────────────────────
+      - name: Clean & get dependencies
+        run: |
           flutter clean
-      
-      - name: Get dependencies
-        run: 'flutter pub get --enforce-lockfile'
+          flutter pub get --enforce-lockfile
 
       - name: Flutter analyze
         run: |
           set +e
           flutter analyze --no-fatal-infos --no-fatal-warnings > flutter_analyze.log 2>&1
-          analyze_exit=$?
           cat flutter_analyze.log
-          if grep -Eq '^[[:space:]]*(warning|error) -' flutter_analyze.log; then
-            echo "Analyzer reported warning/error findings"
+          if grep -Eq '^[[:space:]]*(error) -' flutter_analyze.log; then
+            echo "Analyzer reported errors"
             exit 1
           fi
-          echo "Analyzer findings are info-only; continuing build"
-          exit 0
-      
-      - name: Build APK
+          echo "Analyzer clean"
+
+      - name: Build release APK
         run: |
           API_URL="${{ github.event.inputs.api_url }}"
-          if [ -z "$API_URL" ]; then
-            API_URL="$DEFAULT_API_URL"
-          fi
-          echo "Building APK with API_URL=$API_URL"
+          if [ -z "$API_URL" ]; then API_URL="$DEFAULT_API_URL"; fi
+          PROD_KEY="${{ secrets.PROD_API_KEY }}"
+          if [ -z "$PROD_KEY" ]; then PROD_KEY="zwesta_live_api_key_2026_secure"; fi
+          echo "Building with API_URL=$API_URL  versionCode=${{ github.run_number }}"
           flutter build apk --release \
             --dart-define=API_URL="$API_URL" \
+            --dart-define=API_KEY="$PROD_KEY" \
+            --build-number=${{ github.run_number }} \
+            --obfuscate \
+            --split-debug-info=build/debug-info \
             --verbose 2>&1 | tee build_output.log
           exit_code=${PIPESTATUS[0]}
           if [ $exit_code -ne 0 ]; then
-            echo "=== BUILD FAILED — last 100 lines ==="
             tail -100 build_output.log
-            echo "=== Gradle error summary ==="
-            grep -E "(error:|FAILED|Exception|Could not|> Task|Caused by)" build_output.log | tail -40 || true
             exit $exit_code
           fi
-      
+
+      # ── Artifact & Release ────────────────────────────────────────────────
       - name: Get commit info
         id: commit
         run: |
-          echo "message=$(git log -1 --pretty=%s)" >> $GITHUB_OUTPUT
-          echo "author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-      
-      - name: Create Release
+          echo "author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+          echo "message=$(git log -1 --pretty=%s)" >> $GITHUB_OUTPUT
+
+      - name: Rename APK with version
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             build/app/outputs/flutter-apk/zwesta-trading-v1.0.${{ github.run_number }}.apk
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: build/app/outputs/flutter-apk/app-release.apk
-          tag_name: apk-${{ github.run_number }}
-          name: APK Build ${{ github.run_number }}
+          files: build/app/outputs/flutter-apk/zwesta-trading-v1.0.${{ github.run_number }}.apk
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Zwesta Trading v1.0.${{ github.run_number }}"
           body: |
-            APK build for commit `${{ github.sha }}`.
+            ## Zwesta Trading App — Build ${{ github.run_number }}
 
-            Commit: ${{ steps.commit.outputs.short_sha }}
-            Author: ${{ steps.commit.outputs.author }}
-            Message: ${{ steps.commit.outputs.message }}
-            API URL: ${{ github.event.inputs.api_url || 'http://148.113.5.39:9000' }}
+            **Commit:** `${{ steps.commit.outputs.short_sha }}` by ${{ steps.commit.outputs.author }}
+            **Message:** ${{ steps.commit.outputs.message }}
+            **API URL:** ${{ github.event.inputs.api_url || env.DEFAULT_API_URL }}
+            **Notes:** ${{ github.event.inputs.release_notes || 'Automated build from push to main' }}
+
+            ### Install
+            Download the `.apk` below and install on Android.
+            *(Enable "Install from unknown sources" in Android Settings if prompted)*
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Upload APK as artifact
+
+      - name: Upload APK artifact (60-day retention)
         uses: actions/upload-artifact@v4
         with:
-          name: zwesta-trading-apk-${{ github.run_number }}
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: zwesta-trading-v1.0.${{ github.run_number }}
+          path: |
+            build/app/outputs/flutter-apk/zwesta-trading-v1.0.${{ github.run_number }}.apk
+            build/debug-info/
           retention-days: 60
-

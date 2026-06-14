@@ -1,32 +1,45 @@
-# This is a basic workflow that is manually triggered
+name: VPS Health Check
 
-name: Manual workflow
-
-# Controls when the action will run. Workflow runs when manually triggered using the UI
-# or API.
 on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes
   workflow_dispatch:
-    # Inputs the workflow accepts.
-    inputs:
-      name:
-        # Friendly description to be shown in the UI instead of 'name'
-        description: 'Person to greet'
-        # Default value if no value is explicitly provided
-        default: 'World'
-        # Input has to be provided for the workflow to run
-        required: true
-        # The data type of the input
-        type: string
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "greet"
-  greet:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+  health-check:
+    name: Check VPS backend & bots
+    runs-on: self-hosted
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-    # Runs a single command using the runners shell
-    - name: Send greeting
-      run: echo "Hello ${{ inputs.name }}"
+      - name: Backend health
+        shell: pwsh
+        run: |
+          try {
+            $r = Invoke-RestMethod "http://127.0.0.1:9000/api/health" -TimeoutSec 10
+            Write-Host "OK: $($r | ConvertTo-Json -Compress)"
+          } catch {
+            Write-Host "FAIL: Backend unreachable — $_"
+            exit 1
+          }
+
+      - name: Bot status summary
+        shell: pwsh
+        run: |
+          $r = Invoke-RestMethod "http://127.0.0.1:9000/api/bot/status-public" -TimeoutSec 10
+          Write-Host "Active bots: $($r.activeBots) / Running: $($r.runningBots)"
+          $r.bots | ForEach-Object {
+            $flag = if ($_.profit -lt 0) { "LOSS" } else { "OK" }
+            Write-Host "  [$flag] $($_.botId) | $($_.status) | profit=$($_.profit) | trades=$($_.totalTrades)"
+          }
+
+      - name: Restart if backend is down
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "Backend appears down — attempting restart"
+          Start-Process -FilePath "C:\backend\start_watchdog.bat" `
+                        -WorkingDirectory "C:\backend" `
+                        -WindowStyle Hidden
+          Start-Sleep -Seconds 10
+          Invoke-RestMethod "http://127.0.0.1:9000/api/health" -TimeoutSec 10
+

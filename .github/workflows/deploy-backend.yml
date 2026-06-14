@@ -1,39 +1,103 @@
 name: Deploy Backend to VPS
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HOW THIS WORKS (no SSH port 22 required):
+#
+# A GitHub Actions self-hosted runner is installed ON the VPS.  It connects
+# OUT to GitHub (port 443 — always open), so we never need to open inbound SSH.
+#
+# SETUP STEPS (one-time, done via RDP into the VPS):
+#   1. Open GitHub repo → Settings → Actions → Runners → New self-hosted runner
+#   2. Select Windows, copy the registration commands
+#   3. On the VPS: open PowerShell as Admin, run the commands
+#   4. Install as a service: .\svc.sh install && .\svc.sh start
+#      (or: Run-Service.cmd for Windows)
+#   The runner label will be "self-hosted" and will appear in GitHub UI as online.
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
     paths:
       - 'multi_broker_backend_updated.py'
       - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+    inputs:
+      restart_only:
+        description: 'Just restart the backend without copying files'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   deploy:
-    name: SSH Deploy to VPS
-    runs-on: ubuntu-latest
+    name: Deploy to VPS (self-hosted runner)
+    runs-on: self-hosted   # ← runs directly on your VPS
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: 22
-          script: |
-            echo "=== Pulling latest code ==="
-            cd /root/zwesta-backend
-            git pull origin main
+      - name: Stop running backend
+        shell: pwsh
+        run: |
+          Write-Host "=== Stopping existing backend processes ==="
+          $procs = Get-Process python -ErrorAction SilentlyContinue |
+                   Where-Object { $_.MainWindowTitle -eq '' }
+          if ($procs) {
+            $procs | Stop-Process -Force
+            Write-Host "Stopped $($procs.Count) python process(es)"
+            Start-Sleep -Seconds 3
+          } else {
+            Write-Host "No python processes running"
+          }
 
-            echo "=== Restarting backend service ==="
-            systemctl restart zwesta-backend || pm2 restart zwesta-backend || pkill -f multi_broker_backend_updated.py && nohup python3 multi_broker_backend_updated.py &
+      - name: Copy backend file
+        if: ${{ github.event.inputs.restart_only != 'true' }}
+        shell: pwsh
+        run: |
+          Write-Host "=== Copying patched backend to C:\backend\ ==="
+          Copy-Item "${{ github.workspace }}\multi_broker_backend_updated.py" `
+                    "C:\backend\multi_broker_backend_updated.py" -Force
+          Write-Host "File copied: $(Get-Date)"
+          $item = Get-Item "C:\backend\multi_broker_backend_updated.py"
+          Write-Host "Size: $($item.Length) bytes  Modified: $($item.LastWriteTime)"
 
-            echo "=== Waiting for backend to start ==="
-            sleep 5
+      - name: Start backend via watchdog
+        shell: pwsh
+        run: |
+          Write-Host "=== Starting watchdog ==="
+          Start-Process -FilePath "C:\backend\start_watchdog.bat" `
+                        -WorkingDirectory "C:\backend" `
+                        -WindowStyle Hidden
+          Start-Sleep -Seconds 8
 
-            echo "=== Health check ==="
-            curl -sf http://localhost:9000/api/health && echo "✅ Backend is up" || echo "❌ Backend health check failed"
+      - name: Health check
+        shell: pwsh
+        run: |
+          Write-Host "=== Health check ==="
+          $max_attempts = 10
+          for ($i = 1; $i -le $max_attempts; $i++) {
+            try {
+              $r = Invoke-RestMethod "http://127.0.0.1:9000/api/health" -TimeoutSec 5
+              Write-Host "Backend is UP (attempt $i): $($r | ConvertTo-Json -Compress)"
+              exit 0
+            } catch {
+              Write-Host "Attempt $i/$max_attempts failed: $_"
+              if ($i -lt $max_attempts) { Start-Sleep -Seconds 3 }
+            }
+          }
+          Write-Host "Backend did not respond after $max_attempts attempts"
+          exit 1
+
+      - name: Report bot status
+        shell: pwsh
+        run: |
+          try {
+            $r = Invoke-RestMethod "http://127.0.0.1:9000/api/bot/status-public" -TimeoutSec 10
+            Write-Host "Active bots: $($r.activeBots)"
+            $r.bots | ForEach-Object { Write-Host "  $($_.botId) | $($_.status) | profit: $($_.profit)" }
+          } catch {
+            Write-Host "Could not fetch bot status: $_"
+          }
+

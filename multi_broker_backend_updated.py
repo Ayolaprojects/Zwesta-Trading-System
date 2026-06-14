@@ -50,6 +50,19 @@ from enum import Enum
 import sys
 import atexit
 
+# Profit peak erosion protection (new feature)
+try:
+    from fix_profit_peak_erosion import (
+        record_symbol_trade,
+        should_trade_symbol_with_peak_protection,
+        calculate_recovery_position_size,
+        format_symbol_protection_summary,
+    )
+    PROFIT_PEAK_PROTECTION_AVAILABLE = True
+except ImportError:
+    PROFIT_PEAK_PROTECTION_AVAILABLE = False
+    logger_module_init = True  # Temporary flag, logger will be created below
+
 
 def _find_preferred_python_executable() -> Optional[str]:
     candidate_paths = []
@@ -2194,6 +2207,14 @@ def resolve_bind_ports() -> List[int]:
 # Environment Configuration (DEMO or LIVE)
 ENVIRONMENT = resolve_environment_mode()
 AUTO_RESTART_BOTS_ON_STARTUP = True  # ✅ ENABLED for max1 bot auto-start with aggressive filters
+
+# Profit peak erosion protection configuration
+PROFIT_PEAK_PROTECTION_ENABLED = True  # Set to False to disable feature
+PROFIT_PEAK_PROTECTION_COOLDOWN_MINUTES = 15  # After peak detected
+PROFIT_PEAK_PROTECTION_MIN_PEAK_PROFIT = 0.50  # Minimum profit to arm ($)
+PROFIT_PEAK_PROTECTION_DECLINE_THRESHOLD = 0.05  # Min decline to trigger ($)
+PROFIT_PEAK_PROTECTION_RECOVERY_WINS_REQUIRED = 3  # Wins to graduate recovery
+PROFIT_PEAK_PROTECTION_RECOVERY_SIZE_PERCENT = 0.50  # Position size % in recovery
 AUTO_RESTART_BOTS_MODE_FILTER = str(
     os.getenv('AUTO_RESTART_BOTS_MODE_FILTER', 'live' if ENVIRONMENT == 'LIVE' else 'all') or 'all'
 ).strip().lower()
@@ -4195,6 +4216,8 @@ def _score_signal_setup(
             size_multiplier *= max(0.7, min(_safe_float(symbol_performance.get('multiplier'), 1.0), 1.1))
         if isinstance(bot_config, dict) and int(bot_config.get('consecutiveLosses') or 0) >= 2:
             size_multiplier *= 0.75
+        if isinstance(bot_config, dict) and not _has_sustained_realized_profit(bot_config) and size_multiplier > 1.0:
+            size_multiplier = 1.0
         size_multiplier = round(max(0.5, min(size_multiplier, 1.2)), 3)
 
     return {
@@ -9546,6 +9569,14 @@ class BinanceConnection(BrokerConnection):
                         )
                         self._futures_leverage_cache[instrument] = current_leverage
                         return True, None, current_leverage
+                if 'leverage reduction is not supported' in lower_error and 'open positions' in lower_error:
+                    current_leverage = max(cached_leverage, self._get_futures_symbol_leverage(instrument), 1)
+                    logger.warning(
+                        f"[BINANCE FUTURES] Leverage {target_leverage}x cannot be reduced for {instrument} "
+                        f"while an isolated position is open; keeping exchange leverage {current_leverage}x instead"
+                    )
+                    self._futures_leverage_cache[instrument] = current_leverage
+                    return True, None, current_leverage
                 # Binance restricts leverage above 20x for the first 30 days after
                 # futures account registration. Fall back through 20x → 10x → 5x
                 # rather than blocking the entire trade.
@@ -21359,8 +21390,8 @@ def _get_recent_strategy_trade_stats(bot_config: Dict[str, Any], strategy_name: 
         closed_trades = closed_trades[-limit:]
 
     trade_count = len(closed_trades)
-    wins = sum(1 for trade in closed_trades if _safe_float(trade.get('profit'), 0.0) > 0)
-    total_profit = sum(_safe_float(trade.get('profit'), 0.0) for trade in closed_trades)
+    wins = sum(1 for trade in closed_trades if _trade_net_profit_value(trade) > 0)
+    total_profit = sum(_trade_net_profit_value(trade) for trade in closed_trades)
     return {
         'trades': trade_count,
         'wins': wins,
@@ -21550,9 +21581,11 @@ class DynamicPositionSizer:
         total_profit = bot_config.get('totalProfit', 0)
         max_drawdown = bot_config.get('maxDrawdown', 0)
         peak_profit = bot_config.get('peakProfit', 0)
+        sustained_profit_state = _resolve_sustained_profit_state(bot_config)
+        growth_allowed = bool(sustained_profit_state.get('allowed'))
         
         # 1. EQUITY SCALING - Scale by cumulative profit
-        if total_trades > 0 and total_profit > 0:
+        if total_trades > 0 and total_profit > 0 and growth_allowed:
             equity_multiplier = 1.0 + (total_profit / 1000)  # +10% size per $1000 profit
             size *= min(equity_multiplier, 1.5)  # Cap at 1.5x
         
@@ -21570,7 +21603,7 @@ class DynamicPositionSizer:
                     if win_streak > 0:
                         break
             
-            if win_streak > 2:
+            if win_streak > 2 and growth_allowed:
                 size *= (1.0 + (win_streak * 0.1))  # +10% per win in streak
             elif loss_streak >= 2:
                 size *= max(0.45, 1.0 - (loss_streak * 0.15))
@@ -21590,7 +21623,10 @@ class DynamicPositionSizer:
             'High': 0.8,     # Reduce in high volatility
             'Very High': 0.6 # Significantly reduce in extreme volatility
         }
-        size *= volatility_multiplier.get(volatility_level, 1.0)
+        vol_mult = volatility_multiplier.get(volatility_level, 1.0)
+        if vol_mult > 1.0 and not growth_allowed:
+            vol_mult = 1.0
+        size *= vol_mult
         
         # 4. DRAWDOWN PROTECTION - Reduce size during drawdowns
         if peak_profit > 0 and max_drawdown > 0:
@@ -22417,6 +22453,31 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
     symbols_to_scan = list(symbol_universe or sorted(VALID_SYMBOLS))
     total_symbols = len(symbols_to_scan)
     adaptive_floor = _adaptive_signal_threshold_floor(bot_config or {}) if bot_config else 20
+    normalized_broker = canonicalize_broker_name(
+        (bot_config or {}).get('brokerName')
+        or (bot_config or {}).get('broker_type')
+        or (bot_config or {}).get('broker')
+        or ''
+    )
+    mode_value = str((bot_config or {}).get('mode') or (bot_config or {}).get('botMode') or 'demo').strip().lower()
+    is_live = mode_value == 'live' or bool((bot_config or {}).get('is_live'))
+    binance_alt_signal_discount = max(
+        0.0,
+        min(12.0, _safe_float((bot_config or {}).get('binanceAltSignalThresholdDiscount'), 6.0)),
+    )
+    exness_signal_threshold_discount = max(
+        0.0,
+        min(12.0, _safe_float((bot_config or {}).get('exnessSignalThresholdDiscount'), 4.0)),
+    )
+    exness_floor_relaxation = max(
+        0.0,
+        min(15.0, _safe_float((bot_config or {}).get('exnessScannerFloorRelaxation'), 6.0)),
+    )
+    exness_min_scanner_floor = max(
+        35.0,
+        min(70.0, _safe_float((bot_config or {}).get('exnessMinScannerFloor'), 55.0)),
+    )
+    binance_major_bases = {'BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD'}
     if total_symbols > 0:
         logger.info(
             f"[SCANNER] Starting opportunity scan across {total_symbols} symbol(s) "
@@ -22426,6 +22487,23 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
         symbol_index = len(opportunities) + len(near_misses) + 1
         try:
             logger.debug(f"[SCANNER] Evaluating symbol {symbol_index}/{total_symbols}: {symbol}")
+            symbol_threshold = signal_threshold
+            symbol_floor = adaptive_floor
+            symbol_base = _normalize_symbol_base(symbol)
+            if (
+                normalized_broker == 'Binance'
+                and is_live
+                and symbol_base not in binance_major_bases
+                and binance_alt_signal_discount > 0
+            ):
+                symbol_threshold = max(symbol_floor, signal_threshold - binance_alt_signal_discount)
+            elif (
+                normalized_broker == 'Exness'
+                and is_live
+                and exness_signal_threshold_discount > 0
+            ):
+                symbol_floor = max(exness_min_scanner_floor, adaptive_floor - exness_floor_relaxation)
+                symbol_threshold = max(symbol_floor, signal_threshold - exness_signal_threshold_discount)
             market_data = _enrich_market_data_with_bot_context(bot_config, symbol)
             trade_params = _get_cached_strategy_params(
                 strategy_cache,
@@ -22439,14 +22517,14 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
             raw_signal = evaluate_real_trade_signal(symbol, market_data)
             raw_strength = raw_signal.get('strength', 0)
             if trade_params is None:
-                if raw_strength >= max(60, signal_threshold):
+                if raw_strength >= max(60, symbol_threshold):
                     logger.info(
                         f"[SCANNER] {symbol}: raw signal {raw_strength:.0f}/100 "
                         f"({raw_signal.get('signal', 'NEUTRAL')}) met visibility threshold, "
                         f"but the active strategy rejected execution: "
                         f"{raw_signal.get('entry_reason', 'Rejected by strategy')}"
                     )
-                raw_fallback_min_strength = max(adaptive_floor, min(signal_threshold, ADAPTIVE_FALLBACK_MIN_STRENGTH))
+                raw_fallback_min_strength = max(symbol_floor, min(symbol_threshold, ADAPTIVE_FALLBACK_MIN_STRENGTH))
                 raw_setup_eval = _score_signal_setup(
                     symbol,
                     market_data,
@@ -22491,7 +22569,7 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
                     })
                 continue
             strength = trade_params.get('signal', {}).get('strength', 0)
-            if strength >= signal_threshold:
+            if strength >= symbol_threshold:
                 opportunities.append({
                     'symbol': symbol,
                     'strength': strength,
@@ -22970,14 +23048,52 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
         return symbol_key in {'BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD'}
 
     binance_major_max_slots = 2
+    allow_major_backfill = True
     if normalized_broker_type == 'Binance':
         configured_symbols_for_guard = [str(sym).upper() for sym in (bot_config.get('symbols') or []) if sym]
         configured_has_alt = any(not _is_binance_major_symbol(sym) for sym in configured_symbols_for_guard)
         qualified_alt_exists = any(not _is_binance_major_symbol(opp.get('symbol')) for opp in tradeable_opportunities)
-        if configured_has_alt and qualified_alt_exists:
+        recent_closed = _recent_closed_trades(bot_config, limit=6)
+        recent_count = len(recent_closed)
+        recent_wins = sum(1 for trade in recent_closed if _safe_float(trade.get('profit'), 0.0) > 0)
+        recent_win_rate = (recent_wins / recent_count * 100.0) if recent_count else 100.0
+        recent_major_closed = [
+            trade for trade in recent_closed
+            if _is_binance_major_symbol(trade.get('symbol'))
+        ]
+        recent_major_count = len(recent_major_closed)
+        recent_major_wins = sum(1 for trade in recent_major_closed if _safe_float(trade.get('profit'), 0.0) > 0)
+        # ✅ FIX: lower freeze threshold — 1 losing major trade is enough to pause BTC/ETH when no wins
+        # Also freeze when ALL recent trades are major and all are losses (sole-symbol leak scenario)
+        all_recent_are_major = (recent_count > 0 and recent_count == recent_major_count)
+        freeze_major_rotation = bool(
+            is_live and (
+                (recent_major_count >= 2 and recent_major_wins == 0)
+                or (recent_major_count >= 1 and recent_major_wins == 0 and all_recent_are_major and recent_win_rate == 0.0)
+            )
+        )
+        defensive_rotation = (
+            bot_config.get('managementState') == 'recovery'
+            or (is_live and recent_count >= 4 and recent_win_rate < 40.0)
+        )
+        if freeze_major_rotation:
+            # ✅ FIX: also block backfill so BTC/ETH can't sneak in via fallback
+            allow_major_backfill = False
+            logger.info(
+                f"🧠 Bot {bot_id}: Freezing BTC/ETH cycle backfill after {recent_major_count} "
+                f"major losses with 0 wins (all_recent_major={all_recent_are_major}); prioritizing alts"
+            )
+        if configured_has_alt:
+            # ✅ FIX: apply slot cap even when no alt qualified right now, so BTC can't
+            # silently backfill just because alts happened to miss threshold this cycle
+            if qualified_alt_exists or freeze_major_rotation:
+                default_major_slots = 0 if is_live or defensive_rotation or freeze_major_rotation else 1
+            else:
+                # No alts qualified and not frozen — allow 1 major slot only
+                default_major_slots = 1 if is_live else 2
             binance_major_max_slots = max(
                 0,
-                min(2, int(_safe_float(bot_config.get('binanceMajorMaxCycleSlots'), 1))),
+                min(2, int(_safe_float(bot_config.get('binanceMajorMaxCycleSlots'), default_major_slots))),
             )
 
     deferred_major_opportunities: List[Dict[str, Any]] = []
@@ -22997,13 +23113,14 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
                 selected_major_symbols += 1
 
     # Fill any leftover slots with deferred BTC/ETH opportunities (if alts were insufficient).
-    for opp in deferred_major_opportunities:
-        if new_trade_slots_used >= cycle_symbol_cap:
-            break
-        if opp['symbol'] not in dedup_symbols and _is_symbol_tradeable_now(opp['symbol']):
-            cycle_symbols.append(opp['symbol'])
-            dedup_symbols.add(opp['symbol'])
-            new_trade_slots_used += 1
+    if allow_major_backfill:
+        for opp in deferred_major_opportunities:
+            if new_trade_slots_used >= cycle_symbol_cap:
+                break
+            if opp['symbol'] not in dedup_symbols and _is_symbol_tradeable_now(opp['symbol']):
+                cycle_symbols.append(opp['symbol'])
+                dedup_symbols.add(opp['symbol'])
+                new_trade_slots_used += 1
 
     # STEP 3: Append managed spot-inventory symbols (cap-exempt for SELL management).
     # These come AFTER scanner picks so they don't push scanner results out when sliced.
@@ -23013,10 +23130,19 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
             dedup_symbols.add(sym)
     
     # If we still have slots, add fallback symbols from the active scanner universe.
+    # ✅ FIX: skip BTC/ETH in the fallback loop when the freeze is active so the bot
+    # cannot silently re-enter majors just because alts failed to qualify this cycle.
+    _fallback_major_frozen = (
+        normalized_broker_type == 'Binance'
+        and not allow_major_backfill
+    )
     fallback_symbols = symbol_universe or bot_config.get('symbols', ['EURUSDm'])
     for s in fallback_symbols:
         if new_trade_slots_used >= cycle_symbol_cap:
             break
+        if _fallback_major_frozen and _is_binance_major_symbol(s):
+            logger.debug(f"🧠 Bot {bot_id}: Skipping fallback major {s} (freeze active)")
+            continue
         fallback_eval = evaluate_real_trade_signal(s, _enrich_market_data_with_bot_context(bot_config, s))
         fallback_strength = _safe_float(fallback_eval.get('strength'), 0.0)
         adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
@@ -23700,7 +23826,7 @@ def _rebuild_bot_profit_tracking(bot_state: Dict[str, Any]) -> None:
     profit_history = []
 
     for trade in closed_trades:
-        profit = float(trade.get('profit') or 0.0)
+        profit = _trade_net_profit_value(trade)
         total_profit += profit
         if profit > 0:
             winning_trades += 1
@@ -24124,9 +24250,9 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
                 _closed_trades.append(_trade)
         if _closed_trades:
             _db_closed = len(_closed_trades)
-            _db_profit = round(sum(_safe_float(_trade.get('profit'), 0.0) for _trade in _closed_trades), 2)
-            _db_wins = sum(1 for _trade in _closed_trades if _safe_float(_trade.get('profit'), 0.0) > 0)
-            _db_losses = round(sum(abs(_safe_float(_trade.get('profit'), 0.0)) for _trade in _closed_trades if _safe_float(_trade.get('profit'), 0.0) < 0), 2)
+            _db_profit = round(sum(_trade_net_profit_value(_trade) for _trade in _closed_trades), 2)
+            _db_wins = sum(1 for _trade in _closed_trades if _trade_net_profit_value(_trade) > 0)
+            _db_losses = round(sum(abs(_trade_net_profit_value(_trade)) for _trade in _closed_trades if _trade_net_profit_value(_trade) < 0), 2)
             bot_state['winningTrades'] = _db_wins
             bot_state['totalProfit'] = _db_profit
             bot_state['profit'] = _db_profit
@@ -27389,6 +27515,8 @@ def _resolve_adaptive_trade_amount(
     compound_enabled = _coerce_bool(bot_config.get('compoundProfits'), True)
     compound_ratio = 1.0
     compound_reason = ''
+    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
+    growth_allowed = bool(sustained_profit_state.get('allowed'))
     if compound_enabled:
         _initial_bal = _safe_float(bot_config.get('initialBalance'), 0.0)
         _current_bal = max(
@@ -27400,6 +27528,8 @@ def _resolve_adaptive_trade_amount(
             # Cap upside at 4× to prevent runaway sizing; floor at 0.5× so we
             # never drop below half the original size during a drawdown
             compound_ratio = max(0.5, min(4.0, compound_ratio))
+            if compound_ratio > 1.0 and not growth_allowed:
+                compound_ratio = 1.0
             if abs(compound_ratio - 1.0) > 0.005:  # only apply if >0.5% change
                 safe_base_amount = round(safe_base_amount * compound_ratio, 4)
                 compound_reason = (
@@ -27443,7 +27573,7 @@ def _resolve_adaptive_trade_amount(
     retrace_ratio = 0.0
     
     if profit_conditional:
-        if current_total_profit < 0:
+        if not growth_allowed:
             # In loss: revert to baseline sizing instead of multiplying into drawdown.
             loss_floor_multiplier = min(1.0, max(0.45, base_position_multiplier or 1.0))
             adjusted_amount = round(max(1.0, safe_base_amount * loss_floor_multiplier), 2)
@@ -27453,12 +27583,11 @@ def _resolve_adaptive_trade_amount(
             performance_state['multiplier'] = round(loss_floor_multiplier, 3)
             performance_state['state'] = 'defensive'
             performance_state['reason'] = (
-                f'profit-conditional: in loss (R{current_total_profit:.2f}), '
-                f'using baseline {loss_floor_multiplier:.2f}x'
+                f'profit-conditional: {sustained_profit_state.get("reason")}; using baseline {loss_floor_multiplier:.2f}x'
             )
             logger.info(
                 f"🛡️ Bot {bot_config.get('botId')}: LOSS PROTECTION - "
-                f"totalProfit={current_total_profit:.2f} < R0, using baseline {loss_floor_multiplier:.2f}x"
+                f"{sustained_profit_state.get('reason')}, using baseline {loss_floor_multiplier:.2f}x"
             )
             bot_config['lastSizingAdjustment'] = performance_state
             bot_config['tradeAmountAdaptation'] = {
@@ -27541,8 +27670,12 @@ def _resolve_adaptive_trade_amount(
 
         if state == 'hot' and daily_profit > 0:
             momentum_boost = min(0.18, max(0.0, daily_profit) / max(100.0, safe_base_amount * 10.0))
-            multiplier *= (1.0 + momentum_boost)
-            reasons.append('sustained profit momentum')
+            if growth_allowed:
+                multiplier *= (1.0 + momentum_boost)
+                reasons.append('sustained profit momentum')
+            else:
+                state = 'normal'
+                reasons.append('profit momentum boost locked until realized profit is sustained above zero')
         elif state == 'defensive':
             multiplier *= 0.78
             reasons.append('defensive sizing state')
@@ -27571,7 +27704,7 @@ def _resolve_adaptive_trade_amount(
         _safe_float(bot_config.get('accountEquity'), 0.0),
         _safe_float(bot_config.get('accountBalance'), 0.0),
     )
-    if not is_live and bot_config.get('managementState') != 'recovery' and top_strength >= 85.0:
+    if growth_allowed and not is_live and bot_config.get('managementState') != 'recovery' and top_strength >= 85.0:
         strong_setup_floor = 1.35 + min(0.9, max(0.0, (top_strength - 85.0) / 10.0))
         if scanner_market_multiplier >= 1.2:
             strong_setup_floor += min(0.8, (scanner_market_multiplier - 1.0) * 0.8)
@@ -27606,6 +27739,10 @@ def _resolve_adaptive_trade_amount(
         multiplier *= staircase_scale
         if staircase_reason:
             reasons.append(staircase_reason)
+
+    if not growth_allowed and multiplier > 1.0:
+        multiplier = 1.0
+        reasons.append(str(sustained_profit_state.get('reason') or 'growth multiplier locked'))
 
     adjusted_amount = round(max(1.0, safe_base_amount * multiplier), 2)
     bot_config['effectiveTradeAmount'] = adjusted_amount
@@ -27712,8 +27849,8 @@ def _collect_recent_closed_trade_profit_window(bot_config: Dict[str, Any], lookb
             break
 
     recent_closed_trades.reverse()
-    net_profit = round(sum(_safe_float(trade.get('profit'), 0.0) for trade in recent_closed_trades), 2)
-    gross_profit = round(sum(max(0.0, _safe_float(trade.get('profit'), 0.0)) for trade in recent_closed_trades), 2)
+    net_profit = round(sum(_trade_net_profit_value(trade) for trade in recent_closed_trades), 2)
+    gross_profit = round(sum(max(0.0, _trade_net_profit_value(trade)) for trade in recent_closed_trades), 2)
     return {
         'trades': recent_closed_trades,
         'sampleCount': len(recent_closed_trades),
@@ -32611,7 +32748,7 @@ def _resolve_scanner_capital_boost_cap(
 
 # Tier | Daily P&L as % of balance | Trade-amount mult | ATR/SL-TP mult
 # ─────┼───────────────────────────┼───────────────────┼───────────────
-#  μ   |  0 % –  5 %              |  1.2 ×            |  1.2 ×
+#  μ   | >0 % –  5 %              |  1.2 ×            |  1.2 ×
 #  1   |  5 % – 10 %              |  2.0 ×            |  2.0 ×
 #  2   | 10 % – 20 %              |  3.0 ×            |  4.0 ×
 #  3   | 20 % – 40 %              |  5.0 ×            |  8.0 ×
@@ -32624,13 +32761,82 @@ _PROFIT_SCALE_TIERS = [
     (20.0,  5.0,  8.0),
     (10.0,  3.0,  4.0),
     ( 5.0,  2.0,  2.0),
-    ( 0.0,  1.2,  1.2),
+    ( 0.01, 1.2,  1.2),
 ]
+
+
+def _resolve_sustained_profit_state(
+    bot_config: Optional[Dict[str, Any]],
+    balance: float = 0.0,
+) -> Dict[str, Any]:
+    """Return whether growth multipliers may engage for this bot.
+
+    Upside scaling is intentionally tied to realized closed-trade profit, not
+    open/floating P&L or a zero-value default. Defensive reductions are handled
+    elsewhere and do not need this gate.
+    """
+    if not isinstance(bot_config, dict):
+        return {'allowed': False, 'reason': 'missing bot config'}
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    daily_profits = bot_config.get('dailyProfits') if isinstance(bot_config.get('dailyProfits'), dict) else {}
+    total_profit = _safe_float(bot_config.get('totalProfit', bot_config.get('profit', 0.0)), 0.0)
+    daily_profit = _safe_float(daily_profits.get(today, bot_config.get('dailyProfit', 0.0)), 0.0)
+    balance_basis = max(
+        _safe_float(balance, 0.0),
+        _safe_float(bot_config.get('accountEquity'), 0.0),
+        _safe_float(bot_config.get('accountBalance'), 0.0),
+    )
+    min_profit_floor = max(0.01, min(5.0, balance_basis * 0.001 if balance_basis > 0 else 0.01))
+
+    trade_history = bot_config.get('tradeHistory') or []
+    closed_trades: List[Dict[str, Any]] = []
+    for trade in trade_history:
+        if not isinstance(trade, dict):
+            continue
+        status = str(trade.get('status') or '').lower()
+        if status == 'closed' or trade.get('exitTime') or trade.get('time_close'):
+            closed_trades.append(trade)
+    closed_trades.sort(key=_trade_history_timestamp_key)
+    recent_closed = closed_trades[-5:]
+    recent_count = len(recent_closed)
+    recent_profit = round(sum(_safe_float(trade.get('profit'), 0.0) for trade in recent_closed), 2)
+    recent_wins = sum(1 for trade in recent_closed if _safe_float(trade.get('profit'), 0.0) > 0)
+    recent_losses = sum(1 for trade in recent_closed if _safe_float(trade.get('profit'), 0.0) < 0)
+
+    total_trades = max(0, int(bot_config.get('totalTrades') or len(closed_trades) or 0))
+    winning_trades = max(0, int(bot_config.get('winningTrades') or 0))
+    has_positive_net = total_profit > min_profit_floor
+    has_recent_confirmation = recent_count >= 2 and recent_profit > 0 and recent_wins >= 2 and recent_losses == 0
+    has_lifetime_confirmation = total_trades >= 2 and winning_trades >= 2 and daily_profit > 0
+    allowed = bool(has_positive_net and (has_recent_confirmation or has_lifetime_confirmation))
+    reason = (
+        f"realized profit sustained above zero: total={total_profit:.2f}, daily={daily_profit:.2f}, "
+        f"recent={recent_profit:.2f}/{recent_count} trades"
+        if allowed else
+        f"growth locked until realized profit is sustained above zero "
+        f"(total={total_profit:.2f}, floor={min_profit_floor:.2f}, recent={recent_profit:.2f}/{recent_count})"
+    )
+    return {
+        'allowed': allowed,
+        'reason': reason,
+        'totalProfit': round(total_profit, 2),
+        'dailyProfit': round(daily_profit, 2),
+        'recentProfit': recent_profit,
+        'recentTradeCount': recent_count,
+        'recentWins': recent_wins,
+        'minProfitFloor': round(min_profit_floor, 2),
+    }
+
+
+def _has_sustained_realized_profit(bot_config: Optional[Dict[str, Any]], balance: float = 0.0) -> bool:
+    return bool(_resolve_sustained_profit_state(bot_config, balance).get('allowed'))
 
 
 def _get_profit_scale_multipliers(
     realized_pnl: float,
     balance: float,
+    bot_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float]:
     """
     Return (trade_amount_multiplier, atr_multiplier) keyed on today's
@@ -32639,6 +32845,8 @@ def _get_profit_scale_multipliers(
     Returns (1.0, 1.0) when the symbol/bot is not yet in profit.
     """
     if realized_pnl <= 0 or balance <= 0:
+        return 1.0, 1.0
+    if bot_config is not None and not _has_sustained_realized_profit(bot_config, balance):
         return 1.0, 1.0
     pct = (realized_pnl / balance) * 100.0
     for min_pct, ta_m, atr_m in _PROFIT_SCALE_TIERS:
@@ -32708,12 +32916,14 @@ def _resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> Dict[
     configured_base_leverage = _safe_float(bot_config.get('binanceFuturesBaseLeverage'), 0.0)
     configured_peak_leverage = _safe_float(bot_config.get('binanceFuturesPeakLeverage'), 0.0)
     configured_effective_leverage = _safe_float(bot_config.get('effectiveBinanceFuturesLeverage'), 0.0)
+    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
+    growth_allowed = bool(sustained_profit_state.get('allowed'))
 
     base_leverage = int(max(1, min(
         BINANCE_FUTURES_MAX_LEVERAGE,
-        configured_base_leverage or configured_effective_leverage or BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE,
+        configured_base_leverage or (configured_effective_leverage if growth_allowed else 0.0) or BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE,
     )))
-    if configured_effective_leverage > 0 and configured_peak_leverage <= max(configured_base_leverage, 0.0):
+    if growth_allowed and configured_effective_leverage > 0 and configured_peak_leverage <= max(configured_base_leverage, 0.0):
         base_leverage = int(max(base_leverage, min(BINANCE_FUTURES_MAX_LEVERAGE, configured_effective_leverage)))
     peak_leverage = int(max(base_leverage, min(
         BINANCE_FUTURES_MAX_LEVERAGE,
@@ -32724,8 +32934,8 @@ def _resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> Dict[
     if margin_type not in {'ISOLATED', 'CROSSED'}:
         margin_type = 'ISOLATED'
 
-    target_leverage = peak_leverage if not auto_leverage else base_leverage
-    reason = 'manual peak leverage'
+    target_leverage = peak_leverage if (not auto_leverage and growth_allowed) else base_leverage
+    reason = 'manual peak leverage' if growth_allowed else str(sustained_profit_state.get('reason') or 'baseline leverage until sustained realized profit')
 
     if auto_leverage:
         sizing_state = bot_config.get('lastSizingAdjustment') if isinstance(bot_config.get('lastSizingAdjustment'), dict) else {}
@@ -32739,15 +32949,15 @@ def _resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> Dict[
             _min_lv = int(max(1, _safe_float(bot_config.get('binanceFuturesMinLeverage'), BINANCE_FUTURES_MIN_LEVERAGE)))
             target_leverage = max(_min_lv, min(base_leverage, _defensive_lv))
             reason = 'defensive state or consecutive losses'
-        elif state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
+        elif growth_allowed and state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
             target_leverage = peak_leverage
             reason = 'hot profitable regime'
-        elif scanner_multiplier >= 1.05 or current_total_profit > 0:
+        elif growth_allowed and (scanner_multiplier >= 1.05 or current_total_profit > 0):
             target_leverage = max(base_leverage, int(round(base_leverage + (peak_leverage - base_leverage) * 0.6)))
             reason = 'profitable/supportive regime'
         else:
             target_leverage = base_leverage
-            reason = 'baseline leverage'
+            reason = 'baseline leverage' if growth_allowed else str(sustained_profit_state.get('reason') or 'baseline leverage until sustained realized profit')
 
     target_leverage = int(max(1, min(BINANCE_FUTURES_MAX_LEVERAGE, target_leverage)))
     return {
@@ -32801,6 +33011,8 @@ def _resolve_mt5_position_multiplier(
         return {'enabled': False, 'multiplier': 1.0, 'reason': 'non-MT5 broker', 'targetLeverage': 0.0, 'accountLeverage': 0}
 
     auto = _coerce_bool(bot_config.get('mt5AutoLeverage', True), True)
+    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
+    growth_allowed = bool(sustained_profit_state.get('allowed'))
     account_info = account_info if isinstance(account_info, dict) else {}
     account_leverage = int(max(1.0, _safe_float(
         account_info.get('leverage', bot_config.get('accountLeverage', MT5_PEAK_REFERENCE_LEVERAGE)),
@@ -32836,6 +33048,14 @@ def _resolve_mt5_position_multiplier(
     )))
 
     if not auto:
+        if not growth_allowed:
+            return {
+                'enabled': True,
+                'multiplier': 1.0,
+                'reason': str(sustained_profit_state.get('reason') or 'baseline multiplier until sustained realized profit'),
+                'targetLeverage': base_reference_leverage,
+                'accountLeverage': account_leverage,
+            }
         return {
             'enabled': True,
             'multiplier': peak_mult,
@@ -32850,21 +33070,19 @@ def _resolve_mt5_position_multiplier(
     consecutive_losses = int(sizing_state.get('consecutiveLosses') or 0)
     current_total_profit = _safe_float(bot_config.get('totalProfit', bot_config.get('profit', 0.0)), 0.0)
     
-    # � PROFIT-CONDITIONAL MULTIPLIER SAFEGUARD
-    # Only use aggressive multipliers when bot is profitable (totalProfit >= 0).
-    # When in loss (totalProfit < 0), force to basePositionSizeMultiplier (1.0) to prevent
-    # compounding losses with aggressive sizing.
+    # Profit-conditional multiplier safeguard: only use aggressive MT5 exposure
+    # after realized closed-trade profit is sustained above zero.
     profit_conditional = _coerce_bool(bot_config.get('profitConditionalMultiplier', False), False)
     base_position_multiplier = _safe_float(bot_config.get('basePositionSizeMultiplier'), 1.0)
     
     if profit_conditional:
-        if current_total_profit < 0:
+        if not growth_allowed:
             # Baseline sizing in drawdown prevents multiplying into losses.
             loss_floor_multiplier = min(1.0, max(0.1, base_position_multiplier or 1.0))
             return {
                 'enabled': True,
                 'multiplier': loss_floor_multiplier,
-                'reason': f'profit-conditional: in loss (R{current_total_profit:.2f}), using baseline {loss_floor_multiplier:.2f}x',
+                'reason': f'profit-conditional: {sustained_profit_state.get("reason")}; using baseline {loss_floor_multiplier:.2f}x',
                 'targetLeverage': base_reference_leverage,
                 'accountLeverage': account_leverage,
             }
@@ -32908,18 +33126,18 @@ def _resolve_mt5_position_multiplier(
         target = defensive_mult
         target_leverage = defensive_reference_leverage
         reason = 'defensive state or consecutive losses'
-    elif state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
+    elif growth_allowed and state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
         target = peak_mult
         target_leverage = peak_reference_leverage
         reason = 'hot profitable regime at max MT5 exposure'
-    elif scanner_multiplier >= 1.05 or current_total_profit > 0:
+    elif growth_allowed and (scanner_multiplier >= 1.05 or current_total_profit > 0):
         target = supportive_mult
         target_leverage = supportive_reference_leverage
         reason = 'profitable/supportive regime'
     else:
-        target = base_mult
+        target = base_mult if growth_allowed else 1.0
         target_leverage = base_reference_leverage
-        reason = 'baseline multiplier'
+        reason = 'baseline multiplier' if growth_allowed else str(sustained_profit_state.get('reason') or 'baseline multiplier until sustained realized profit')
 
     target = float(max(0.01, min(MT5_MAX_MULTIPLIER, target)))
     return {
@@ -33965,6 +34183,9 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'stallSignalStrengthFloor': 55.0,
     'stallMinTpProgress': 0.70,
     'minimumHoldMinutes': 20.0,       # Hold trades for at least 20 min before profit protection can close (allows trends to develop)
+    'negativeTradeFloorEnabled': True,
+    'negativeTradeFloorMinAgeMinutes': 8.0,
+    'negativeTradeFloorShareOfHardLoss': 0.65,
 }
 
 
@@ -34392,6 +34613,39 @@ def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dic
         ),
     )
     normalized['minimumHoldMinutes'] = max(0.0, min(60.0, _safe_float(raw.get('minimumHoldMinutes', raw.get('minimum_hold_minutes', normalized.get('minimumHoldMinutes', 1.0))), normalized.get('minimumHoldMinutes', 1.0))))
+    normalized['negativeTradeFloorEnabled'] = _coerce_bool(
+        raw.get(
+            'negativeTradeFloorEnabled',
+            raw.get('negative_trade_floor_enabled', normalized.get('negativeTradeFloorEnabled', True)),
+        ),
+        normalized.get('negativeTradeFloorEnabled', True),
+    )
+    normalized['negativeTradeFloorMinAgeMinutes'] = max(
+        0.0,
+        min(
+            60.0,
+            _safe_float(
+                raw.get(
+                    'negativeTradeFloorMinAgeMinutes',
+                    raw.get('negative_trade_floor_min_age_minutes', normalized.get('negativeTradeFloorMinAgeMinutes', 8.0)),
+                ),
+                normalized.get('negativeTradeFloorMinAgeMinutes', 8.0),
+            ),
+        ),
+    )
+    normalized['negativeTradeFloorShareOfHardLoss'] = max(
+        0.25,
+        min(
+            0.95,
+            _safe_float(
+                raw.get(
+                    'negativeTradeFloorShareOfHardLoss',
+                    raw.get('negative_trade_floor_share_of_hard_loss', normalized.get('negativeTradeFloorShareOfHardLoss', 0.65)),
+                ),
+                normalized.get('negativeTradeFloorShareOfHardLoss', 0.65),
+            ),
+        ),
+    )
     normalized['peakProfitHardLockShare'] = max(
         MIN_PEAK_PROFIT_LOCK_SHARE,
         _safe_float(normalized.get('peakProfitHardLockShare'), MIN_PEAK_PROFIT_LOCK_SHARE),
@@ -34681,12 +34935,12 @@ def _resolve_profit_protection_for_symbol(
     ):
         is_btc_runner = base_symbol in {'BTCUSD', 'BTCUSDT'}
         resolved['activationMinProfit'] = max(
-            0.35 if is_btc_runner else 0.28,
-            min(_safe_float(resolved.get('activationMinProfit'), 2.0), 0.55 if is_btc_runner else 0.45),
+            0.18 if is_btc_runner else 0.12,
+            min(_safe_float(resolved.get('activationMinProfit'), 2.0), 0.30 if is_btc_runner else 0.22),
         )
         resolved['minLockedProfit'] = max(
-            0.18,
-            min(_safe_float(resolved.get('minLockedProfit'), 1.0), 0.30 if is_btc_runner else 0.25),
+            0.08,
+            min(_safe_float(resolved.get('minLockedProfit'), 1.0), 0.14 if is_btc_runner else 0.12),
         )
         resolved['peakProfitHardLockShare'] = max(
             _safe_float(resolved.get('peakProfitHardLockShare'), 0.95),
@@ -34694,19 +34948,19 @@ def _resolve_profit_protection_for_symbol(
         )
         resolved['retraceClosePercent'] = min(_safe_float(resolved.get('retraceClosePercent'), 35.0), 8.0 if is_btc_runner else 10.0)
         resolved['breakEvenBufferProfit'] = max(
-            0.20,
-            min(_safe_float(resolved.get('breakEvenBufferProfit'), 2.0), 0.30 if is_btc_runner else 0.25),
+            0.10,
+            min(_safe_float(resolved.get('breakEvenBufferProfit'), 2.0), 0.16 if is_btc_runner else 0.14),
         )
-        resolved['breakEvenActivationShare'] = min(_safe_float(resolved.get('breakEvenActivationShare'), 0.5), 0.18 if is_btc_runner else 0.16)
-        resolved['minimumHoldMinutes'] = min(_safe_float(resolved.get('minimumHoldMinutes'), 20.0), 2.0 if is_btc_runner else 1.5)
+        resolved['breakEvenActivationShare'] = min(_safe_float(resolved.get('breakEvenActivationShare'), 0.5), 0.14 if is_btc_runner else 0.12)
+        resolved['minimumHoldMinutes'] = min(_safe_float(resolved.get('minimumHoldMinutes'), 20.0), 1.0 if is_btc_runner else 0.75)
         resolved['protectedSymbolCooldownMinutes'] = max(_safe_float(resolved.get('protectedSymbolCooldownMinutes'), 5.0), 8.0)
         resolved['neverNegativeActivationProfit'] = max(
-            0.20,
-            min(_safe_float(resolved.get('neverNegativeActivationProfit'), 1.0), 0.30 if is_btc_runner else 0.25),
+            0.12,
+            min(_safe_float(resolved.get('neverNegativeActivationProfit'), 1.0), 0.18 if is_btc_runner else 0.15),
         )
         resolved['neverNegativeFloorProfit'] = max(
-            0.08,
-            min(_safe_float(resolved.get('neverNegativeFloorProfit'), 0.25), 0.15 if is_btc_runner else 0.12),
+            0.05,
+            min(_safe_float(resolved.get('neverNegativeFloorProfit'), 0.25), 0.08 if is_btc_runner else 0.07),
         )
         resolved['stallProfitGivebackPercent'] = min(_safe_float(resolved.get('stallProfitGivebackPercent'), 30.0), 18.0)
         resolved['stallSignalStrengthFloor'] = max(_safe_float(resolved.get('stallSignalStrengthFloor'), 55.0), 58.0)
@@ -35361,6 +35615,14 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             pass  # Non-critical — in-memory value is still correct
 
         peak_profit = _safe_float(tracked.get('peakProfit'), 0.0)
+        effective_meaningful_profit_peak = meaningful_profit_peak
+        if peak_profit > 0 and meaningful_profit_peak > peak_profit:
+            # When configured arming thresholds are above observed peak profit,
+            # keep protection realistic so strong but smaller winners can still lock.
+            effective_meaningful_profit_peak = min(
+                meaningful_profit_peak,
+                max(0.05, round(peak_profit * 0.88, 2)),
+            )
         hard_peak_lock_share = _safe_float(effective_protection.get('peakProfitHardLockShare'), 0.9)
         hard_peak_lock_floor = round(max(0.0, peak_profit * hard_peak_lock_share), 2)
         if hard_peak_lock_floor > 0:
@@ -35477,18 +35739,18 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
 
         # ── HARD LOSS CAP: force-close if per-trade loss exceeds limit ──────────
         _hard_loss_limit, _stale_loss_threshold = _resolve_hard_loss_limits(bot_config)
-        if base_symbol == 'GBPUSD':
+        _currency_label = str(bot_config.get('displayCurrency') or 'USD').upper()
+        if base_symbol == 'GBPUSD' and _currency_label not in {'ZAR'}:
             _hard_loss_limit = min(_hard_loss_limit, 7.5)
             _stale_loss_threshold = max(_stale_loss_threshold, -2.25)
-        if peak_profit >= meaningful_profit_peak:
+        if peak_profit >= effective_meaningful_profit_peak:
             # Once a trade has already produced meaningful profit, stop allowing it
             # to consume the full initial hard-loss budget on a reversal.
             _hard_loss_limit = min(
                 _hard_loss_limit,
-                max(0.5, round(max(meaningful_profit_peak, peak_profit) * 0.25, 2)),
+                max(0.5, round(max(effective_meaningful_profit_peak, peak_profit) * 0.25, 2)),
             )
         _catastrophic_loss_limit = max(_hard_loss_limit * 1.5, _hard_loss_limit + 1.0)
-        _currency_label = str(bot_config.get('displayCurrency') or 'USD').upper()
         _locked_profit_floor = _safe_float(tracked.get('lockedProfitFloor'), 0.0)
         _profit_retrace_guard_armed = (
             bool(tracked.get('profitProtectionArmed'))
@@ -35503,6 +35765,29 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             protection_hold_satisfied
             or (is_exness_forex_position and time_in_position >= _hard_loss_min_age)
         )
+        negative_floor_enabled = _coerce_bool(effective_protection.get('negativeTradeFloorEnabled', True), True)
+        negative_floor_min_age = max(
+            0.0,
+            _safe_float(effective_protection.get('negativeTradeFloorMinAgeMinutes', 8.0), 8.0),
+        )
+        negative_floor_share = max(
+            0.25,
+            min(0.95, _safe_float(effective_protection.get('negativeTradeFloorShareOfHardLoss', 0.65), 0.65)),
+        )
+        negative_trade_floor = -max(0.25, round(_hard_loss_limit * negative_floor_share, 2))
+        if (
+            not close_reason
+            and negative_floor_enabled
+            and peak_profit <= 0
+            and current_profit <= negative_trade_floor
+            and time_in_position >= negative_floor_min_age
+            and not _recent_close_request(tracked)
+        ):
+            close_reason = 'NEGATIVE_TRADE_FLOOR_LOCK'
+            logger.info(
+                f"[LOSS] Bot {bot_id}: position {ticket} hit negative trade floor "
+                f"({current_profit:.2f} {_currency_label} <= {negative_trade_floor:.2f} {_currency_label})"
+            )
         if (
             not close_reason
             and current_profit < -_hard_loss_limit
@@ -35544,8 +35829,8 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         current_signal_strength = _safe_float(signal_eval.get('strength'), 0.0)
         tp_progress_ratio = _estimate_take_profit_progress_ratio(tracked, current_position)
         locked_floor = _safe_float(tracked.get('lockedProfitFloor'), 0.0)
-        upswing_retrace_floor = max(meaningful_profit_peak * 0.5, round(peak_profit * UPSWING_RETRACE_CLOSE_SHARE, 2))
-        spike_retrace_floor = max(meaningful_profit_peak * 0.5, round(peak_profit * SPIKE_RETRACE_CLOSE_SHARE, 2))
+        upswing_retrace_floor = max(effective_meaningful_profit_peak * 0.5, round(peak_profit * UPSWING_RETRACE_CLOSE_SHARE, 2))
+        spike_retrace_floor = max(effective_meaningful_profit_peak * 0.5, round(peak_profit * SPIKE_RETRACE_CLOSE_SHARE, 2))
         stall_profit_giveback_percent = _safe_float(effective_protection.get('stallProfitGivebackPercent'), 30.0)
         stall_retrace_floor = max(0.25, round(peak_profit * (1.0 - (stall_profit_giveback_percent / 100.0)), 2))
         never_negative_activation_profit = max(0.25, _safe_float(effective_protection.get('neverNegativeActivationProfit'), 1.0))
@@ -35559,6 +35844,38 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             5.0,
             _safe_float(tracked.get('pyramidMaxHoldMinutes'), PYRAMID_ADDON_MAX_HOLD_MINUTES),
         )
+
+        if not close_reason:
+            if (
+                early_profit_exit_allowed
+                and peak_profit > 0
+                and peak_profit < meaningful_profit_peak
+                and current_profit > 0
+                and not _recent_close_request(tracked)
+            ):
+                early_capture_floor = max(0.02, round(peak_profit * 0.88, 2))
+                early_capture_retrace = max(0.0, (peak_profit - current_profit) / max(peak_profit, 1e-9))
+                early_capture_min_peak = max(0.12, meaningful_profit_peak * 0.45)
+                early_capture_signal_floor = max(
+                    45.0,
+                    _safe_float(effective_protection.get('stallSignalStrengthFloor'), 55.0) - 8.0,
+                )
+                signal_stalling = (
+                    current_signal_strength < early_capture_signal_floor
+                    or _signal_reversed_for_position(tracked.get('type', ''), current_signal)
+                )
+                if (
+                    peak_profit >= early_capture_min_peak
+                    and current_profit <= early_capture_floor
+                    and early_capture_retrace >= 0.10
+                    and signal_stalling
+                ):
+                    close_reason = 'EARLY_PEAK_PROFIT_CAPTURE'
+                    logger.info(
+                        f"[TP] Bot {bot_id}: position {ticket} early peak capture on {symbol} "
+                        f"(peak={peak_profit:.2f} {_currency_label}, current={current_profit:.2f} {_currency_label}, "
+                        f"configured_arm={meaningful_profit_peak:.2f}, adaptive_arm={effective_meaningful_profit_peak:.2f})"
+                    )
 
         if not close_reason:
             margin_take_profit_target = max(
@@ -35579,9 +35896,9 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if is_exness_forex_position or is_exness_index_runner_position:
                 # Arm at meaningful_profit_peak (R5) — not break_even_activation_amount (R20).
                 # A trade that peaks at R18 and retraces deserves protection even if R20 was never hit.
-                hard_peak_lock_eligible = peak_profit >= meaningful_profit_peak
+                hard_peak_lock_eligible = peak_profit >= effective_meaningful_profit_peak
             elif is_binance_position:
-                hard_peak_lock_eligible = peak_profit >= meaningful_profit_peak
+                hard_peak_lock_eligible = peak_profit >= effective_meaningful_profit_peak
             else:
                 hard_peak_lock_eligible = peak_profit > 0
             if (
@@ -35611,13 +35928,13 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             zero_loss_lock_active = effective_protection.get('zeroLossLockEnabled', True)
             # Only suppress zero-loss lock for trend-following when peak is truly small (< R5 meaningful floor).
             # Peaks of R5+ are real profit that must be protected regardless of strategy width.
-            if allow_wider_trend_exits and peak_profit < meaningful_profit_peak:
+            if allow_wider_trend_exits and peak_profit < effective_meaningful_profit_peak:
                 zero_loss_lock_active = False
 
             zero_loss_hold_satisfied = (
                 protection_hold_satisfied
                 if (is_exness_forex_position or is_exness_index_runner_position)
-                else (protection_hold_satisfied or peak_profit >= meaningful_profit_peak)
+                else (protection_hold_satisfied or peak_profit >= effective_meaningful_profit_peak)
             )
 
             if zero_loss_lock_active and peak_profit > 0 and current_profit <= 0 and zero_loss_hold_satisfied and not _recent_close_request(tracked):
@@ -35637,7 +35954,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             tp_follow_through = tp_progress_ratio is not None and tp_progress_ratio >= stall_tp_progress_floor
             if (
                 stall_exit_hold_satisfied
-                and peak_profit >= meaningful_profit_peak
+                and peak_profit >= effective_meaningful_profit_peak
                 and current_profit > 0
                 and current_profit <= stall_retrace_floor
                 and (not tp_follow_through or not signal_follow_through)
@@ -35648,7 +35965,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         if not close_reason:
             if (
                 protection_hold_satisfied
-                and peak_profit >= meaningful_profit_peak
+                and peak_profit >= effective_meaningful_profit_peak
                 and current_profit > 0
                 and current_profit <= spike_retrace_floor
                 and not _recent_close_request(tracked)
@@ -35659,7 +35976,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if (
                 early_profit_exit_allowed
                 and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
-                and peak_profit >= meaningful_profit_peak
+                and peak_profit >= effective_meaningful_profit_peak
                 and current_profit > 0
                 and current_profit <= upswing_retrace_floor
                 and not _recent_close_request(tracked)
@@ -35670,7 +35987,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if (
                 early_profit_exit_allowed
                 and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
-                and peak_profit >= meaningful_profit_peak
+                and peak_profit >= effective_meaningful_profit_peak
                 and current_profit > 0
                 and _signal_reversed_for_position(tracked.get('type', ''), current_signal)
                 and not _recent_close_request(tracked)
@@ -35690,7 +36007,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
                 early_profit_exit_allowed
                 and tp_progress_ratio is not None
                 and near_tp_min_progress <= tp_progress_ratio < near_tp_max_progress
-                and current_profit > meaningful_profit_peak
+                and current_profit > effective_meaningful_profit_peak
                 and time_in_position >= near_tp_min_hold
                 and current_signal_strength < momentum_fade_signal_floor
                 and not _recent_close_request(tracked)
@@ -35723,7 +36040,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if (
                 not tracked.get('isPyramidAddon')
                 and (protection_hold_satisfied or time_in_position >= _stagnation_min_hold)
-                and peak_profit <= meaningful_profit_peak   # never meaningfully profitable
+                and peak_profit <= effective_meaningful_profit_peak   # never meaningfully profitable
                 and current_profit < 0                     # position is losing (not flat positive)
                 and current_profit > stale_loss_threshold  # not yet at stale-loss threshold (that already fires)
                 and (current_signal == 'NEUTRAL' or current_signal_strength < _stagnation_signal_cap)
@@ -36033,6 +36350,15 @@ def _safe_float(raw_value, default_value: float = 0.0) -> float:
         return float(raw_value)
     except (TypeError, ValueError):
         return default_value
+
+
+def _trade_net_profit_value(trade: Dict[str, Any]) -> float:
+    if not isinstance(trade, dict):
+        return 0.0
+    gross = _safe_float(trade.get('profit', trade.get('pnl', 0.0)), 0.0)
+    commission = _safe_float(trade.get('commission', 0.0), 0.0)
+    swap = _safe_float(trade.get('swap', 0.0), 0.0)
+    return gross + commission + swap
 
 
 def _is_meaningful_broker_trade(trade: Dict[str, Any]) -> bool:
@@ -37107,9 +37433,11 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
     )
     management_mode = str(bot_config.get('managementMode') or 'assisted').strip().lower()
+    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
+    growth_allowed = bool(sustained_profit_state.get('allowed'))
 
     if broker_name == 'Binance' and management_mode == 'manual':
-        if top_strength >= 80.0:
+        if growth_allowed and top_strength >= 80.0:
             scanner_market_multiplier = 1.08
             reasons.append('manual Binance futures sizing keeps slight high-signal bias')
         return {
@@ -37132,7 +37460,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         }
 
     if recent_count >= PERFORMANCE_SIZING_MIN_SAMPLE:
-        if recent_profit > 0 and recent_win_rate >= 65.0:
+        if recent_profit > 0 and recent_win_rate >= 65.0 and growth_allowed:
             hot_bonus = min(0.18, (recent_win_rate - 60.0) / 100.0)
             multiplier += hot_bonus
             state = 'hot'
@@ -37145,7 +37473,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
             state = 'defensive'
             reasons.append(f"recent win rate {recent_win_rate:.0f}%")
 
-    if consecutive_wins >= 3:
+    if consecutive_wins >= 3 and growth_allowed:
         multiplier += 0.07
         state = 'hot'
         reasons.append(f'{consecutive_wins} trade win streak')
@@ -37154,7 +37482,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         state = 'defensive'
         reasons.append(f'{consecutive_losses} trade loss streak')
 
-    if qualifying_opportunities >= 3 and top_strength >= 75.0 and state != 'defensive':
+    if qualifying_opportunities >= 3 and top_strength >= 75.0 and state != 'defensive' and growth_allowed:
         multiplier += 0.08
         state = 'hot'
         reasons.append(f'{qualifying_opportunities} strong scanner setups')
@@ -37165,30 +37493,30 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
 
     # Scanner-driven capital allocation layer. This is the part that lets the bot
     # press harder in strong market periods and scale down when market quality fades.
-    if qualifying_opportunities >= 4 and top_strength >= 85.0 and top_average_strength >= 78.0:
+    if growth_allowed and qualifying_opportunities >= 4 and top_strength >= 85.0 and top_average_strength >= 78.0:
         scanner_market_multiplier = 1.65
         reasons.append(f'scanner regime very strong ({qualifying_opportunities} setups, avg {top_average_strength:.0f})')
-    elif qualifying_opportunities >= 3 and top_strength >= 80.0 and top_average_strength >= 74.0:
+    elif growth_allowed and qualifying_opportunities >= 3 and top_strength >= 80.0 and top_average_strength >= 74.0:
         scanner_market_multiplier = 1.42
         reasons.append(f'scanner regime strong ({qualifying_opportunities} setups, avg {top_average_strength:.0f})')
-    elif qualifying_opportunities >= 2 and top_strength >= 72.0:
+    elif growth_allowed and qualifying_opportunities >= 2 and top_strength >= 72.0:
         scanner_market_multiplier = 1.22
         reasons.append(f'scanner regime supportive ({qualifying_opportunities} setups)')
-    elif qualifying_opportunities == 1 and top_strength >= 68.0:
+    elif growth_allowed and qualifying_opportunities == 1 and top_strength >= 68.0:
         scanner_market_multiplier = 1.08
         reasons.append('single high-quality scanner setup')
     elif qualifying_opportunities == 0:
         scanner_market_multiplier = 0.82
         reasons.append('scanner found no qualified setups')
 
-    if recent_profit > 0 and recent_win_rate >= 60.0 and scanner_market_multiplier > 1.0:
+    if growth_allowed and recent_profit > 0 and recent_win_rate >= 60.0 and scanner_market_multiplier > 1.0:
         scanner_market_multiplier += 0.10
         reasons.append('recent profits confirm scanner momentum')
     elif recent_profit < 0 and recent_win_rate <= 45.0:
         scanner_market_multiplier = min(scanner_market_multiplier, 0.78)
         reasons.append('recent losses override aggressive scanner sizing')
 
-    if aggregate_open_profit > 0 and positive_open_positions > 0 and top_strength >= 78.0:
+    if growth_allowed and aggregate_open_profit > 0 and positive_open_positions > 0 and top_strength >= 78.0:
         scanner_market_multiplier += 0.08
         reasons.append('open positions support increasing capital deployment')
     elif aggregate_open_profit < 0:
@@ -37210,6 +37538,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
 
     if (
         open_positions
+        and growth_allowed
         and aggregate_open_profit >= UPSWING_SCALE_MIN_OPEN_PROFIT
         and positive_open_positions > 0
         and top_strength >= UPSWING_SCALE_MIN_SIGNAL_STRENGTH
@@ -37225,7 +37554,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         state = 'defensive'
         reasons.append(f'open P/L pressure {aggregate_open_profit:.2f}')
 
-    if best_open_peak >= UPSWING_RETRACE_MIN_PEAK_PROFIT and aggregate_open_profit > 0 and state != 'defensive':
+    if growth_allowed and best_open_peak >= UPSWING_RETRACE_MIN_PEAK_PROFIT and aggregate_open_profit > 0 and state != 'defensive':
         multiplier += 0.05
         reasons.append(f'open trade peak reached {best_open_peak:.2f}')
 
@@ -37251,6 +37580,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
     if (
         is_live
         and not guarded_small_live
+        and growth_allowed
         and state == 'hot'
         and recent_profit > 0
         and recent_win_rate >= 68.0
@@ -37266,6 +37596,15 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
     scanner_market_multiplier = min(scanner_market_multiplier, scanner_boost_cap)
     if guarded_small_live:
         reasons.append('small live account cap')
+
+    if not growth_allowed:
+        if multiplier > 1.0:
+            multiplier = 1.0
+            if state != 'defensive':
+                state = 'normal'
+        if scanner_market_multiplier > 1.0:
+            scanner_market_multiplier = 1.0
+        reasons.append(str(sustained_profit_state.get('reason') or 'growth multiplier locked'))
 
     multiplier = max(PERFORMANCE_SIZING_MAX_REDUCTION, min(multiplier, PERFORMANCE_SIZING_MAX_BOOST))
     if abs(multiplier - 1.0) < 0.03:
@@ -39968,6 +40307,17 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             logger.info(f"⏭️ Bot {bot_id}: Skipping {symbol} - {symbol_market_status}")
                             continue
 
+                        # Check profit peak protection before trading this symbol
+                        if PROFIT_PEAK_PROTECTION_AVAILABLE and PROFIT_PEAK_PROTECTION_ENABLED:
+                            should_trade_symbol, peak_reason = should_trade_symbol_with_peak_protection(
+                                bot_config,
+                                symbol,
+                            )
+                            if not should_trade_symbol:
+                                last_order_block_reason = peak_reason
+                                logger.info(f"⏭️ Bot {bot_id}: {peak_reason}")
+                                continue
+
                         bot_config['_lastRiskBlockReason'] = None
                         if not should_trade_symbol_based_on_risk_management(bot_config, symbol):
                             last_order_block_reason = (
@@ -40076,7 +40426,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         today_str = datetime.now().strftime('%Y-%m-%d')
                         _daily_profits_map = bot_config.get('dailyProfits') if isinstance(bot_config.get('dailyProfits'), dict) else {}
                         _today_realized = _safe_float(_daily_profits_map.get(today_str, bot_config.get('dailyProfit', 0.0)), 0.0)
-                        _ta_scale_mult, _atr_scale_mult = _get_profit_scale_multipliers(_today_realized, _acct_balance_for_scale)
+                        _ta_scale_mult, _atr_scale_mult = _get_profit_scale_multipliers(_today_realized, _acct_balance_for_scale, bot_config)
                         # Small-account safety gate: scale DOWN base for very small deposits so
                         # min broker lot/qty does not over-expose the account.
                         # NOTE: skip for Binance futures — the capital-safety-net already caps
@@ -41243,7 +41593,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             if (
                                 _mt5_mult_ctrl.get('enabled')
                                 and _mt5_mult_ctrl.get('multiplier', 1.0) != 1.0
-                                and not (normalized_broker == 'Exness' and configured_fixed_trade_volume > 0 and not pyramid_decision['allowed'])
+                                and not (normalized_broker == 'Exness' and not pyramid_decision['allowed'])
                             ):
                                 _mt5_mult = float(_mt5_mult_ctrl['multiplier'])
                                 adjusted_volume = round(max(0.01, adjusted_volume * _mt5_mult), 4)
@@ -41502,7 +41852,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     _set_symbol_entry_lock(
                                         bot_config,
                                         symbol,
-                                        8.0 if validation_block else 20.0,
+                                        45.0 if validation_block else 20.0,
                                         'BROKER_PRECHECK_BLOCK' if validation_block else 'BROKER_RECENT_REJECTED_ENTRY',
                                     )
                                     last_order_block_reason = f"{execution_broker_type} rejected {symbol}: {order_result.get('error') or 'unknown error'}"

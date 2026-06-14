@@ -11,9 +11,9 @@ class EnvironmentConfig {
   static const int _localApiPort = 9000;
   static const bool _defaultUseLocalWebApi = false;
 
-  static const String _devApiKey = 'your_generated_api_key_here_dev';
-  static const String _stagingApiKey = 'your_generated_api_key_here_staging';
-  static const String _prodApiKey = 'your_generated_api_key_here_prod';
+  static const String _devApiKey = 'zwesta_live_api_key_2026_secure';
+  static const String _stagingApiKey = 'zwesta_live_api_key_2026_secure';
+  static const String _prodApiKey = 'zwesta_live_api_key_2026_secure';
 
   static const bool _devDebugMode = true;
   static const bool _stagingDebugMode = true;

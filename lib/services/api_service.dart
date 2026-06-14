@@ -5,20 +5,33 @@ import 'package:http/http.dart' as http;
 import '../utils/environment_config.dart';
 
 class ApiService {
+  /// Optional callback invoked when the server returns 401 (session expired).
+  /// Callers (e.g. AuthService) set this once so every service auto-logs out.
+  static void Function()? onUnauthorized;
 
-  ApiService({String? apiKey}) : _apiKey = apiKey ?? _defaultApiKey {
+  ApiService({String? apiKey, String? sessionToken})
+      : _apiKey = apiKey ?? EnvironmentConfig.apiKey,
+        _sessionToken = sessionToken {
     _baseUrl = EnvironmentConfig.apiUrl;
   }
-  static const String _defaultApiKey = 'default_api_key_for_demo';
 
-  final String? _apiKey;
+  final String _apiKey;
+  String? _sessionToken;
   late String _baseUrl;
 
-  Map<String, String> _getHeaders() => {
+  /// Update the session token after login (called by AuthService).
+  void setSessionToken(String? token) => _sessionToken = token;
+
+  Map<String, String> _getHeaders() {
+    final headers = <String, String>{
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $_apiKey',
-      'X-User-ID': 'default_user', // Can be updated with actual user ID
     };
+    if (_sessionToken != null && _sessionToken!.isNotEmpty) {
+      headers['X-Session-Token'] = _sessionToken!;
+    }
+    return headers;
+  }
 
   Future<Map<String, dynamic>> get(String endpoint) async {
     try {
@@ -75,6 +88,15 @@ class ApiService {
   }
 
   Map<String, dynamic> _handleResponse(http.Response response) {
+    // Auto-logout on session expiry — fires callback registered by AuthService
+    if (response.statusCode == 401) {
+      onUnauthorized?.call();
+      return {
+        'success': false,
+        'status_code': 401,
+        'error': 'Session expired. Please login again.',
+      };
+    }
     try {
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;
       return decoded;
