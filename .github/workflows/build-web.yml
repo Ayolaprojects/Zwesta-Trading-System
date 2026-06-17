@@ -103,9 +103,9 @@ jobs:
           fi
 
       - name: Create GitHub Release
+        id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          files: build/web/**/*
           tag_name: web-v${{ github.run_number }}
           name: "Zwesta Web v${{ github.run_number }}"
           body: |
@@ -123,8 +123,112 @@ jobs:
             ```
           draft: false
           prerelease: false
+          fail_on_unmatch: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Verify release created
+        run: |
+          if [ "${{ steps.create_release.outcome }}" != "success" ]; then
+            echo "Release creation failed — attempting cleanup and retry"
+            TAG="web-v${{ github.run_number }}"
+            # Try to delete any leftover release
+            RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | grep '"id"' | head -1 | sed -E 's/.*"id": *([0-9]+).*/\1/' || true)
+            if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+              curl -s -X DELETE -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+              echo "Deleted stale release $TAG"
+            fi
+            echo "::warning::Release creation had issues — check GitHub for partial release state"
+          fi
+
+      - name: Upload release assets with retry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="web-v${{ github.run_number }}"
+          REPO="${{ github.repository }}"
+          
+          # Get upload URL from the release
+          UPLOAD_URL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/releases/tags/$TAG" | grep '"upload_url"' | head -1 | sed -E 's/.*"upload_url": *"([^"]+)".*/\1/')
+          
+          if [ -z "$UPLOAD_URL" ]; then
+            echo "::error::Could not get release upload URL"
+            exit 1
+          fi
+          
+          echo "Upload URL: $UPLOAD_URL"
+          
+          # Upload each file with retry
+          find build/web -type f | while read -r file; do
+            filename=$(basename "$file")
+            content_type="application/octet-stream"
+            
+            # Set appropriate content types
+            case "$filename" in
+              *.js) content_type="application/javascript" ;;
+              *.wasm) content_type="application/wasm" ;;
+              *.json) content_type="application/json" ;;
+              *.bin) content_type="application/octet-stream" ;;
+              *.html) content_type="text/html" ;;
+              *.css) content_type="text/css" ;;
+              *.png) content_type="image/png" ;;
+              *.jpg|*.jpeg) content_type="image/jpeg" ;;
+              *.ico) content_type="image/x-icon" ;;
+              *.svg) content_type="image/svg+xml" ;;
+              *.woff|*.woff2) content_type="font/woff2" ;;
+              *.ttf) content_type="font/ttf" ;;
+              *.otf) content_type="font/otf" ;;
+              *.txt) content_type="text/plain" ;;
+              *.xml) content_type="application/xml" ;;
+              *.frag|*.vert) content_type="text/plain" ;;
+              *.symbols) content_type="application/json" ;;
+            esac
+            
+            echo "⬆️ Uploading $filename ($content_type)..."
+            
+            # Retry up to 3 times
+            for attempt in 1 2 3; do
+              response=$(curl -s -o /dev/null -w "%{http_code}" \
+                -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Content-Type: $content_type" \
+                -H "Accept: application/vnd.github.v3+json" \
+                --data-binary @"$file" \
+                "${UPLOAD_URL}?name=$(urlencode "$filename")")
+              
+              if [ "$response" = "201" ]; then
+                echo "✅ $filename uploaded successfully"
+                break
+              elif [ "$response" = "422" ]; then
+                echo "⚠️ $filename already exists (422) — deleting and retrying..."
+                # Delete existing asset
+                ASSET_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/$REPO/releases/tags/$TAG" | \
+                  grep -A5 "\"name\": *\"$filename\"" | grep '"id"' | head -1 | sed -E 's/.*"id": *([0-9]+).*/\1/' || true)
+                if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
+                  curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+                    "https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID"
+                  echo "🗑️ Deleted existing $filename"
+                  sleep 2
+                else
+                  echo "Could not find asset ID for $filename"
+                  break
+                fi
+              else
+                echo "❌ Upload attempt $attempt failed for $filename (HTTP $response)"
+                if [ "$attempt" -lt 3 ]; then
+                  echo "Retrying in 5s..."
+                  sleep 5
+                else
+                  echo "::warning::Failed to upload $filename after 3 attempts"
+                fi
+              fi
+            done
+          done
 
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
