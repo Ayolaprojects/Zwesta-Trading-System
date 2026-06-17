@@ -78,6 +78,28 @@ jobs:
             --dart-define=OFFLINE_MODE="$OFFLINE" \
             --dart-define=RELEASE_VERSION="${{ github.run_number }}"
 
+      - name: Delete existing release if present
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="web-v${{ github.run_number }}"
+          echo "Checking for existing release: $TAG"
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG")
+          if [ "$RESPONSE" = "200" ]; then
+            echo "Release $TAG exists — deleting before creating new one"
+            RELEASE_ID=$(curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | grep '"id"' | head -1 | sed -E 's/.*"id": *([0-9]+).*/\1/')
+            curl -s -X DELETE \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+            echo "Deleted release $TAG (id=$RELEASE_ID)"
+          else
+            echo "No existing release $TAG found (HTTP $RESPONSE) — proceeding"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
