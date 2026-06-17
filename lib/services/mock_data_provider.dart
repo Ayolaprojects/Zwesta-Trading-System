@@ -31,6 +31,19 @@ class MockDataProvider {
           profitPercentage: 1.03,
           status: TradeStatus.closed,
         ),
+        Trade(
+          id: 'trade_003',
+          symbol: 'USDJPY',
+          type: TradeType.buy,
+          quantity: 0.1,
+          entryPrice: 145.00,
+          currentPrice: 144.20,
+          openedAt: DateTime.now().subtract(const Duration(days: 4)),
+          closedAt: DateTime.now().subtract(const Duration(days: 1)),
+          profit: -80,
+          profitPercentage: -0.55,
+          status: TradeStatus.closed,
+        ),
       ];
 
   /// Get mock account data

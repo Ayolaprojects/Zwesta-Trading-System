@@ -98,4 +98,23 @@ class Trade {
   }
 
   bool get isProfit => (profit ?? 0) > 0;
+  bool get isLoss => (profit ?? 0) < 0;
+
+  /// Calculate current unrealized P&L for open trades based on current price
+  double? get unrealizedProfit {
+    if (status != TradeStatus.open || currentPrice == null) return null;
+    final priceDiff = type == TradeType.buy
+        ? (currentPrice! - entryPrice)
+        : (entryPrice - currentPrice!);
+    return priceDiff * quantity;
+  }
+
+  /// Calculate current unrealized P&L percentage for open trades
+  double? get unrealizedProfitPercentage {
+    if (status != TradeStatus.open || currentPrice == null || entryPrice == 0) return null;
+    final priceDiff = type == TradeType.buy
+        ? (currentPrice! - entryPrice)
+        : (entryPrice - currentPrice!);
+    return (priceDiff / entryPrice) * 100;
+  }
 }

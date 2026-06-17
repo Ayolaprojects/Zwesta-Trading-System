@@ -1,0 +1,110 @@
+name: Build & Deploy Web
+
+on:
+  push:
+    branches: [ main, pre-2026-06-04-app ]
+    paths:
+      - 'lib/**'
+      - 'web/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/build-web.yml'
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Backend API URL (use ngrok/localhost tunnel for local testing)'
+        required: false
+        default: ''
+        type: string
+      environment:
+        description: 'Environment'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+      offline_mode:
+        description: 'Enable offline mode (uses mock data, no backend needed)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DEFAULT_API_URL: http://148.113.5.39:9000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+
+      - name: Clean & get dependencies
+        run: |
+          flutter clean
+          flutter pub get --enforce-lockfile
+
+      - name: Flutter analyze
+        run: |
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Get commit info
+        id: commit
+        run: |
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+
+      - name: Build release web
+        run: |
+          API_URL="${{ github.event.inputs.api_url }}"
+          if [ -z "$API_URL" ]; then API_URL="$DEFAULT_API_URL"; fi
+          OFFLINE="${{ github.event.inputs.offline_mode }}"
+          echo "Building with API_URL=$API_URL, OFFLINE_MODE=$OFFLINE"
+          flutter build web --release \
+            --dart-define=API_URL="$API_URL" \
+            --dart-define=OFFLINE_MODE="$OFFLINE" \
+            --dart-define=RELEASE_VERSION="${{ github.run_number }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: build/web/**/*
+          tag_name: web-v${{ github.run_number }}
+          name: "Zwesta Web v${{ github.run_number }}"
+          body: |
+            ## Zwesta Trading Web — Build ${{ github.run_number }}
+
+            **Commit:** `${{ steps.commit.outputs.short_sha }}` by ${{ steps.commit.outputs.author }}
+            **API URL:** ${{ github.event.inputs.api_url || env.DEFAULT_API_URL }}
+            **Offline Mode:** ${{ github.event.inputs.offline_mode }}
+
+            ### Testing Local Backend
+            If connecting to local backend, use ngrok to expose port 9000:
+            ```bash
+            ngrok http 9000
+            # Copy the https URL and use as api_url input
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zwesta-web-build
+          path: build/web/
+          retention-days: 30

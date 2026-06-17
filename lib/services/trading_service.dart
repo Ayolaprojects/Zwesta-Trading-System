@@ -99,6 +99,22 @@ class TradingService extends ChangeNotifier {
         .where((t) => t.status == TradeStatus.closed)
         .fold(0, (sum, trade) => sum + (trade.profit ?? 0));
 
+  double get totalLoss => _trades
+      .where((t) => t.status == TradeStatus.closed && t.profit != null && t.profit! < 0)
+      .fold(0.0, (sum, trade) => sum + trade.profit!.abs());
+
+  double get totalRealizedProfit => _trades
+      .where((t) => t.status == TradeStatus.closed && t.profit != null && t.profit! > 0)
+      .fold(0.0, (sum, trade) => sum + trade.profit!);
+
+  double get totalRealizedLoss => _trades
+      .where((t) => t.status == TradeStatus.closed && t.profit != null && t.profit! < 0)
+      .fold(0.0, (sum, trade) => sum + trade.profit!.abs());
+
+  double get totalUnrealizedPnL => _trades
+      .where((t) => t.status == TradeStatus.open)
+      .fold(0.0, (sum, trade) => sum + (trade.unrealizedProfit ?? 0));
+
   bool get _allowMockFallback =>
       EnvironmentConfig.offlineMode || EnvironmentConfig.currentEnvironment != Environment.production;
 
@@ -116,6 +132,8 @@ class TradingService extends ChangeNotifier {
   }
 
   int get winningTrades => _trades.where((t) => t.status == TradeStatus.closed && t.profit != null && t.profit! > 0).length;
+
+  int get losingTrades => _trades.where((t) => t.status == TradeStatus.closed && t.profit != null && t.profit! <= 0).length;
 
   // Check API connection
   Future<void> _checkApiConnection() async {
@@ -591,8 +609,12 @@ class TradingService extends ChangeNotifier {
           final tradeIndex = _trades.indexWhere((t) => t.id == tradeId);
           if (tradeIndex != -1) {
             final trade = _trades[tradeIndex];
-            final profit = (closingPrice - trade.entryPrice) * trade.quantity;
-            final profitPercentage = ((closingPrice - trade.entryPrice) / trade.entryPrice) * 100;
+            // Calculate profit based on trade type: BUY profits from price going up, SELL profits from price going down
+            final priceDiff = trade.type == TradeType.buy
+                ? (closingPrice - trade.entryPrice)
+                : (trade.entryPrice - closingPrice);
+            final profit = priceDiff * trade.quantity;
+            final profitPercentage = (priceDiff / trade.entryPrice) * 100;
 
             _trades[tradeIndex] = Trade(
               id: trade.id,
@@ -757,20 +779,31 @@ class TradingService extends ChangeNotifier {
 
           // For mock data, update timestamp to show refresh happened
           for (var i = 0; i < _trades.length; i++) {
+            final newPrice = (_trades[i].currentPrice ?? 0) +
+                (DateTime.now().millisecondsSinceEpoch % 10) / 10000;
+            // Recalculate profit for open trades based on price movement
+            double? updatedProfit;
+            double? updatedProfitPercentage;
+            if (_trades[i].status == TradeStatus.open) {
+              final priceDiff = _trades[i].type == TradeType.buy
+                  ? (newPrice - _trades[i].entryPrice)
+                  : (_trades[i].entryPrice - newPrice);
+              updatedProfit = priceDiff * _trades[i].quantity;
+              updatedProfitPercentage = (priceDiff / _trades[i].entryPrice) * 100;
+            }
             _trades[i] = Trade(
               id: _trades[i].id,
               symbol: _trades[i].symbol,
               type: _trades[i].type,
               quantity: _trades[i].quantity,
               entryPrice: _trades[i].entryPrice,
-              currentPrice: (_trades[i].currentPrice ?? 0) +
-                  (DateTime.now().millisecondsSinceEpoch % 10) / 10000,
+              currentPrice: newPrice,
               takeProfit: _trades[i].takeProfit,
               stopLoss: _trades[i].stopLoss,
               status: _trades[i].status,
               openedAt: _trades[i].openedAt,
-              profit: _trades[i].profit,
-              profitPercentage: _trades[i].profitPercentage,
+              profit: updatedProfit ?? _trades[i].profit,
+              profitPercentage: updatedProfitPercentage ?? _trades[i].profitPercentage,
             );
           }
         } else {

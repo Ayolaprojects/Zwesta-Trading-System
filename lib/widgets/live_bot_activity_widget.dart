@@ -56,7 +56,8 @@ class _LiveBotActivityWidgetState extends State<LiveBotActivityWidget> {
       final type = _types[DateTime.now().millisecond % 2];
       final entry = 100.0 + (DateTime.now().millisecond % 50).toDouble();
       final exit = entry + (DateTime.now().millisecond % 5).toDouble() * (type == 'BUY' ? 1 : -1);
-      final profit = (exit - entry).abs();
+      // Calculate actual profit: BUY profits when price goes up, SELL profits when price goes down
+      final profit = type == 'BUY' ? (exit - entry) : (entry - exit);
 
       setState(() {
         _liveTrades.insert(
@@ -354,7 +355,7 @@ class _LiveBotActivityWidgetState extends State<LiveBotActivityWidget> {
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Text(
-                                  '+\$${trade['profit'].toStringAsFixed(2)}',
+                                  '${trade['profit'] >= 0 ? '+' : ''}\$${trade['profit'].toStringAsFixed(2)}',
                                   style: TextStyle(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 12,
