@@ -96,6 +96,8 @@ jobs:
               -H "Authorization: token $GITHUB_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
             echo "Deleted release $TAG (id=$RELEASE_ID)"
+            echo "Waiting 10s for GitHub release propagation before recreating..."
+            sleep 10
           else
             echo "No existing release $TAG found (HTTP $RESPONSE) — proceeding"
           fi
