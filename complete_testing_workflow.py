@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ngiku#!/usr/bin/env python3
 """
 Complete Testing Workflow for LIVE/DEMO Mode System
 1. Clear all bots from database

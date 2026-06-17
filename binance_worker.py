@@ -415,6 +415,7 @@ def record_trade(
     profit: float = 0.0,
 ) -> None:
     """Record a completed trade in the trades table."""
+    conn = None
     try:
         trade_id = str(uuid.uuid4())
         conn = get_db_connection()
@@ -430,14 +431,27 @@ def record_trade(
             datetime.now().isoformat(),
             datetime.now().isoformat(), datetime.now().isoformat(),
         ))
+        # CRITICAL FIX: Ensure commit happens after INSERT
         conn.commit()
-        conn.close()
+        logger.info(f"✅ Trade recorded for {bot_id}: {symbol} {side} {quantity} @ {price}")
     except Exception as e:
-        logger.warning(f"record_trade failed ({bot_id}): {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        logger.error(f"record_trade failed ({bot_id}): {e}", exc_info=True)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 def update_bot_profit(bot_id: str, profit_delta: float) -> None:
     """Update daily/total profit on user_bots table."""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -448,10 +462,22 @@ def update_bot_profit(bot_id: str, profit_delta: float) -> None:
                 updated_at = ?
             WHERE bot_id = ?
         ''', (profit_delta, profit_delta, datetime.now().isoformat(), bot_id))
+        # CRITICAL FIX: Ensure commit happens after UPDATE
         conn.commit()
-        conn.close()
+        logger.info(f"✅ Profit updated for {bot_id}: +{profit_delta}")
     except Exception as e:
-        logger.warning(f"update_bot_profit failed ({bot_id}): {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        logger.error(f"update_bot_profit failed ({bot_id}): {e}", exc_info=True)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 # ==================== BOT TRADING LOOP ====================
