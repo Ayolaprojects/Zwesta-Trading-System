@@ -29,7 +29,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      DEFAULT_API_URL: http://148.113.5.39:9000
+      DEFAULT_API_URL: ${{ github.ref == 'refs/heads/main' && 'http://148.113.5.39:9000' || 'http://192.168.0.137:9000' }}
 
     steps:
       - name: Checkout code
