@@ -15,7 +15,6 @@ String? _defaultMt5TerminalPath(String broker, {required bool isLive}) {
 }
 
 class BrokerCredential {
-
   BrokerCredential({
     required this.credentialId,
     required this.broker,
@@ -28,21 +27,14 @@ class BrokerCredential {
     required this.cachedBalance,
     required this.hasCachedBalance,
     this.apiKey,
+    this.apiSecret,
   });
 
-  /// Derives the effective is_live flag, independent of what the VPS DB stores.
-  ///
-  /// Exness (MT5): checks server name — "Trial"/"Demo" → false, "Real"/"Live" → true.
-  /// Binance:      checks account_number — contains "DEMO" → false.
-  /// Fallback:     uses the backend-supplied [backendIsLive].
   static bool _resolveIsLive(String server, String accountNumber, bool backendIsLive) {
-    // Exness / MT5: server name is the reliable indicator
     final s = server.toLowerCase();
     if (s.contains('trial') || s.contains('demo')) return false;
     if (s.contains('real') || s.contains('live')) return true;
 
-    // Binance: account_number contains "DEMO" for demo credentials
-    // e.g. "BINANCE-FUTURES-DEMO" vs "BINANCE-FUTURES-vIWjln1z"
     final a = accountNumber.toUpperCase();
     if (a.contains('DEMO') || a.contains('TESTNET') || a.contains('SANDBOX')) return false;
 
@@ -50,23 +42,29 @@ class BrokerCredential {
   }
 
   factory BrokerCredential.fromJson(Map<String, dynamic> json) {
-    final server = (json['server'] ?? '').toString();
-    final accountNumber = (json['account_number'] ?? '').toString();
+    final server = (json['server'] ?? json['market'] ?? '').toString();
+    final accountNumber = (json['account_number'] ?? json['accountNumber'] ?? '').toString();
     final backendIsLive = (json['is_live'] ?? false) as bool;
     return BrokerCredential(
-      credentialId: json['credential_id'] ?? '',
-      broker: json['broker'] ?? '',
+      credentialId: (json['credential_id'] ?? json['credentialId'] ?? '').toString(),
+      broker: (json['broker'] ?? json['broker_name'] ?? '').toString(),
       accountNumber: accountNumber,
       server: server,
-      accountCurrency: (json['account_currency'] ?? 'USD').toString().toUpperCase(),
+      accountCurrency: (json['account_currency'] ?? json['currency'] ?? 'USD').toString().toUpperCase(),
       isLive: _resolveIsLive(server, accountNumber, backendIsLive),
-      isActive: json['is_active'] ?? true,
-      createdAt: DateTime.parse(json['created_at'] ?? DateTime.now().toString()),
-      cachedBalance: (json['cached_balance'] ?? 0).toDouble(),
-      hasCachedBalance: json['has_cached_balance'] ?? ((json['cached_balance'] ?? 0).toDouble() > 0),
-      apiKey: json['api_key'],
+      isActive: (json['is_active'] ?? true) as bool,
+      createdAt: DateTime.parse((json['created_at'] ?? DateTime.now().toIso8601String()).toString()),
+      cachedBalance: (json['cached_balance'] ?? json['balance'] ?? 0).toDouble(),
+      hasCachedBalance: (json['has_cached_balance'] ?? false) as bool,
+      apiKey: (json['api_key'] ?? json['apiKey'] ?? '').toString().isEmpty
+          ? null
+          : (json['api_key'] ?? json['apiKey'] ?? '').toString(),
+      apiSecret: (json['api_secret'] ?? json['password'] ?? json['apiSecret'] ?? '').toString().isEmpty
+          ? null
+          : (json['api_secret'] ?? json['password'] ?? json['apiSecret'] ?? '').toString(),
     );
   }
+
   final String credentialId;
   final String broker;
   final String accountNumber;
@@ -78,21 +76,24 @@ class BrokerCredential {
   final double cachedBalance;
   final bool hasCachedBalance;
   final String? apiKey;
+  final String? apiSecret;
 
   bool get isHealthy => hasCachedBalance || cachedBalance > 0;
 
   Map<String, dynamic> toJson() => {
-    'credential_id': credentialId,
-    'broker': broker,
-    'account_number': accountNumber,
-    'server': server,
-    'account_currency': accountCurrency,
-    'is_live': isLive,
-    'is_active': isActive,
-    'created_at': createdAt.toIso8601String(),
-    'cached_balance': cachedBalance,
-    'has_cached_balance': hasCachedBalance,
-  };
+        'credential_id': credentialId,
+        'broker': broker,
+        'account_number': accountNumber,
+        'server': server,
+        'account_currency': accountCurrency,
+        'is_live': isLive,
+        'is_active': isActive,
+        'created_at': createdAt.toIso8601String(),
+        'cached_balance': cachedBalance,
+        'has_cached_balance': hasCachedBalance,
+        if (apiKey != null) 'api_key': apiKey,
+        if (apiSecret != null) 'api_secret': apiSecret,
+      };
 }
 
 class BrokerCredentialsService extends ChangeNotifier {

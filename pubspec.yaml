@@ -61,6 +61,9 @@ dependencies:
   # Notifications
   flutter_local_notifications: ^17.0.0
 
+  # File picker for credential import
+  file_picker: ^8.0.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
