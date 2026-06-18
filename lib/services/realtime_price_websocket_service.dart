@@ -87,10 +87,7 @@ class RealtimePriceWebSocketService {
   Timer? _restPollingTimer;
   String? _brokerName;
   String? _sessionToken;
-  
-  final Map<String, List<PriceUpdateCallback>> _priceCallbacks = {};
-  final List<ConnectionStatusCallback> _statusCallbacks = [];
-  
+  bool _isDisposed = false;
   Timer? _heartbeatTimer;
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
@@ -119,12 +116,17 @@ class RealtimePriceWebSocketService {
       );
 
       // Wait for initial connection
-      await _channel!.ready.timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          throw TimeoutException('WebSocket connection timeout');
-        },
-      );
+      if (_channel == null) {
+        throw TimeoutException('WebSocket channel not created');
+      }
+
+      try {
+        await _channel!.ready.timeout(
+          const Duration(seconds: 10),
+        );
+      } on TimeoutException {
+        throw TimeoutException('WebSocket connection timeout');
+      }
 
       // Start listening to messages
       _startListening();
@@ -192,10 +194,8 @@ class RealtimePriceWebSocketService {
 
   /// Disconnect from WebSocket
   Future<void> disconnect() async {
+    _disposeTimers();
     try {
-      _heartbeatTimer?.cancel();
-      _reconnectTimer?.cancel();
-      _restPollingTimer?.cancel();
       await _channel?.sink.close(status.goingAway);
       _channel = null;
       _isConnected = false;
@@ -344,6 +344,7 @@ class RealtimePriceWebSocketService {
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
+      if (_isDisposed) return;
       _sendMessage({
         'type': 'heartbeat',
       });
@@ -356,8 +357,18 @@ class RealtimePriceWebSocketService {
     }
   }
 
+  void _disposeTimers() {
+    _isDisposed = true;
+    _heartbeatTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _restPollingTimer?.cancel();
+    _heartbeatTimer = null;
+    _reconnectTimer = null;
+    _restPollingTimer = null;
+  }
+
   void _scheduleReconnect() {
-    if (_reconnectAttempts >= _maxReconnectAttempts) {
+    if (_isDisposed || _reconnectAttempts >= _maxReconnectAttempts) {
       print('❌ Failed to reconnect after $_maxReconnectAttempts attempts');
       return;
     }
@@ -367,6 +378,7 @@ class RealtimePriceWebSocketService {
     
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(_reconnectDelay, () {
+      if (_isDisposed) return;
       // Note: You would need to pass the broker name and token here
       // For now, just attempt to connect with empty credentials
       // This is a simplified version - in production, store these credentials

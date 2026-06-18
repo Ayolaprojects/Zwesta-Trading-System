@@ -7,6 +7,7 @@
         <domain includeSubdomains="true">38.247.146.198</domain>
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">192.168.0.137</domain>
     </domain-config>
     
     <!-- Trust system certificates by default -->
