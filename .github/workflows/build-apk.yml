@@ -94,7 +94,7 @@ jobs:
       - name: Clean & get dependencies
         run: |
           flutter clean
-          flutter pub get --enforce-lockfile
+          flutter pub get
 
       - name: Flutter analyze
         run: |
