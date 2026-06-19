@@ -132,13 +132,14 @@ from system.backup_and_recovery import BackupManager, RecoveryManager
 try:
     from binance_worker_manager import BinanceWorkerPoolManager
 except ImportError as _binance_worker_import_error:
+    _binance_worker_manager_unavailable_message = str(_binance_worker_import_error)
     class BinanceWorkerPoolManager:
         def __init__(self, worker_count: int = 0, max_bots_per_worker: int = 500):
             self.worker_count = 0
             self.max_bots_per_worker = max_bots_per_worker
             logging.getLogger(__name__).warning(
                 "Binance worker manager unavailable (%s) - Binance worker pool disabled until binance_worker_manager.py is deployed",
-                _binance_worker_import_error,
+                _binance_worker_manager_unavailable_message,
             )
 
         @property
@@ -3387,9 +3388,13 @@ def warm_up_mt5_terminal(mt5_path: str, account: int, password: str, server: str
     return False
 
 # Binance Configuration - Support DEMO and LIVE modes
+# Per-user credentials are stored encrypted in the DB (broker_credentials table).
+# These env values are intentionally left blank for multi-tenant safety.
+# DO NOT set global BINANCE_API_KEY / BINANCE_API_SECRET here — each user provides
+# their own via the frontend BrokerCredentialsService -> backend /api/broker/credentials.
 BINANCE_CONFIG = {
-    'api_key': os.getenv('BINANCE_API_KEY', ''),
-    'api_secret': os.getenv('BINANCE_API_SECRET', ''),
+    'api_key': '',
+    'api_secret': '',
     'market': os.getenv('BINANCE_MARKET', 'spot'),
     'is_live': False,  # Will be set based on ENVIRONMENT
 }
@@ -39400,6 +39405,7 @@ def create_bot():
 
             logger.info(f"✅ Created bot {bot_id} for user {user_id}")
             logger.info(f"   Broker: {broker_name} | Account: {account_number} | Mode: {mode}")
+            logger.info(f"   RETURN -> {{'botId': '{bot_id}', 'mode': '{mode}', 'broker': '{broker_name}', 'user_id': '{user_id}'}}")
 
             startup_launch_error = None
             launch_mode = 'disabled'

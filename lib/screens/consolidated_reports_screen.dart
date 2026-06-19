@@ -143,9 +143,9 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
   }
 
   void _applyTradeToReport(Map<String, dynamic> report, Map<String, dynamic> trade) {
-    final profit = ((trade['profit'] ?? 0) as num).toDouble();
+    final profit = _toDouble(trade['profit']);
     final status = (trade['status'] ?? 'closed').toString().toLowerCase();
-    report['totalTrades'] = (report['totalTrades'] as int) + 1;
+    report['totalTrades'] = _toInt(report['totalTrades']) + 1;
     report['netProfit'] = (report['netProfit'] as double) + profit;
     if (status == 'open') {
       report['openTrades'] = (report['openTrades'] as int) + 1;
@@ -446,18 +446,24 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
     final totalProfitByCurrency = <String, double>{};
     var accountCount = 0;
     double totalWinRate = 0;
+    int accountsWithTrades = 0;
 
     reports.forEach((key, report) {
       if (report is Map) {
         final currency = _normalizeCurrency(report['currency']);
-        totalTrades += report['totalTrades']?.toDouble() ?? 0;
-        totalProfitByCurrency[currency] = (totalProfitByCurrency[currency] ?? 0.0) + ((report['netProfit'] ?? 0).toDouble());
-        totalWinRate += report['winRate']?.toDouble() ?? 0;
+        final reportTotalTrades = _toInt(report['totalTrades']);
+        totalTrades += reportTotalTrades.toDouble();
+        totalProfitByCurrency[currency] = (totalProfitByCurrency[currency] ?? 0.0) + _toDouble(report['netProfit']);
+        final winRate = _toDouble(report['winRate']);
+        totalWinRate += winRate;
         accountCount++;
+        if (reportTotalTrades > 0) accountsWithTrades++;
       }
     });
 
-    final avgWinRate = accountCount > 0 ? totalWinRate / accountCount : 0;
+    final avgWinRate = accountsWithTrades > 0 && accountCount > 0
+        ? totalWinRate / accountsWithTrades
+        : 0;
     final totalProfit = totalProfitByCurrency.values.fold<double>(0, (sum, value) => sum + value);
 
     return Card(
@@ -549,7 +555,7 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
     }).toList();
 
   Widget _buildAccountReportCard(String accountId, Map<String, dynamic> report) {
-    final netProfit = report['netProfit'] as double? ?? 0;
+    final netProfit = _toDouble(report['netProfit']);
     final isProfit = netProfit >= 0;
     final currency = _normalizeCurrency(report['currency']);
 
@@ -618,27 +624,27 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
                 children: [
                   _buildReportRow(
                     'Balance',
-                    _formatMoney((report['balance'] ?? 0) as num, currency),
+                    _formatMoney(_toDouble(report['balance']), currency),
                   ),
                   _buildReportRow(
                     'Equity',
-                    _formatMoney((report['equity'] ?? 0) as num, currency),
+                    _formatMoney(_toDouble(report['equity']), currency),
                   ),
                   _buildReportRow(
                     'Free Margin',
-                    _formatMoney((report['marginFree'] ?? 0) as num, currency),
+                    _formatMoney(_toDouble(report['marginFree']), currency),
                   ),
                   _buildReportRow(
                     'Open Trades',
-                    (report['openTrades'] ?? 0).toString(),
+                    _toInt(report['openTrades']).toString(),
                   ),
                   _buildReportRow(
                     'Closed Trades',
-                    (report['closedTrades'] ?? 0).toString(),
+                    _toInt(report['closedTrades']).toString(),
                   ),
                   _buildReportRow(
                     'Active Bots',
-                    '${report['activeBots'] ?? 0}/${report['totalBots'] ?? 0}',
+                    '${_toInt(report['activeBots'])}/${_toInt(report['totalBots'])}',
                   ),
                   if ((report['dataSource'] ?? '').toString().isNotEmpty)
                     _buildReportRow(
@@ -648,36 +654,36 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
                   const Divider(height: 12),
                   _buildReportRow(
                     'Total Trades',
-                    (report['totalTrades'] ?? 0).toString(),
+                    _toInt(report['totalTrades']).toString(),
                   ),
                   _buildReportRow(
                     'Winning Trades',
-                    '${report['winningTrades'] ?? 0} (${(report['winRate'] ?? 0).toStringAsFixed(1)}%)',
+                    '${_toInt(report['winningTrades'])} (${_toDouble(report['winRate']).toStringAsFixed(1)}%)',
                     color: Colors.green,
                   ),
                   _buildReportRow(
                     'Losing Trades',
-                    (report['losingTrades'] ?? 0).toString(),
+                    _toInt(report['losingTrades']).toString(),
                     color: Colors.red,
                   ),
                   const Divider(height: 12),
                   _buildReportRow(
                     'Total Profit',
-                    _formatMoney((report['totalProfit'] ?? 0) as num, currency),
+                    _formatMoney(_toDouble(report['totalProfit']), currency),
                     color: Colors.green,
                   ),
                   _buildReportRow(
                     'Total Loss',
-                    _formatMoney(-((report['totalLoss'] ?? 0) as num), currency),
+                    _formatMoney(-_toDouble(report['totalLoss']), currency),
                     color: Colors.red,
                   ),
                   _buildReportRow(
                     'Largest Win',
-                    _formatMoney((report['largestWin'] ?? 0) as num, currency),
+                    _formatMoney(_toDouble(report['largestWin']), currency),
                   ),
                   _buildReportRow(
                     'Largest Loss',
-                    _formatMoney(-((report['largestLoss']?.abs() ?? 0) as num), currency),
+                    _formatMoney(-_toDouble(report['largestLoss']?.abs() ?? 0), currency),
                   ),
                 ],
               ),

@@ -138,8 +138,8 @@ def _resolve_request_binance_credentials() -> dict:
                 return cached_credentials
 
     credentials = {
-        'api_key': str(BINANCE_API_KEY or '').strip(),
-        'api_secret': str(BINANCE_API_SECRET or '').strip(),
+        'api_key': '',
+        'api_secret': '',
         'user_id': '',
         'market': market_preference,
     }
@@ -400,8 +400,8 @@ def api_binance_login():
     """Verify Binance credentials by fetching account info."""
     try:
         data = request.json or {}
-        api_key = data.get('api_key') or BINANCE_API_KEY
-        api_secret = data.get('api_secret') or BINANCE_API_SECRET
+        api_key = data.get('api_key')
+        api_secret = data.get('api_secret')
 
         if not api_key or not api_secret:
             return jsonify({"success": False, "error": "Binance API key and secret required"}), 400
@@ -436,10 +436,12 @@ def api_binance_login():
 def api_binance_accounts():
     """Get Binance account info including all balances."""
     try:
+        market_preference = _infer_request_binance_market_preference()
+        base_url = FAPI_URL if market_preference == 'futures' else BASE_URL
         headers = _binance_headers()
         resp = _signed_request(
             'GET',
-            f"{BASE_URL}/v3/account",
+            f"{base_url}/{'v2/account' if market_preference == 'futures' else 'v3/account'}",
             headers=headers,
             params={},
             timeout=10,
@@ -452,6 +454,7 @@ def api_binance_accounts():
                     "accountType": acct.get('accountType', ''),
                     "canTrade": acct.get('canTrade', False),
                     "canWithdraw": acct.get('canWithdraw', False),
+                    "market": market_preference,
                 }],
             })
         return jsonify({"success": False, "error": resp.text}), resp.status_code
@@ -467,42 +470,53 @@ def api_binance_balance():
         if cached_payload is not None:
             return jsonify(cached_payload)
 
+        market_preference = _infer_request_binance_market_preference()
+        base_url = FAPI_URL if market_preference == 'futures' else BASE_URL
         headers = _binance_headers()
         resp = _signed_request(
             'GET',
-            f"{BASE_URL}/v3/account",
+            f"{base_url}/{'v2/balance' if market_preference == 'futures' else 'v3/account'}",
             headers=headers,
             params={},
             timeout=10,
         )
         if resp.status_code == 200:
-            acct = resp.json()
-            balances = acct.get('balances', [])
+            data = resp.json()
+            # For futures, data is a list of balance objects; for spot, it's account with balances
+            if market_preference == 'futures':
+                balances = data if isinstance(data, list) else []
+            else:
+                balances = data.get('balances', [])
 
             # Find USDT balance
-            usdt = next((b for b in balances if b['asset'] == 'USDT'), {'free': '0', 'locked': '0'})
-            btc = next((b for b in balances if b['asset'] == 'BTC'), {'free': '0', 'locked': '0'})
+            usdt = next((b for b in balances if b.get('asset') == 'USDT'), {'balance': '0', 'crossWalletBalance': '0', 'walletBalance': '0'})
+            btc = next((b for b in balances if b.get('asset') == 'BTC'), {'balance': '0', 'crossWalletBalance': '0', 'walletBalance': '0'})
+
+            # Extract USDT values based on futures or spot response
+            usdt_free = float(usdt.get('balance') or usdt.get('crossWalletBalance') or usdt.get('walletBalance') or 0)
+            usdt_locked = float(usdt.get('crossWalletBalance') or 0) if market_preference == 'futures' else float(usdt.get('locked') or 0)
+            btc_free = float(btc.get('balance') or btc.get('crossWalletBalance') or btc.get('walletBalance') or 0)
 
             # All non-zero balances
             active_balances = [
                 {
-                    'asset': b['asset'],
-                    'free': float(b['free']),
-                    'locked': float(b['locked']),
-                    'total': float(b['free']) + float(b['locked']),
+                    'asset': b.get('asset', ''),
+                    'free': float(b.get('balance') or b.get('crossWalletBalance') or b.get('walletBalance') or 0),
+                    'locked': float(b.get('crossWalletBalance') or b.get('locked') or 0),
                 }
                 for b in balances
-                if float(b.get('free', 0)) > 0 or float(b.get('locked', 0)) > 0
+                if float(b.get('balance') or b.get('crossWalletBalance') or b.get('walletBalance') or 0) > 0
             ]
 
             return jsonify({
                 'success': True,
-                'balance': float(usdt['free']) + float(usdt['locked']),
-                'available': float(usdt['free']),
-                'locked': float(usdt['locked']),
+                'balance': usdt_free + usdt_locked,
+                'available': usdt_free,
+                'locked': usdt_locked,
                 'currency': 'USDT',
-                'btcBalance': float(btc['free']) + float(btc['locked']),
+                'btcBalance': btc_free,
                 'allBalances': active_balances,
+                'market': market_preference,
             })
         return jsonify({'success': False, 'error': resp.text}), resp.status_code
     except Exception as e:
@@ -527,29 +541,57 @@ def api_binance_funds():
                 },
             })
 
+        market_preference = _infer_request_binance_market_preference()
+        base_url = FAPI_URL if market_preference == 'futures' else BASE_URL
         headers = _binance_headers()
-        resp = _signed_request(
-            'GET',
-            f"{BASE_URL}/v3/account",
-            headers=headers,
-            params={},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            acct = resp.json()
-            balances = acct.get('balances', [])
-            usdt = next((b for b in balances if b['asset'] == 'USDT'), {'free': '0', 'locked': '0'})
+        
+        if market_preference == 'futures':
+            resp = _signed_request(
+                'GET',
+                f"{FAPI_URL}/v2/balance",
+                headers=headers,
+                params={},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                balances = resp.json() if isinstance(resp.json(), list) else []
+                usdt = next((b for b in balances if b.get('asset') == 'USDT'), {'balance': '0'})
+                
+                return jsonify({
+                    'success': True,
+                    'funds': {
+                        'balance': float(usdt.get('balance', 0)),
+                        'available': float(usdt.get('balance', 0)),
+                        'locked': 0,
+                        'currency': 'USDT',
+                        'accountType': 'FUTURES',
+                        'market': market_preference,
+                    },
+                })
+        else:
+            resp = _signed_request(
+                'GET',
+                f"{base_url}/v3/account",
+                headers=headers,
+                params={},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                acct = resp.json()
+                balances = acct.get('balances', [])
+                usdt = next((b for b in balances if b['asset'] == 'USDT'), {'free': '0', 'locked': '0'})
 
-            return jsonify({
-                'success': True,
-                'funds': {
-                    'balance': float(usdt['free']) + float(usdt['locked']),
-                    'available': float(usdt['free']),
-                    'locked': float(usdt['locked']),
-                    'currency': 'USDT',
-                    'accountType': acct.get('accountType', ''),
-                },
-            })
+                return jsonify({
+                    'success': True,
+                    'funds': {
+                        'balance': float(usdt['free']) + float(usdt['locked']),
+                        'available': float(usdt['free']),
+                        'locked': float(usdt['locked']),
+                        'currency': 'USDT',
+                        'accountType': acct.get('accountType', ''),
+                        'market': market_preference,
+                    },
+                })
         return jsonify({'success': False, 'error': resp.text}), resp.status_code
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -559,31 +601,59 @@ def api_binance_funds():
 
 @binance_api.route('/api/binance/positions', methods=['GET'])
 def api_binance_positions():
-    """Get all open orders (spot) — Binance spot doesn't have 'positions' like forex."""
+    """Get all open orders (spot) or positions (futures)."""
     try:
+        market_preference = _infer_request_binance_market_preference()
         headers = _binance_headers()
-        resp = _signed_request(
-            'GET',
-            f"{BASE_URL}/v3/openOrders",
-            headers=headers,
-            params={},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            orders = resp.json()
-            positions = []
-            for o in orders:
-                positions.append({
-                    'dealId': str(o.get('orderId', '')),
-                    'instrument': o.get('symbol', ''),
-                    'direction': o.get('side', ''),
-                    'size': float(o.get('origQty', 0)),
-                    'level': float(o.get('price', 0)),
-                    'type': o.get('type', ''),
-                    'status': o.get('status', ''),
-                    'openTime': o.get('time', ''),
-                })
-            return jsonify({"success": True, "positions": positions})
+        
+        if market_preference == 'futures':
+            # For futures, get positions from FAPI
+            resp = _signed_request(
+                'GET',
+                f"{FAPI_URL}/v2/positionRisk",
+                headers=headers,
+                params={},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                positions_data = resp.json()
+                positions = []
+                for p in positions_data:
+                    positions.append({
+                        'dealId': str(p.get('symbol', '')),
+                        'instrument': p.get('symbol', ''),
+                        'direction': 'BUY' if float(p.get('positionAmt', 0)) > 0 else 'SELL',
+                        'size': abs(float(p.get('positionAmt', 0))),
+                        'entryPrice': float(p.get('entryPrice', 0)),
+                        'unrealizedProfit': float(p.get('unRealizedProfit', 0)),
+                        'market': 'futures',
+                    })
+                return jsonify({"success": True, "positions": positions})
+        else:
+            # For spot, get open orders
+            resp = _signed_request(
+                'GET',
+                f"{BASE_URL}/v3/openOrders",
+                headers=headers,
+                params={},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                orders = resp.json()
+                positions = []
+                for o in orders:
+                    positions.append({
+                        'dealId': str(o.get('orderId', '')),
+                        'instrument': o.get('symbol', ''),
+                        'direction': o.get('side', ''),
+                        'size': float(o.get('origQty', 0)),
+                        'level': float(o.get('price', 0)),
+                        'type': o.get('type', ''),
+                        'status': o.get('status', ''),
+                        'openTime': o.get('time', ''),
+                        'market': 'spot',
+                    })
+                return jsonify({"success": True, "positions": positions})
         return jsonify({"success": False, "error": resp.text}), resp.status_code
     except Exception as e:
         logger.error(f"Binance positions error: {e}")

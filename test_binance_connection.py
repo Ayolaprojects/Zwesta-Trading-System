@@ -13,9 +13,10 @@ from datetime import datetime
 BACKEND_URL = "http://localhost:9000"  # Your backend server
 SESSION_TOKEN = "debug_token_49b6b05ad32648759f26f6ac37eebcef"  # Update with your session token
 
-# Your Binance API credentials (from the screenshot)
-BINANCE_API_KEY = "JBPMO44roltRZjQhxM0YqZLCgpYd7dHiddZru8GHJzJI6AveL3yv3M95imfFZT3b"
-BINANCE_API_SECRET = "your_api_secret_here"  # ⚠️ Replace with your actual secret
+# Use environment variables for Binance API credentials. Do NOT hardcode secrets here.
+import os
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
 # ==================== STEP 1: TEST BINANCE CONNECTION ====================
 def test_binance_connection(api_key: str, api_secret: str, is_live: bool = False):

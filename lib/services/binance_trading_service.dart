@@ -52,11 +52,15 @@ class BinanceTradingService {
 
   // ==================== ACCOUNTS ====================
 
-  static Future<Map<String, dynamic>> getAccounts() async {
+  static Future<Map<String, dynamic>> getAccounts({String? market}) async {
     try {
       final headers = await _authHeaders();
+      var url = '$_baseUrl/api/binance/accounts';
+      if (market != null && market.isNotEmpty) {
+        url += '?market=$market';
+      }
       final resp = await http.get(
-        Uri.parse('$_baseUrl/api/binance/accounts'),
+        Uri.parse(url),
         headers: headers,
       ).timeout(const Duration(seconds: 10));
 
@@ -69,11 +73,15 @@ class BinanceTradingService {
 
   // ==================== BALANCE ====================
 
-  static Future<Map<String, dynamic>> getBalance() async {
+  static Future<Map<String, dynamic>> getBalance({String? market}) async {
     try {
       final headers = await _authHeaders();
+      var url = '$_baseUrl/api/binance/balance';
+      if (market != null && market.isNotEmpty) {
+        url += '?market=$market';
+      }
       final resp = await http.get(
-        Uri.parse('$_baseUrl/api/binance/balance'),
+        Uri.parse(url),
         headers: headers,
       ).timeout(const Duration(seconds: 10));
 
@@ -103,11 +111,11 @@ class BinanceTradingService {
 
   // ==================== POSITIONS ====================
 
-  static Future<Map<String, dynamic>> getPositions() async {
+  static Future<Map<String, dynamic>> getPositions({String market = 'spot'}) async {
     try {
       final headers = await _authHeaders();
       final resp = await http.get(
-        Uri.parse('$_baseUrl/api/binance/positions'),
+        Uri.parse('$_baseUrl/api/binance/positions?market=$market'),
         headers: headers,
       ).timeout(const Duration(seconds: 10));
 

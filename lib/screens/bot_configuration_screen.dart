@@ -3301,11 +3301,13 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     final pollInterval = _recommendedPollInterval();
     final autoScanner = _autoScannerEnabled();
     final accountCurrency = credential.accountCurrency.toUpperCase();
+    final binanceMarket = _isBinanceBroker ? _copyTradingMarketName() : null;
 
     return {
       'botId': _botIdController.text.trim(),
       'credentialId': credential.credentialId,
       'mode': credential.isLive ? 'live' : 'demo',
+      if (binanceMarket != null) 'market': binanceMarket,
       'symbols': _selectedSymbols,
       'strategy': _selectedStrategy,
       'riskPercent': _riskPercent,
