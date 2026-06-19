@@ -2217,7 +2217,7 @@ PROFIT_PEAK_PROTECTION_DECLINE_THRESHOLD = 0.05  # Min decline to trigger ($)
 PROFIT_PEAK_PROTECTION_RECOVERY_WINS_REQUIRED = 3  # Wins to graduate recovery
 PROFIT_PEAK_PROTECTION_RECOVERY_SIZE_PERCENT = 0.50  # Position size % in recovery
 AUTO_RESTART_BOTS_MODE_FILTER = str(
-    os.getenv('AUTO_RESTART_BOTS_MODE_FILTER', 'live' if ENVIRONMENT == 'LIVE' else 'all') or 'all'
+    os.getenv('AUTO_RESTART_BOTS_MODE_FILTER', 'all') or 'all'
 ).strip().lower()
 if AUTO_RESTART_BOTS_MODE_FILTER not in {'all', 'live', 'demo'}:
     logger.warning(
@@ -47164,11 +47164,11 @@ def bot_summary():
                 _summary_query = '''
                     SELECT bot_id
                     FROM user_bots
-                    WHERE user_id = ? AND enabled = 1 AND status = 'active'
+                    WHERE ub.user_id = ? AND ub.status = 'active'
                 '''
                 _summary_params = [user_id]
                 if mode_filter in ('LIVE', 'DEMO'):
-                    _summary_query += ' AND is_live = ?'
+                    _summary_query += ' AND ub.is_live = ?'
                     _summary_params.append(1 if mode_filter == 'LIVE' else 0)
                 _summary_cur.execute(_summary_query, _summary_params)
                 for _summary_row in _summary_cur.fetchall():
