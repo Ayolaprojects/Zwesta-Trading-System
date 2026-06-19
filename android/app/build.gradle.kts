@@ -67,6 +67,15 @@ android {
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
+        manifestPlaceholders += mapOf(
+            "appAuthRedirectScheme" to "com.example.zwesta_trading"
+        )
+    }
+
+    dependencies {
+        implementation("androidx.core:core-splashscreen:1.0.1")
+        implementation("androidx.biometric:biometric:1.1.0")
+        implementation("androidx.security:security-crypto:1.1.0-alpha06")
     }
 
     signingConfigs {
