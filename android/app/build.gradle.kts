@@ -99,8 +99,11 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // Disable shrinking/minification until a proper release keystore
+            // and proguard/r8 rules are validated end-to-end.
+            // Re-enable only if you have reproducible crash-free builds.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
