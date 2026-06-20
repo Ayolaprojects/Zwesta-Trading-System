@@ -512,14 +512,10 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               botId.contains(_searchQuery.toLowerCase()) ||
               symbol.contains(_searchQuery.toLowerCase()) ||
               strategy.contains(_searchQuery.toLowerCase());
-          final isEnabled = _isActiveBot(bot);
           final matchesFilter = _filterStatus == 'all' ||
               (_filterStatus == 'active' && isEnabled) ||
               (_filterStatus == 'inactive' && !isEnabled);
-          final matchesMode = _tradingMode == 'DEMO'
-              ? !_isLiveBot(bot)
-              : _isLiveBot(bot);
-          return matchesSearch && matchesFilter && matchesMode;
+          return matchesSearch && matchesFilter;
         }).toList();
 
         // Top 5 newest bots (by creation time or just last 5)

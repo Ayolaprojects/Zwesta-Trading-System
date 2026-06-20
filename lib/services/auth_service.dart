@@ -82,7 +82,7 @@ class AuthService extends ChangeNotifier {
         Uri.parse('${EnvironmentConfig.apiUrl}/api/user/login'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'email': username, 'password': password}),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);

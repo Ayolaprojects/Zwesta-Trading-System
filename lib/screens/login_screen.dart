@@ -55,6 +55,269 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_showForgotPassword) {
+      return ForgotPasswordScreen(
+        onBackToLogin: () {
+          setState(() => _showForgotPassword = false);
+        },
+      );
+    }
+
+    final loc = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final primaryColor = theme.colorScheme.primary;
+    try {
+      return Scaffold(
+        appBar: null,
+        extendBodyBehindAppBar: true,
+        body: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                const Color(0xFF0A0E21),
+                const Color(0xFF111633),
+                const Color(0xFF0A0E21),
+              ],
+            ),
+          ),
+          child: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 12),
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 420),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.06),
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.18),
+                            width: 1.5,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.25),
+                              blurRadius: 32,
+                              offset: const Offset(0, 12),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: primaryColor.withOpacity(0.35),
+                                    blurRadius: 22,
+                                    offset: const Offset(0, 0),
+                                  ),
+                                ],
+                              ),
+                              child: const LogoWidget(size: 100, showText: false),
+                            ),
+                            const SizedBox(height: 20),
+                            Text(
+                              'ZWESTA XM',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontSize: 26,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.4,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'TRADING SYSTEM',
+                              style: GoogleFonts.poppins(
+                                color: primaryColor,
+                                fontSize: 12,
+                                letterSpacing: 2.4,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 22),
+                            Text(
+                              'AUTO-TRADES ON',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white.withOpacity(0.7),
+                                fontSize: 9.5,
+                                letterSpacing: 2,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                _loginBrokerChip('B', 'Binance', const Color(0xFFF3BA2F)),
+                                _loginBrokerChip('E', 'Exness', const Color(0xFF00E5FF)),
+                                _loginBrokerChip('F', 'FXCM', const Color(0xFF7C4DFF)),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 44),
+
+                  Text(
+                    _isLogin && !_showMfaPrompt
+                        ? 'Welcome Back'
+                        : !_isLogin
+                            ? 'Create Account'
+                            : 'Two-Factor Authentication',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 28),
+
+                  Consumer<AuthService>(
+                    builder: (context, authService, _) {
+                      if (authService.successMessage != null && authService.successMessage!.isNotEmpty) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF00E676).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFF00E676).withOpacity(0.4)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle_outline, color: Color(0xFF00E676), size: 20),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    authService.successMessage!,
+                                    style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.3),
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () => authService.clearError(),
+                                  child: const Icon(Icons.close, color: Colors.white70, size: 18),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
+                      return const SizedBox.shrink();
+                    },
+                  ),
+
+                  Consumer<AuthService>(
+                    builder: (context, authService, _) {
+                      if (authService.errorMessage != null && authService.errorMessage!.isNotEmpty) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFF5252).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFFF5252).withOpacity(0.45)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.error_outline, color: Color(0xFFFF5252), size: 20),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    authService.errorMessage!,
+                                    style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.3),
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () => authService.clearError(),
+                                  child: const Icon(Icons.close, color: Colors.white70, size: 18),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
+                      return const SizedBox.shrink();
+                    },
+                  ),
+
+                  if (_showMfaPrompt)
+                    _buildMfaForm(loc)
+                  else
+                    _buildLoginRegisterForm(loc),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    } catch (e, st) {
+      debugPrint('LoginScreen build error: $e\n$st');
+      return Scaffold(
+        body: Center(child: Text('Login error: $e')),
+      );
+    }
+  }
+
+class _LoginScreenState extends State<LoginScreen> {
+  late TextEditingController _usernameController;
+  late TextEditingController _passwordController;
+  late TextEditingController _mfaController;
+  bool _obscurePassword = true;
+  bool _isLogin = true;
+  bool _showForgotPassword = false;
+  bool _showMfaPrompt = false;
+  String? _pendingSessionToken;
+  late TextEditingController _emailController;
+  late TextEditingController _firstNameController;
+  late TextEditingController _lastNameController;
+  late TextEditingController _referralCodeController;
+
+  @override
+  void initState() {
+    super.initState();
+    _usernameController = TextEditingController();
+    _passwordController = TextEditingController();
+    _mfaController = TextEditingController();
+    _emailController = TextEditingController();
+    _firstNameController = TextEditingController();
+    _lastNameController = TextEditingController();
+    _referralCodeController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _passwordController.dispose();
+    _mfaController.dispose();
+    _emailController.dispose();
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    _referralCodeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     // Show forgot password screen
     if (_showForgotPassword) {
       return ForgotPasswordScreen(
@@ -153,111 +416,46 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 60),
                   
                   // Welcome Back heading (only on login)
-                  if (_isLogin && !_showMfaPrompt)
-                    Text(
-                      'Welcome Back',
-                      style: GoogleFonts.poppins(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    )
-                  else if (!_isLogin)
-                    Text(
-                      'Create Account',
-                      style: GoogleFonts.poppins(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    )
-                  else
-                    Text(
-                      'Two-Factor Authentication',
-                      style: GoogleFonts.poppins(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
+                  Text(
+                    _isLogin && !_showMfaPrompt ? 'Welcome Back' : (!_isLogin ? 'Create Account' : 'Two-Factor Authentication'),
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
                     ),
-                  const SizedBox(height: 36),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 26),
 
-                  // Success Message Display
                   Consumer<AuthService>(
                     builder: (context, authService, _) {
-                      if (authService.successMessage != null && authService.successMessage!.isNotEmpty) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 16),
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.green.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.green.withOpacity(0.5)),
+                      final successMsg = authService.successMessage;
+                      final errorMsg = authService.errorMessage;
+                      final showSuccess = successMsg != null && successMsg.isNotEmpty;
+                      final showError = !showSuccess && errorMsg != null && errorMsg.isNotEmpty;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (showSuccess)
+                            _StatusBanner(
+                              icon: Icons.check_circle_outline,
+                              color: const Color(0xFF00E676),
+                              message: successMsg,
+                              onDismiss: () => authService.clearError(),
                             ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.check_circle_outline, color: Colors.greenAccent, size: 20),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    authService.successMessage!,
-                                    style: const TextStyle(color: Colors.white70, fontSize: 13),
-                                  ),
-                                ),
-                                GestureDetector(
-                                  onTap: () => authService.clearError(),
-                                  child: const Icon(Icons.close, color: Colors.white70, size: 18),
-                                ),
-                              ],
+                          if (showError)
+                            _StatusBanner(
+                              icon: Icons.error_outline,
+                              color: const Color(0xFFFF5252),
+                              message: errorMsg,
+                              onDismiss: () => authService.clearError(),
                             ),
-                          ),
-                        );
-                      }
-                      return const SizedBox.shrink();
+                        ],
+                      );
                     },
                   ),
 
-                  // Error Message Display
-                  Consumer<AuthService>(
-                    builder: (context, authService, _) {
-                      if (authService.errorMessage != null && authService.errorMessage!.isNotEmpty) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 16),
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.red.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.red.withOpacity(0.5)),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.error_outline, color: Colors.redAccent, size: 20),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    authService.errorMessage!,
-                                    style: const TextStyle(color: Colors.white70, fontSize: 13),
-                                  ),
-                                ),
-                                GestureDetector(
-                                  onTap: () => authService.clearError(),
-                                  child: const Icon(Icons.close, color: Colors.white70, size: 18),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }
-                      return const SizedBox.shrink();
-                    },
-                  ),
-
-                  // Show MFA prompt or login/register form
                   if (_showMfaPrompt)
                     _buildMfaForm(loc)
                   else

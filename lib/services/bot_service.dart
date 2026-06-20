@@ -142,7 +142,7 @@ class BotService extends ChangeNotifier {
           .get(
             Uri.parse('$_apiUrl/api/health'),
           )
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 10));
 
       _isConnected = response.statusCode == 200;
       if (_isConnected) {

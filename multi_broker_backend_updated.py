@@ -50,19 +50,6 @@ from enum import Enum
 import sys
 import atexit
 
-# Profit peak erosion protection (new feature)
-try:
-    from fix_profit_peak_erosion import (
-        record_symbol_trade,
-        should_trade_symbol_with_peak_protection,
-        calculate_recovery_position_size,
-        format_symbol_protection_summary,
-    )
-    PROFIT_PEAK_PROTECTION_AVAILABLE = True
-except ImportError:
-    PROFIT_PEAK_PROTECTION_AVAILABLE = False
-    logger_module_init = True  # Temporary flag, logger will be created below
-
 
 def _find_preferred_python_executable() -> Optional[str]:
     candidate_paths = []
@@ -132,15 +119,15 @@ from system.backup_and_recovery import BackupManager, RecoveryManager
 try:
     from binance_worker_manager import BinanceWorkerPoolManager
 except ImportError as _binance_worker_import_error:
-    _binance_worker_manager_unavailable_message = str(_binance_worker_import_error)
+    _binance_worker_import_message = (
+        "Binance worker manager unavailable (%s) - Binance worker pool disabled until binance_worker_manager.py is deployed"
+        % str(_binance_worker_import_error)
+    )
     class BinanceWorkerPoolManager:
         def __init__(self, worker_count: int = 0, max_bots_per_worker: int = 500):
             self.worker_count = 0
             self.max_bots_per_worker = max_bots_per_worker
-            logging.getLogger(__name__).warning(
-                "Binance worker manager unavailable (%s) - Binance worker pool disabled until binance_worker_manager.py is deployed",
-                _binance_worker_manager_unavailable_message,
-            )
+            logging.getLogger(__name__).warning(_binance_worker_import_message)
 
         @property
         def enabled(self) -> bool:
@@ -177,19 +164,6 @@ from credential_crypto import (
 )
 
 
-REQUIRE_POSTGRES = str(os.getenv('REQUIRE_POSTGRES', 'true') or 'true').strip().lower() in {
-    '1', 'true', 'yes', 'on'
-}
-
-
-def _require_postgres_or_raise(context: str) -> None:
-    if REQUIRE_POSTGRES and not using_postgres():
-        raise RuntimeError(
-            f"{context}: PostgreSQL is required but runtime is not using PostgreSQL. "
-            "Configure DATABASE_URL/POSTGRES_* and restart."
-        )
-
-
 def build_sqlite_connection(*args, **kwargs):
     """Wrapper around runtime_infrastructure.build_sqlite_connection that:
     1. Redirects to PostgreSQL abstraction when PostgreSQL is enabled
@@ -201,8 +175,6 @@ def build_sqlite_connection(*args, **kwargs):
         row_factory = kwargs.get('row_factory', False)
         pg_conn = _PostgresCompatConnection(timeout=timeout, row_factory=row_factory)
         return pg_conn
-
-    _require_postgres_or_raise('build_sqlite_connection')
     
     # Otherwise use SQLite as normal
     conn = _orig_build_sqlite_connection(*args, **kwargs)
@@ -412,8 +384,8 @@ def _get_pg_pool():
             import psycopg2.pool as _pg_pool_mod
         except ImportError as exc:
             raise RuntimeError('psycopg2 is required when PostgreSQL mode is enabled') from exc
-        requested_max_conns = int(os.environ.get('PG_POOL_MAX', '50'))
-        requested_min_conns = int(os.environ.get('PG_POOL_MIN', '5'))
+        requested_max_conns = int(os.environ.get('PG_POOL_MAX', '25'))
+        requested_min_conns = int(os.environ.get('PG_POOL_MIN', '2'))
         safe_pool_cap_raw = str(os.environ.get('PG_POOL_SAFE_CAP', '')).strip()
         safe_pool_cap = max(1, int(safe_pool_cap_raw)) if safe_pool_cap_raw else 0
         max_conns = max(1, min(requested_max_conns, safe_pool_cap)) if safe_pool_cap else max(1, requested_max_conns)
@@ -475,14 +447,9 @@ def _return_pg_connection(conn):
 
     try:
         try:
-            # CRITICAL FIX: Do NOT rollback committed transactions.
-            # psycopg2 status=1 (IDLE) means ready, status=0 means no transaction.
-            # Only rollback if there's an active, incomplete transaction (status > 1).
-            tx_status = conn.get_transaction_status()
-            if tx_status > 1:  # Only rollback truly open transactions
+            # Avoid undoing committed work when returning pooled connections.
+            if conn.get_transaction_status() != 0:
                 conn.rollback()
-            elif tx_status != 0:  # For status=1 (IDLE after commit), do nothing
-                pass
         except Exception:
             pass
         _get_pg_pool().putconn(conn)
@@ -507,13 +474,6 @@ class _PostgresCompatConnection:
         self._conn = _borrow_pg_connection(timeout)
         self._row_factory = row_factory
         self._closed = False
-        # CRITICAL FIX: Ensure transactions are autocommit-safe by setting isolation level
-        try:
-            import psycopg2.extensions
-            # Use READ_COMMITTED (default safe level for trading) instead of SERIALIZABLE
-            self._conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
-        except Exception:
-            pass
 
     def cursor(self):
         return _PostgresCompatCursor(self._conn.cursor(), row_factory=self._row_factory)
@@ -522,12 +482,7 @@ class _PostgresCompatConnection:
         return self.cursor().execute(sql, params)
 
     def commit(self):
-        if not self._closed:
-            try:
-                self._conn.commit()
-            except Exception as e:
-                logger.warning(f"PostgreSQL commit failed: {e}")
-                raise
+        self._conn.commit()
 
     def rollback(self):
         self._conn.rollback()
@@ -1307,52 +1262,6 @@ def should_log_session_event(event_key: str, interval_seconds: int = 30) -> bool
             _session_log_throttle[event_key] = now_ts
             return True
     return False
-
-# ==================== BOT STARTUP ERROR TRACKING ====================
-# Track bot startup failures so the app can report them back to users
-# Format: { bot_id: {'error': str, 'timestamp': float, 'resolved': bool} }
-bot_startup_errors: Dict[str, Dict[str, Any]] = {}
-bot_startup_errors_lock = threading.Lock()
-_BOT_STARTUP_ERROR_TTL = 300  # Keep errors for 5 minutes before clearing
-
-
-def record_bot_startup_error(bot_id: str, error: str) -> None:
-    """Record a bot startup error for later retrieval by the app."""
-    normalized_bot_id = str(bot_id or '').strip()
-    if not normalized_bot_id:
-        return
-    with bot_startup_errors_lock:
-        bot_startup_errors[normalized_bot_id] = {
-            'error': str(error or ''),
-            'timestamp': time.time(),
-            'resolved': False,
-        }
-        logger.warning(f"❌ BOT STARTUP ERROR [{normalized_bot_id}]: {error}")
-
-
-def get_bot_startup_error(bot_id: str) -> Optional[str]:
-    """Get any startup error for a bot, if it exists and is recent."""
-    normalized_bot_id = str(bot_id or '').strip()
-    if not normalized_bot_id:
-        return None
-    with bot_startup_errors_lock:
-        error_info = bot_startup_errors.get(normalized_bot_id)
-        if not error_info:
-            return None
-        # Check if error is still fresh (within TTL)
-        if (time.time() - error_info.get('timestamp', 0)) > _BOT_STARTUP_ERROR_TTL:
-            bot_startup_errors.pop(normalized_bot_id, None)
-            return None
-        return error_info.get('error')
-
-
-def clear_bot_startup_error(bot_id: str) -> None:
-    """Clear startup error for a bot after it successfully starts."""
-    normalized_bot_id = str(bot_id or '').strip()
-    if not normalized_bot_id:
-        return
-    with bot_startup_errors_lock:
-        bot_startup_errors.pop(normalized_bot_id, None)
 
 # ==================== BALANCE CACHE ====================
 # CRITICAL FIX: Cache balances updated from successful MT5 connections
@@ -2208,16 +2117,8 @@ def resolve_bind_ports() -> List[int]:
 # Environment Configuration (DEMO or LIVE)
 ENVIRONMENT = resolve_environment_mode()
 AUTO_RESTART_BOTS_ON_STARTUP = True  # ✅ ENABLED for max1 bot auto-start with aggressive filters
-
-# Profit peak erosion protection configuration
-PROFIT_PEAK_PROTECTION_ENABLED = True  # Set to False to disable feature
-PROFIT_PEAK_PROTECTION_COOLDOWN_MINUTES = 15  # After peak detected
-PROFIT_PEAK_PROTECTION_MIN_PEAK_PROFIT = 0.50  # Minimum profit to arm ($)
-PROFIT_PEAK_PROTECTION_DECLINE_THRESHOLD = 0.05  # Min decline to trigger ($)
-PROFIT_PEAK_PROTECTION_RECOVERY_WINS_REQUIRED = 3  # Wins to graduate recovery
-PROFIT_PEAK_PROTECTION_RECOVERY_SIZE_PERCENT = 0.50  # Position size % in recovery
 AUTO_RESTART_BOTS_MODE_FILTER = str(
-    os.getenv('AUTO_RESTART_BOTS_MODE_FILTER', 'all') or 'all'
+    os.getenv('AUTO_RESTART_BOTS_MODE_FILTER', 'live' if ENVIRONMENT == 'LIVE' else 'all') or 'all'
 ).strip().lower()
 if AUTO_RESTART_BOTS_MODE_FILTER not in {'all', 'live', 'demo'}:
     logger.warning(
@@ -2251,14 +2152,6 @@ EXNESS_CUMULATIVE_PROFIT_PROBE_COOLDOWN_MINUTES = max(
 BINANCE_LIVE_HARD_LOSS_USDT_PERCENT = max(0.005, float(os.getenv('BINANCE_LIVE_HARD_LOSS_USDT_PERCENT', '0.009')))
 BINANCE_LIVE_STALE_LOSS_USDT_PERCENT = max(0.003, float(os.getenv('BINANCE_LIVE_STALE_LOSS_USDT_PERCENT', '0.0045')))
 BINANCE_LIVE_HARD_LOSS_TRADE_SHARE = max(0.10, min(1.0, float(os.getenv('BINANCE_LIVE_HARD_LOSS_TRADE_SHARE', '0.18'))))
-
-# ==================== TRADE HOLD TIME CONFIG ====================
-# Allow more time for trades to develop before closing them (user-requested improvement)
-TRADE_MOMENTUM_DECLINE_MIN_HOLD_MINUTES = max(5.0, float(os.getenv('TRADE_MOMENTUM_DECLINE_MIN_HOLD_MINUTES', '15')))  # ⬆️ Increased from 5-8 min to 15 min
-TRADE_MOMENTUM_STAGNATION_MIN_HOLD_MINUTES = max(10.0, float(os.getenv('TRADE_MOMENTUM_STAGNATION_MIN_HOLD_MINUTES', '30')))  # ⬆️ Increased from 12-20 min to 30 min
-TRADE_NEAR_TP_MIN_HOLD_MINUTES = max(3.0, float(os.getenv('TRADE_NEAR_TP_MIN_HOLD_MINUTES', '10')))  # ⬆️ Increased from 3 min to 10 min (allow price to reach TP)
-TRADE_STALL_EXIT_MIN_HOLD_MINUTES = max(5.0, float(os.getenv('TRADE_STALL_EXIT_MIN_HOLD_MINUTES', '15')))  # ⬆️ Increased from 5-12 min to 15 min
-
 DEFAULT_MT5_BLOCKED_SYMBOL_BASES = {
     (
         normalized_symbol[:-1]
@@ -2300,17 +2193,12 @@ MAX_BOTS_PER_WORKER = max(1, int(os.getenv('MAX_BOTS_PER_WORKER', '35')))
 MAX_CONCURRENT_ACTIVE_BOTS = max(1, int(os.getenv('MAX_CONCURRENT_ACTIVE_BOTS', '5')))  # 4GB VPS starter cap
 CONFIGURED_BINANCE_WORKER_COUNT = max(0, int(os.getenv('BINANCE_WORKER_COUNT', '2')))
 MAX_BOTS_PER_BINANCE_WORKER = max(1, int(os.getenv('MAX_BOTS_PER_BINANCE_WORKER', '500')))
-_BINANCE_BOT_CAP_DEFAULT = (
-    str(CONFIGURED_BINANCE_WORKER_COUNT * MAX_BOTS_PER_BINANCE_WORKER)
-    if CONFIGURED_BINANCE_WORKER_COUNT > 0
-    else '200'  # Worker pool disabled: allow up to 200 Binance bots in single-process mode
-)
 MAX_CONCURRENT_BINANCE_BOTS = max(
     1,
     int(
         os.getenv(
             'MAX_CONCURRENT_BINANCE_BOTS',
-            _BINANCE_BOT_CAP_DEFAULT,
+            str(CONFIGURED_BINANCE_WORKER_COUNT * MAX_BOTS_PER_BINANCE_WORKER),
         )
     ),
 )
@@ -3388,13 +3276,9 @@ def warm_up_mt5_terminal(mt5_path: str, account: int, password: str, server: str
     return False
 
 # Binance Configuration - Support DEMO and LIVE modes
-# Per-user credentials are stored encrypted in the DB (broker_credentials table).
-# These env values are intentionally left blank for multi-tenant safety.
-# DO NOT set global BINANCE_API_KEY / BINANCE_API_SECRET here — each user provides
-# their own via the frontend BrokerCredentialsService -> backend /api/broker/credentials.
 BINANCE_CONFIG = {
-    'api_key': '',
-    'api_secret': '',
+    'api_key': os.getenv('BINANCE_API_KEY', ''),
+    'api_secret': os.getenv('BINANCE_API_SECRET', ''),
     'market': os.getenv('BINANCE_MARKET', 'spot'),
     'is_live': False,  # Will be set based on ENVIRONMENT
 }
@@ -3955,18 +3839,7 @@ def _build_dynamic_trade_plan(
     raw_sl = max(base_sl * 0.9, atr_pips * 1.5, swing_distance_pips)
     sl_pips = round(min(max(raw_sl, min_sl), max_sl), 2)
 
-    # For Binance live: require minimum R:R of 3.0 so expected profit well exceeds
-    # round-trip fees (0.08% taker + funding). For all other modes keep existing targets.
-    _is_live_binance = False
-    if isinstance(bot_config, dict):
-        _bn = canonicalize_broker_name(
-            bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
-        )
-        _is_live_binance = _bn == 'Binance' and str(bot_config.get('mode') or '').strip().lower() == 'live'
-    if _is_live_binance:
-        rr_target = 3.5 if signal_strength >= 85 else (3.2 if signal_strength >= 70 else 3.0)
-    else:
-        rr_target = 2.8 if signal_strength >= 85 else (2.5 if signal_strength >= 70 else 2.0)
+    rr_target = 2.8 if signal_strength >= 85 else (2.5 if signal_strength >= 70 else 2.0)
     tp_pips = round(max(base_tp * 0.9, sl_pips * rr_target), 2)
 
     recent_high = max(swing_window)
@@ -4218,7 +4091,7 @@ def _score_signal_setup(
         (direction == 'BUY' and trend == 'UP') or (direction == 'SELL' and trend == 'DOWN')
     )
     if live_binance_mode and not trend_aligned:
-        extreme_countertrend_exception = strength >= 43 and score >= 3.0 and rr_value >= 2.0
+        extreme_countertrend_exception = strength >= 50 and score >= 5.0 and rr_value >= 2.0
         if extreme_countertrend_exception:
             reasons.append('Counter-trend high conviction allowed')
         else:
@@ -4232,8 +4105,6 @@ def _score_signal_setup(
             size_multiplier *= max(0.7, min(_safe_float(symbol_performance.get('multiplier'), 1.0), 1.1))
         if isinstance(bot_config, dict) and int(bot_config.get('consecutiveLosses') or 0) >= 2:
             size_multiplier *= 0.75
-        if isinstance(bot_config, dict) and not _has_sustained_realized_profit(bot_config) and size_multiplier > 1.0:
-            size_multiplier = 1.0
         size_multiplier = round(max(0.5, min(size_multiplier, 1.2)), 3)
 
     return {
@@ -4604,7 +4475,7 @@ def require_session(f):
                     request.user_id = cached_user_id
                     if should_log_session_event(f"session_lock_cache_fallback:{request.endpoint}:{request.remote_addr}", 15):
                         logger.warning(
-                            f"[SESSION WARN] DB locked during session validation for {request.endpoint}; "
+                            f"[SESSION WARN] SQLite locked during session validation for {request.endpoint}; "
                             f"using {cache_source} cache for user {cached_user_id}"
                         )
                     return f(*args, **kwargs)
@@ -5229,43 +5100,23 @@ def delete_all_user_bots():
 @require_session
 def get_user_kill_switch():
     """Return whether the emergency kill switch is currently active for the user."""
-    try:
-        user_id = getattr(request, 'user_id', None)
-        if not user_id:
-            logger.error(f"[KILL SWITCH] Get status failed: user_id not set by @require_session decorator")
-            return jsonify({
-                'success': False,
-                'error': 'User ID not authenticated',
-            }), 401
-
-        active = is_user_kill_switch_active(user_id)
-        return jsonify({
-            'success': True,
-            'killSwitchActive': active,
-            'message': 'Emergency kill switch is active. New bot starts are blocked until resumed.' if active else 'Emergency kill switch is not active.',
-        }), 200
-    except Exception as exc:
-        logger.error(f"Error in get kill-switch endpoint: {exc}", exc_info=True)
-        return jsonify({'success': False, 'error': str(exc)}), 500
+    user_id = request.user_id
+    return jsonify({
+        'success': True,
+        'killSwitchActive': is_user_kill_switch_active(user_id),
+    }), 200
 
 
 @app.route('/api/bots/kill-all', methods=['POST'])
 @require_session
 def kill_all_user_bots():
-    """Emergency stop: halt every running bot for the user and enable kill switch by default."""
+    """Emergency stop: halt every running bot for the user and block new starts."""
     try:
-        user_id = getattr(request, 'user_id', None)
-        if not user_id:
-            logger.error(f"[KILL SWITCH] Kill-all failed: user_id not set by @require_session decorator")
-            return jsonify({
-                'success': False,
-                'error': 'User ID not authenticated',
-            }), 401
-
+        user_id = request.user_id
         data = request.get_json(silent=True) or {}
         reason = str(data.get('reason') or 'user_panic_stop')[:200]
-        keep_blocked = bool(data.get('keepBlocked', True))
-        set_user_kill_switch(user_id, keep_blocked, reason=reason)
+
+        set_user_kill_switch(user_id, True, reason=reason)
 
         stopped = []
         errors = []
@@ -5294,16 +5145,15 @@ def kill_all_user_bots():
             logger.warning(f"kill-all: could not flag DB bots disabled for {user_id}: {exc}")
 
         logger.warning(
-            f"🛑 Emergency stop executed for user {user_id} — stopped {len(stopped)} bots (reason={reason})"
+            f"🛑 KILL SWITCH activated for user {user_id} — stopped {len(stopped)} bots (reason={reason})"
         )
 
         return jsonify({
             'success': True,
-            'killSwitchActive': is_user_kill_switch_active(user_id),
+            'killSwitchActive': True,
             'stoppedBots': stopped,
             'failures': errors,
             'reason': reason,
-            'message': 'All bots stopped and kill switch enabled. Call /api/bots/resume-all to clear it.' if keep_blocked else 'All bots stopped.',
         }), 200
     except Exception as exc:
         logger.error(f"Error in kill-all endpoint: {exc}", exc_info=True)
@@ -5313,41 +5163,23 @@ def kill_all_user_bots():
 @app.route('/api/bots/resume-all', methods=['POST'])
 @require_session
 def resume_user_bots():
-    """Clear emergency kill switch so user can start bots again."""
+    """Clear the emergency kill switch. Bots remain stopped until manually started."""
     try:
-        user_id = getattr(request, 'user_id', None)
-        if not user_id:
-            logger.error(f"[KILL SWITCH] Resume failed: user_id not set by @require_session decorator")
-            return jsonify({
-                'success': False,
-                'error': 'User ID not authenticated',
-            }), 401
-
-        data = request.get_json(silent=True) or {}
-        reason = str(data.get('reason') or 'manual_resume')[:200]
-        set_user_kill_switch(user_id, False, reason=reason)
-
-        logger.info(f"✅ Resume endpoint cleared kill switch for user {user_id}")
+        user_id = request.user_id
+        set_user_kill_switch(user_id, False)
+        logger.info(f"✅ Kill switch cleared for user {user_id}")
         return jsonify({
             'success': True,
             'killSwitchActive': False,
-            'message': 'Emergency kill switch cleared. You can start bots again.',
+            'message': 'Kill switch cleared. Start bots manually when ready.',
         }), 200
     except Exception as exc:
         logger.error(f"Error in resume-all endpoint: {exc}", exc_info=True)
         return jsonify({'success': False, 'error': str(exc)}), 500
 
 
-@app.route('/api/bots/kill-switch/clear', methods=['POST'])
-@require_session
-def resume_user_bots_compat():
-    """Backward-compatible alias for older clients that still call kill-switch/clear."""
-    return resume_user_bots()
-
-
 def init_database():
     """Initialize SQLite database with referral and commission tables"""
-    _require_postgres_or_raise('init_database')
     if using_postgres():
         create_postgres_schema(database_url=get_database_url())
         logger.info('PostgreSQL schema initialized')
@@ -6356,7 +6188,6 @@ def init_database():
 
 def get_db_connection():
     """Get database connection with WAL mode for concurrent writes"""
-    _require_postgres_or_raise('get_db_connection')
     if using_postgres():
         return _PostgresCompatConnection(
             timeout=SQLITE_CONNECTION_TIMEOUT_SECONDS,
@@ -6432,7 +6263,6 @@ def _run_with_sqlite_malformed_retry(operation_name: str, operation, retries: in
 
 # Initialize database on startup
 if __name__ == "__main__":
-    _require_postgres_or_raise('startup')
     init_database()
 
 # ==================== BACKUP & RECOVERY SYSTEM ====================
@@ -7115,29 +6945,6 @@ class MT5Connection(BrokerConnection):
             server = self.credentials.get('server') or broker_cfg.get('server')
             is_live = normalize_mt5_is_live_flag(broker_name, self.credentials.get('is_live', False), server)
 
-            # Server name canonicalization for Exness: if the stored server is an
-            # abbreviated trial/real name that doesn't match the env-configured one,
-            # prefer the env value so stale DB entries don't cause auth failures.
-            if broker_name == 'Exness' and server:
-                _env_demo_srv = str(os.getenv('EXNESS_DEMO_SERVER', '') or '').strip()
-                _env_live_srv = str(os.getenv('EXNESS_SERVER', '') or '').strip()
-                _stored_lower = server.strip().lower()
-                if not is_live and _env_demo_srv:
-                    _env_lower = _env_demo_srv.lower()
-                    # Upgrade abbreviated trial server (e.g. 'Exness-MT5Trial' → 'Exness-MT5Trial9')
-                    if ('trial' in _stored_lower or 'demo' in _stored_lower) and _stored_lower != _env_lower:
-                        logger.info(
-                            f"  🔧 Exness demo server upgrade: '{server}' → '{_env_demo_srv}' (from EXNESS_DEMO_SERVER env)"
-                        )
-                        server = _env_demo_srv
-                elif is_live and _env_live_srv:
-                    _env_lower = _env_live_srv.lower()
-                    if ('real' in _stored_lower or 'live' in _stored_lower) and _stored_lower != _env_lower:
-                        logger.info(
-                            f"  🔧 Exness live server upgrade: '{server}' → '{_env_live_srv}' (from EXNESS_SERVER env)"
-                        )
-                        server = _env_live_srv
-
             if account and not self.credentials.get('account'):
                 self.credentials['account'] = account
             if account and not self.credentials.get('account_number'):
@@ -7236,22 +7043,6 @@ class MT5Connection(BrokerConnection):
                     )
 
                     if _path_mismatch:
-                        # Before forcing a terminal switch, verify the target terminal process
-                        # is actually running.  Attempting initialize() on a non-running
-                        # terminal immediately fails with auth error (-6) and blacklists the
-                        # account for the 5-min cooldown even though the credentials are fine.
-                        _target_is_running = is_mt5_process_running(normalized_path) if normalized_path else False
-                        if not _target_is_running:
-                            logger.warning(
-                                f"  ⚠️  MT5 terminal switch required but target terminal is NOT running: '{normalized_path}'. "
-                                f"Skipping initialize() to avoid blacklisting account {account}. "
-                                f"Start the target MT5 terminal and retry."
-                            )
-                            self._set_last_error(
-                                f'Target MT5 terminal not running for this account. Start the terminal first.',
-                                'TERMINAL_NOT_RUNNING'
-                            )
-                            return False
                         force_initialize_on_selected_path = True
                         logger.info(
                             f"  🔁 MT5 is attached to terminal '{_current_path}', but account {account} needs '{normalized_path}' — forcing initialize() on the correct terminal"
@@ -7331,8 +7122,8 @@ class MT5Connection(BrokerConnection):
                 try:
                     init_ok = False
                     if force_initialize_on_selected_path and attempt == 1:
-                        logger.info("  ⏳ Waiting 25s for the selected MT5 terminal to expose its IPC channel before initialize()...")
-                        time.sleep(25)
+                        logger.info("  ⏳ Waiting 10s for the selected MT5 terminal to expose its IPC channel before initialize()...")
+                        time.sleep(10)
                     
                     # On retry attempts, just wait longer for IPC - DON'T kill MT5 terminal
                     # Killing the terminal causes loss of login session and requires manual re-login
@@ -9585,14 +9376,6 @@ class BinanceConnection(BrokerConnection):
                         )
                         self._futures_leverage_cache[instrument] = current_leverage
                         return True, None, current_leverage
-                if 'leverage reduction is not supported' in lower_error and 'open positions' in lower_error:
-                    current_leverage = max(cached_leverage, self._get_futures_symbol_leverage(instrument), 1)
-                    logger.warning(
-                        f"[BINANCE FUTURES] Leverage {target_leverage}x cannot be reduced for {instrument} "
-                        f"while an isolated position is open; keeping exchange leverage {current_leverage}x instead"
-                    )
-                    self._futures_leverage_cache[instrument] = current_leverage
-                    return True, None, current_leverage
                 # Binance restricts leverage above 20x for the first 30 days after
                 # futures account registration. Fall back through 20x → 10x → 5x
                 # rather than blocking the entire trade.
@@ -10012,14 +9795,6 @@ class BinanceConnection(BrokerConnection):
 
             if self.market == 'futures':
                 desired_leverage = max(1, min(125, int(_safe_float(kwargs.get('exchange_leverage'), 10.0))))
-                # Micro-account protection: cap leverage at 5x when balance < $20
-                # to prevent liquidation from a single small adverse move.
-                _account_bal = _safe_float(
-                    (self.account_info or {}).get('balance', (self.account_info or {}).get('availableBalance', 0.0)),
-                    0.0,
-                )
-                if 0 < _account_bal < 20.0:
-                    desired_leverage = min(desired_leverage, 5)
                 desired_margin_type = self._normalize_margin_type(kwargs.get('margin_type') or 'ISOLATED')
                 controls_ok, controls_error, effective_leverage = self._apply_futures_trade_controls(
                     instrument,
@@ -10034,20 +9809,13 @@ class BinanceConnection(BrokerConnection):
                 desired_leverage = max(1, int(effective_leverage or desired_leverage))
 
             if self.market == 'futures':
-                # Hardcoded known step sizes as a minimum floor — these are the Binance
-                # production LOT_SIZE stepSize values. Binance demo/testnet can report
-                # smaller (incorrect) values that cause -1111 precision errors.
+                # Hardcoded known step sizes as a last-resort fallback when exchangeInfo
+                # is unavailable. Keep these aligned with Binance futures MARKET_LOT_SIZE.
                 _KNOWN_FUTURES_STEP = {
-                    'SOLUSDT': 1.0, 'DOGEUSDT': 1.0, 'XRPUSDT': 1.0, 'ADAUSDT': 1.0,
-                    'AVAXUSDT': 0.1, 'DOTUSDT': 0.1, 'MATICUSDT': 1.0, 'LINKUSDT': 0.1,
-                    'BNBUSDT': 0.01, 'LTCUSDT': 0.001, 'ETHUSDT': 0.01, 'BTCUSDT': 0.001,
-                    'BCHUSDT': 0.001, 'OPUSDT': 1.0, 'ARBUSDT': 1.0,
-                    # Extended symbol set
-                    'TONUSDT': 1.0, 'XLMUSDT': 1.0, 'TRXUSDT': 1.0, 'HBARUSDT': 1.0,
-                    'ETCUSDT': 0.01, 'UNIUSDT': 0.1, 'NEARUSDT': 0.1, 'INJUSDT': 0.1,
-                    'SUIUSDT': 1.0, 'APTUSDT': 0.1, 'AAVEUSDT': 0.01, 'FTMUSDT': 1.0,
-                    'SEIUSDT': 1.0, 'ATOMUSDT': 0.01, 'SHIBUSDT': 1000.0, 'PEPEUSDT': 1000.0,
-                    'WIFUSDT': 1.0,
+                    'SOLUSDT': 0.1, 'DOGEUSDT': 1.0, 'XRPUSDT': 0.1, 'ADAUSDT': 1.0,
+                    'AVAXUSDT': 0.1, 'DOTUSDT': 0.1, 'MATICUSDT': 1.0, 'LINKUSDT': 0.01,
+                    'BNBUSDT': 0.01, 'LTCUSDT': 0.001, 'ETHUSDT': 0.001, 'BTCUSDT': 0.001,
+                    'BCHUSDT': 0.01, 'OPUSDT': 0.1, 'ARBUSDT': 1.0,
                 }
                 _known_step = _KNOWN_FUTURES_STEP.get(instrument.upper(), 0.0)
                 # MARKET_LOT_SIZE is the tighter constraint for market orders on many
@@ -10072,37 +9840,12 @@ class BinanceConnection(BrokerConnection):
                         futures_quantity_precision = None
                 futures_step = _safe_float(futures_lot.get('stepSize'), 0.0)
                 futures_min = _safe_float(futures_lot.get('minQty'), 0.0)
-                # If MARKET_LOT_SIZE is more permissive (smaller step) than LOT_SIZE, prefer
-                # the more restrictive LOT_SIZE so we never send fractional quantities that
-                # Binance rejects with -1111 on symbols like SOLUSDT (which require integers).
-                if isinstance(futures_filters, dict):
-                    _lot_size_filter = futures_filters.get('LOT_SIZE', {})
-                    _lot_step = _safe_float(_lot_size_filter.get('stepSize'), 0.0)
-                    if _lot_step > 0 and (_lot_step > futures_step or futures_step <= 0):
-                        futures_step = _lot_step
-                        _lot_min = _safe_float(_lot_size_filter.get('minQty'), _lot_step)
-                        if _lot_min > futures_min or futures_min <= 0:
-                            futures_min = _lot_min
                 min_notional = _resolve_effective_binance_futures_min_notional(instrument, futures_filters)
                 # Prefer live exchange data, fall back to known map, then original default
                 if futures_step <= 0:
                     futures_step = _known_step if _known_step > 0 else (step_size or 0.001)
                 if futures_min <= 0:
                     futures_min = futures_step  # min qty = 1 step
-                # For symbols with a known minimum step, never use a step smaller than that
-                # minimum. Binance demo/testnet endpoints sometimes report a smaller step size
-                # than production (e.g. SOLUSDT may show 0.001 on demo but requires integers
-                # on execution), causing -1111 precision rejections. Enforce the known floor.
-                if _known_step > 0 and 0 < futures_step < _known_step:
-                    futures_step = _known_step
-                if futures_min < futures_step:
-                    futures_min = futures_step
-                # Derive quantity precision from the resolved step when the exchange doesn't
-                # provide it — prevents -1111 errors on symbols with integer-only quantities.
-                if futures_quantity_precision is None and futures_step > 0:
-                    from decimal import Decimal as _QD
-                    _step_exp = _QD(str(futures_step)).normalize().as_tuple().exponent
-                    futures_quantity_precision = max(0, -_step_exp)
                 if market_price <= 0:
                     market_price = self._get_futures_symbol_price(instrument)
                 normalized_qty = self._normalize_spot_quantity(quantity, futures_step, futures_min)
@@ -10119,8 +9862,6 @@ class BinanceConnection(BrokerConnection):
                     }
                 proposed_notional = normalized_qty * market_price if market_price > 0 else 0.0
                 if min_notional > 0 and proposed_notional > 0 and proposed_notional < min_notional:
-                    # Auto-bump quantity to meet exchange minimum notional instead of rejecting.
-                    # The subsequent margin-availability check will catch genuinely unaffordable orders.
                     required_qty = self._normalize_spot_quantity(
                         min_notional / max(market_price, 1e-9),
                         futures_step,
@@ -10129,30 +9870,15 @@ class BinanceConnection(BrokerConnection):
                     )
                     required_notional = required_qty * market_price if market_price > 0 else min_notional
                     min_margin_budget = required_notional / max(float(desired_leverage or 1.0), 1.0)
-                    # Only bump if the required margin is within 90% of available account balance.
-                    # If the account is too small even for the minimum notional, reject now.
-                    _avail_for_bump = _safe_float(
-                        (self.account_info or {}).get('balance',
-                            (self.account_info or {}).get('availableBalance', 0.0)),
-                        0.0,
-                    )
-                    if _avail_for_bump > 0 and min_margin_budget > _avail_for_bump * 0.90:
-                        return {
-                            'success': False,
-                            'is_validation_block': True,
-                            'error': (
-                                f'Binance futures order on {instrument} is below the exchange minimum '
-                                f'notional ({proposed_notional:.4f} < {min_notional:.4f}). '
-                                f'Need about {min_margin_budget:.2f} USDT margin at {desired_leverage}x leverage '
-                                f'but only {_avail_for_bump:.2f} USDT available.'
-                            ),
-                        }
-                    logger.info(
-                        f"[BINANCE FUTURES] Bumping {instrument} qty {normalized_qty:.6f}->{required_qty:.6f} "
-                        f"to meet min notional {min_notional:.2f} (margin ~{min_margin_budget:.2f} USDT at {desired_leverage}x)"
-                    )
-                    normalized_qty = required_qty
-                    proposed_notional = required_notional
+                    return {
+                        'success': False,
+                        'is_validation_block': True,
+                        'error': (
+                            f'Binance futures order on {instrument} is below the exchange minimum '
+                            f'notional ({proposed_notional:.4f} < {min_notional:.4f}). '
+                            f'Need about {min_margin_budget:.2f} USDT margin at {desired_leverage}x leverage.'
+                        ),
+                    }
                 account_snapshot = self.get_account_info() or self.account_info or {}
                 available_margin = _safe_float(
                     account_snapshot.get('margin_free', account_snapshot.get('availableBalance')),
@@ -10194,45 +9920,15 @@ class BinanceConnection(BrokerConnection):
             else:
                 quantity_value = self._format_spot_quantity(quantity, step_size, min_qty)
 
-            # For live Binance futures, use LIMIT_MAKER (post-only) so the order goes into
-            # the book as a maker and pays 0% fee instead of 0.04% taker. If the market has
-            # moved past our price by the time the order lands, Binance rejects it (code -5022)
-            # rather than filling as a taker — we then fall back to MARKET.
-            _use_limit_maker = (
-                self.market == 'futures'
-                and getattr(self, 'is_live', False)
-                and market_price > 0
-            )
-            if _use_limit_maker:
-                # Price the limit 0.02% inside the current spread so it fills immediately
-                # as a maker without waiting — acts like a limit-at-market but earns maker rebate.
-                _slip_pct = 0.0002
-                if order_type.upper() == 'BUY':
-                    _limit_px = round(market_price * (1 + _slip_pct), 2)
-                else:
-                    _limit_px = round(market_price * (1 - _slip_pct), 2)
-                params = {
-                    'symbol': instrument,
-                    'side': order_type.upper(),
-                    'type': 'LIMIT',
-                    'timeInForce': 'GTX',  # GTX = post-only; rejected if would take
-                    'price': str(_limit_px),
-                    'quantity': quantity_value,
-                }
-                logger.debug(
-                    f"[BINANCE FUTURES] POST LIMIT_MAKER order {instrument} {order_type.upper()} "
-                    f"qty='{quantity_value}' price={_limit_px} (maker, 0% fee)"
-                )
+            params = {
+                'symbol': instrument,
+                'side': order_type.upper(),
+                'type': 'MARKET',
+            }
+            if self.market != 'futures' and order_type.upper() == 'BUY' and use_quote_order_qty and quote_amount > 0:
+                params['quoteOrderQty'] = format(quote_amount, '.8f').rstrip('0').rstrip('.')
             else:
-                params = {
-                    'symbol': instrument,
-                    'side': order_type.upper(),
-                    'type': 'MARKET',
-                }
-                if self.market != 'futures' and order_type.upper() == 'BUY' and use_quote_order_qty and quote_amount > 0:
-                    params['quoteOrderQty'] = format(quote_amount, '.8f').rstrip('0').rstrip('.')
-                else:
-                    params['quantity'] = quantity_value
+                params['quantity'] = quantity_value
             endpoint = f"{self.fapi_url}/v1/order" if self.market == 'futures' else f"{self.base_url}/v3/order"
             if self.market == 'futures':
                 logger.debug(
@@ -10241,25 +9937,6 @@ class BinanceConnection(BrokerConnection):
                     f"precision={futures_quantity_precision}"
                 )
             resp = self._request_with_time_retry('POST', endpoint, headers=self._headers(), params=params, timeout=15)
-            # GTX (post-only) rejected means price moved and would fill as taker.
-            # Fall back to MARKET so the trade still executes (taker fee is better than missing the entry).
-            if (
-                _use_limit_maker
-                and resp.status_code != 200
-                and resp.content
-                and any(code in resp.text for code in ['-5022', '-1111', '-2010'])
-            ):
-                logger.info(
-                    f"[BINANCE FUTURES] GTX post-only rejected for {instrument} (price moved) "
-                    f"— falling back to MARKET order"
-                )
-                fallback_params = {
-                    'symbol': instrument,
-                    'side': order_type.upper(),
-                    'type': 'MARKET',
-                    'quantity': quantity_value,
-                }
-                resp = self._request_with_time_retry('POST', endpoint, headers=self._headers(), params=fallback_params, timeout=15)
             # Binance -1111 = quantity precision over limit. Refresh exchangeInfo and retry once
             # in case our cached/fallback step size is stale (Binance can tighten precision).
             if (
@@ -10277,12 +9954,6 @@ class BinanceConnection(BrokerConnection):
                     )
                     fresh_step = _safe_float(fresh_lot.get('stepSize'), futures_step)
                     fresh_min = _safe_float(fresh_lot.get('minQty'), futures_min)
-                    # Apply the same known-step floor used in the primary path to prevent
-                    # the retry from suffering the same demo-endpoint precision mismatch.
-                    if _known_step > 0 and 0 < fresh_step < _known_step:
-                        fresh_step = _known_step
-                    if fresh_min < fresh_step:
-                        fresh_min = fresh_step
                     fresh_precision = fresh_filters.get('__quantityPrecision')
                     try:
                         fresh_precision = int(fresh_precision) if fresh_precision is not None else futures_quantity_precision
@@ -10481,21 +10152,13 @@ class BinanceConnection(BrokerConnection):
                     resp = self._request_with_time_retry('GET', endpoint, headers=self._headers(), params={'symbol': symbol, 'limit': 20}, timeout=10)
                     if resp.status_code == 200:
                         for trade in resp.json():
-                            # Binance userTrades: realizedPnl is gross (before trading fees).
-                            # commission is the actual fee deducted from the wallet.
-                            # net_profit = realizedPnl - abs(commission) reflects true wallet impact.
-                            gross_pnl = float(trade.get('realizedPnl', 0))
-                            commission = abs(float(trade.get('commission', 0)))
-                            net_profit = gross_pnl - commission
                             result.append({
                                 'deal_id': str(trade.get('id', '')),
                                 'symbol': trade.get('symbol', ''),
                                 'type': 'BUY' if trade.get('isBuyer') else 'SELL',
                                 'volume': float(trade.get('qty', 0)),
                                 'price': float(trade.get('price', 0)),
-                                'profit': net_profit,
-                                'commission': -commission,  # negative: cost to trader
-                                'commissionAsset': trade.get('commissionAsset', 'USDT'),
+                                'profit': float(trade.get('realizedPnl', 0)),
                                 'time': trade.get('time'),
                                 'broker': 'Binance',
                             })
@@ -12096,7 +11759,7 @@ def persist_account_snapshot(
     credential_id: str = None,
     user_id: str = None,
 ) -> None:
-    """Persist a live account snapshot to in-memory and DB (Postgres) caches."""
+    """Persist a live account snapshot to in-memory and SQLite caches."""
     if not account_info or account_number in [None, '']:
         return
 
@@ -12107,26 +11770,13 @@ def persist_account_snapshot(
     margin = float(account_info.get('margin', 0) or 0)
     margin_free = float(account_info.get('marginFree', account_info.get('margin_free', balance)) or balance)
     margin_level = float(account_info.get('margin_level', account_info.get('marginLevel', 0)) or 0)
-    profit_value = None
-    if 'total_pl' in account_info:
-        profit_value = account_info.get('total_pl')
-    elif 'profit' in account_info:
-        profit_value = account_info.get('profit')
-    elif 'floatingPL' in account_info:
-        profit_value = account_info.get('floatingPL')
-
-    profit = None
-    if profit_value is not None and profit_value != '':
-        profit = float(profit_value)
+    profit = float(account_info.get('total_pl', account_info.get('profit', account_info.get('floatingPL', 0))) or 0)
     currency = str(account_info.get('currency', account_info.get('displayCurrency', 'USD')) or 'USD').upper()
     snapshot_time = datetime.now().isoformat()
 
     try:
         with balance_cache_lock:
             cache_key = get_balance_cache_key(normalized_broker, resolved_account_number)
-            existing_cache = balance_cache.get(cache_key, {})
-            if profit is None:
-                profit = existing_cache.get('total_pl', 0)
             balance_cache[cache_key] = {
                 'balance': balance,
                 'equity': equity,
@@ -12148,7 +11798,7 @@ def persist_account_snapshot(
         round(margin_free, 2),
         round(margin, 2),
         round(margin_level, 2),
-        round(profit if profit is not None else 0, 2),
+        round(profit, 2),
         currency,
     )
     now_ts = time.time()
@@ -12162,7 +11812,7 @@ def persist_account_snapshot(
 
     if is_mt5_bot_creation_active():
         logger.info(
-            f"⏸️ Deferring DB balance snapshot for {normalized_broker} {resolved_account_number} "
+            f"⏸️ Deferring SQLite balance snapshot for {normalized_broker} {resolved_account_number} "
             f"while bot creation lock is active"
         )
         return
@@ -12170,14 +11820,13 @@ def persist_account_snapshot(
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        profit_param = profit if profit is not None and profit_value is not None else None
         params = [
             balance,
             equity,
             margin_free,
             margin,
             margin_level,
-            profit_param,
+            profit,
             currency,
             snapshot_time,
             snapshot_time,
@@ -12185,7 +11834,7 @@ def persist_account_snapshot(
         query = '''
             UPDATE broker_credentials
             SET cached_balance = ?, cached_equity = ?, cached_margin_free = ?,
-                cached_margin = ?, cached_margin_level = ?, cached_profit = COALESCE(?, cached_profit),
+                cached_margin = ?, cached_margin_level = ?, cached_profit = ?,
                 account_currency = ?, last_update = ?, updated_at = ?
         '''
 
@@ -12208,7 +11857,7 @@ def persist_account_snapshot(
                 'timestamp': now_ts,
             }
     except Exception as exc:
-        logger.warning(f"Could not persist DB balance cache for {normalized_broker} {resolved_account_number}: {exc}")
+        logger.warning(f"Could not persist SQLite balance cache for {normalized_broker} {resolved_account_number}: {exc}")
 
 
 def _cache_snapshot_age_seconds(snapshot_value) -> Optional[float]:
@@ -13768,26 +13417,6 @@ def ensure_user_preferences_table(cursor):
     ''')
 
 
-def ensure_feature_flags_table(cursor):
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_feature_flags (
-            user_id TEXT NOT NULL,
-            flag_key TEXT NOT NULL,
-            flag_value TEXT NOT NULL,
-            updated_at TEXT,
-            PRIMARY KEY (user_id, flag_key)
-        )
-    ''')
-
-
-def _normalize_flag_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return 'true' if value else 'false'
-    if value is None:
-        return 'false'
-    return str(value).strip().lower()
-
-
 def save_user_preferences(cursor, user_id: str, trading_mode: str = 'DEMO', live_account: Optional[str] = None,
                           live_server: Optional[str] = None, updated_at: Optional[str] = None) -> None:
     ensure_user_preferences_table(cursor)
@@ -13824,24 +13453,9 @@ def ensure_user_risk_settings_table(cursor):
             risk_percent REAL DEFAULT 2.0,
             max_open_trades INTEGER DEFAULT 3,
             max_drawdown_percent REAL DEFAULT 20.0,
-            daily_loss_limit REAL DEFAULT 0.0,
-            max_exposure_per_symbol REAL DEFAULT 0.0,
-            max_leverage INTEGER DEFAULT 50,
             updated_at TEXT
         )
     ''')
-
-    # Backfill columns for existing deployments that created this table before
-    # advanced guardrails were introduced.
-    for ddl in [
-        "ALTER TABLE user_risk_settings ADD COLUMN daily_loss_limit REAL DEFAULT 0.0",
-        "ALTER TABLE user_risk_settings ADD COLUMN max_exposure_per_symbol REAL DEFAULT 0.0",
-        "ALTER TABLE user_risk_settings ADD COLUMN max_leverage INTEGER DEFAULT 50",
-    ]:
-        try:
-            cursor.execute(ddl)
-        except Exception:
-            pass
 
 
 def get_user_risk_settings(cursor, user_id: str) -> Dict[str, Any]:
@@ -14301,102 +13915,6 @@ def get_risk_settings():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@app.route('/api/risk/guardrails', methods=['GET'])
-@require_session
-def get_risk_guardrails():
-    """Return advanced guardrails (daily loss, exposure, leverage) alongside base risk settings."""
-    try:
-        user_id = request.user_id
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        ensure_user_risk_settings_table(cursor)
-        cursor.execute(
-            '''
-            SELECT risk_percent, max_open_trades, max_drawdown_percent,
-                   daily_loss_limit, max_exposure_per_symbol, max_leverage, updated_at
-            FROM user_risk_settings
-            WHERE user_id = ?
-            ''',
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        guardrails = {
-            'risk_percent': float((row['risk_percent'] if row else 2.0) or 2.0),
-            'max_open_trades': int((row['max_open_trades'] if row else 3) or 3),
-            'max_drawdown_percent': float((row['max_drawdown_percent'] if row else 20.0) or 20.0),
-            'daily_loss_limit': float((row['daily_loss_limit'] if row else 0.0) or 0.0),
-            'max_exposure_per_symbol': float((row['max_exposure_per_symbol'] if row else 0.0) or 0.0),
-            'max_leverage': int((row['max_leverage'] if row else 50) or 50),
-            'updated_at': row['updated_at'] if row else None,
-        }
-
-        return jsonify({'success': True, 'guardrails': guardrails}), 200
-    except Exception as e:
-        logger.error(f"Error getting risk guardrails: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/risk/guardrails', methods=['PUT', 'PATCH'])
-@require_session
-def save_risk_guardrails():
-    """Persist advanced risk guardrails used to block unsafe live trade entries."""
-    try:
-        user_id = request.user_id
-        data = request.get_json(silent=True) or {}
-        warnings = []
-
-        risk_percent = _clamp_bot_config_value('risk_percent', data.get('risk_percent', 2.0), 0.5, 10.0, 2.0, warnings)
-        max_open_trades = _clamp_int_value('max_open_trades', data.get('max_open_trades', 3), 1, 20, 3, warnings)
-        max_drawdown_percent = _clamp_bot_config_value('max_drawdown_percent', data.get('max_drawdown_percent', 20.0), 3.0, 80.0, 20.0, warnings)
-        daily_loss_limit = _clamp_bot_config_value('daily_loss_limit', data.get('daily_loss_limit', 0.0), 0.0, 1000000.0, 0.0, warnings)
-        max_exposure_per_symbol = _clamp_bot_config_value('max_exposure_per_symbol', data.get('max_exposure_per_symbol', 0.0), 0.0, 1000000.0, 0.0, warnings)
-        max_leverage = _clamp_int_value('max_leverage', data.get('max_leverage', 50), 1, 125, 50, warnings)
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        ensure_user_risk_settings_table(cursor)
-        updated_at = datetime.now().isoformat()
-        cursor.execute(
-            '''
-            INSERT OR REPLACE INTO user_risk_settings
-            (user_id, risk_percent, max_open_trades, max_drawdown_percent, daily_loss_limit, max_exposure_per_symbol, max_leverage, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                user_id,
-                risk_percent,
-                max_open_trades,
-                max_drawdown_percent,
-                daily_loss_limit,
-                max_exposure_per_symbol,
-                max_leverage,
-                updated_at,
-            ),
-        )
-        conn.commit()
-        conn.close()
-
-        return jsonify({
-            'success': True,
-            'message': 'Advanced risk guardrails saved',
-            'guardrails': {
-                'risk_percent': risk_percent,
-                'max_open_trades': max_open_trades,
-                'max_drawdown_percent': max_drawdown_percent,
-                'daily_loss_limit': daily_loss_limit,
-                'max_exposure_per_symbol': max_exposure_per_symbol,
-                'max_leverage': max_leverage,
-                'updated_at': updated_at,
-            },
-            'warnings': warnings,
-        }), 200
-    except Exception as e:
-        logger.error(f"Error saving risk guardrails: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
 @app.route('/api/risk-settings/save', methods=['POST'])
 @require_session
 def save_risk_settings():
@@ -14438,75 +13956,6 @@ def save_risk_settings():
         }), 200
     except Exception as e:
         logger.error(f"Error saving risk settings: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/user/feature-flags', methods=['GET'])
-@require_session
-def get_user_feature_flags():
-    """Read remote-config style feature flags for the current user."""
-    try:
-        user_id = request.user_id
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        ensure_feature_flags_table(cursor)
-        cursor.execute(
-            '''
-            SELECT flag_key, flag_value, updated_at
-            FROM user_feature_flags
-            WHERE user_id = ?
-            ORDER BY flag_key ASC
-            ''',
-            (user_id,),
-        )
-        rows = cursor.fetchall()
-        conn.close()
-
-        flags = {}
-        for row in rows:
-            flags[row['flag_key']] = {
-                'value': row['flag_value'],
-                'updated_at': row['updated_at'],
-            }
-
-        return jsonify({'success': True, 'flags': flags}), 200
-    except Exception as e:
-        logger.error(f"Error getting feature flags: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/user/feature-flags', methods=['PUT', 'PATCH'])
-@require_session
-def save_user_feature_flags():
-    """Persist user-level feature flags for controlled rollout."""
-    try:
-        user_id = request.user_id
-        data = request.get_json(silent=True) or {}
-        flags = data.get('flags') if isinstance(data.get('flags'), dict) else {}
-        if not flags:
-            return jsonify({'success': False, 'error': 'flags object required'}), 400
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        ensure_feature_flags_table(cursor)
-        updated_at = datetime.now().isoformat()
-        for key, value in flags.items():
-            normalized_key = str(key or '').strip()
-            if not normalized_key:
-                continue
-            cursor.execute(
-                '''
-                INSERT OR REPLACE INTO user_feature_flags (user_id, flag_key, flag_value, updated_at)
-                VALUES (?, ?, ?, ?)
-                ''',
-                (user_id, normalized_key, _normalize_flag_value(value), updated_at),
-            )
-        conn.commit()
-        conn.close()
-
-        return jsonify({'success': True, 'message': 'Feature flags saved', 'updated_at': updated_at}), 200
-    except Exception as e:
-        logger.error(f"Error saving feature flags: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -14616,7 +14065,7 @@ def get_account_balances():
         if int(account_entry.get('active_bots') or 0) > 0:
             return True
         data_source = str(account_entry.get('dataSource') or '').strip().lower()
-        if data_source in ['db_cache', 'stale_cache', 'not_connected']:
+        if data_source in ['sqlite_cache', 'stale_cache', 'not_connected']:
             return False
         return True
 
@@ -14761,7 +14210,7 @@ def get_account_balances():
                             # Log as info only; SQLite fallback may still provide a valid cached balance.
                             if now_unix - last_zar_warning > 3600:
                                 logger.info(
-                                    f"[DIAGNOSTIC] In-memory cache empty for {broker_name} {account_num}; will evaluate DB cache fallback."
+                                    f"[DIAGNOSTIC] In-memory cache empty for {broker_name} {account_num}; will evaluate SQLite cache fallback."
                                 )
                                 if not hasattr(get_account_balances, '_last_warnings'):
                                     get_account_balances._last_warnings = {}
@@ -15067,7 +14516,7 @@ def get_account_balances():
                                 cache_source = 'memory_cache'
                                 logger.info(f"✅ Balance cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={cache_snapshot_age:.0f}s)")
                 
-                # Fallback: try DB cached_balance column (broker_credentials table in Postgres)
+                # Fallback: try SQLite cached_balance column
                 if (not suppress_cached_balance) and cached_balance == 0 and cred['credential_id'] in cached_data:
                     cache = dict(cached_data[cred['credential_id']])
                     sqlite_age = _cache_snapshot_age_seconds(cache.get('last_update'))
@@ -15078,14 +14527,14 @@ def get_account_balances():
                     cached_margin_free = cache.get('cached_margin_free', 0) or 0
                     cached_margin_level = cache.get('cached_margin_level', 0) or 0
                     cached_profit = cache.get('cached_profit', 0) or 0
-                    cache_source = 'db_cache'
+                    cache_source = 'sqlite_cache'
                     sqlite_cache_used = cached_balance > 0
                     cache_snapshot_age = sqlite_age
                     if sqlite_age is not None and sqlite_age > sqlite_ttl:
-                        logger.info(f"⏳ DB cache EXPIRED for {cache_key}: {sqlite_age:.0f}s old (TTL={sqlite_ttl}s)")
+                        logger.info(f"⏳ SQLite cache EXPIRED for {cache_key}: {sqlite_age:.0f}s old (TTL={sqlite_ttl}s)")
                     else:
                         if cached_balance > 0:
-                            logger.info(f"✅ DB cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={sqlite_age:.0f}s)")
+                            logger.info(f"✅ SQLite cache hit for {cache_key}: {cached_balance:.2f} {cached_currency} (age={sqlite_age:.0f}s)")
                 
                 # If still $0 — account genuinely not connected / not funded
                 if cached_balance == 0:
@@ -15102,10 +14551,10 @@ def get_account_balances():
                 # Show the account portal even when only SQLite-cached balance is
                 # available (no active bot running). This ensures all saved accounts
                 # always appear as portals in the dashboard. Only mark connected=True
-                # when data is fresh (memory cache or non-stale DB cache).
+                # when data is fresh (memory cache or non-stale sqlite cache).
                 is_fresh_connected = bool(cache_source == 'memory_cache' and has_cached_data)
-                is_stale_cached = bool(cache_source == 'db_cache' and has_cached_data and cache_is_stale)
-                is_fresh_sqlite = bool(cache_source == 'db_cache' and has_cached_data and not cache_is_stale)
+                is_stale_cached = bool(cache_source == 'sqlite_cache' and has_cached_data and cache_is_stale)
+                is_fresh_sqlite = bool(cache_source == 'sqlite_cache' and has_cached_data and not cache_is_stale)
                 account_entry.update({
                     'balance': float(cached_balance if has_cached_data else 0),
                     'equity': float(cached_equity if has_cached_data else 0),
@@ -15129,11 +14578,11 @@ def get_account_balances():
                     account_entry['lastKnownEquity'] = float(cached_equity)
                     account_entry['lastKnownCurrency'] = cached_currency
                     logger.warning(
-                        f"⚠️ {cache_key}: Serving stale DB snapshot ({cache_snapshot_age:.0f}s old) with disconnected status"
+                        f"⚠️ {cache_key}: Serving stale SQLite snapshot ({cache_snapshot_age:.0f}s old) with disconnected status"
                     )
                 elif has_cached_data:
                     account_entry.pop('error', None)
-                    if cache_source == 'db_cache':
+                    if cache_source == 'sqlite_cache':
                         account_entry['warning'] = 'Showing cached snapshot only. Open this mode or run a bot to refresh the balance.'
                 else:
                     if failed_auth_status and (is_live or broker_name == 'Binance'):
@@ -17363,10 +16812,10 @@ def get_trades_history():
                 elif broker_name == 'Binance':
                     # Prefer locally tracked closed trades for dashboard/history views.
                     # Re-authing to Binance on every poll adds latency and SSL churn, while
-                    # the bot runtime already persists meaningful closed trades into Postgres.
+                    # the bot runtime already persists meaningful closed trades into SQLite.
                     db_hist_trades = []
                     try:
-                        hist_conn = get_db_connection()
+                        hist_conn = build_sqlite_connection(timeout=10.0, row_factory=True)
                         hist_cursor = hist_conn.cursor()
                         since_ts = (datetime.now() - timedelta(days=days)).isoformat()
                         hist_cursor.execute(
@@ -17397,7 +16846,7 @@ def get_trades_history():
                     if db_hist_trades:
                         all_trades.extend(db_hist_trades)
                         logger.info(
-                            f"✅ Fetched {len(db_hist_trades)} Binance trades from DB for {account_num} "
+                            f"✅ Fetched {len(db_hist_trades)} Binance trades from SQLite for {account_num} "
                             f"- skipping live broker history poll"
                         )
                         continue
@@ -17697,7 +17146,7 @@ def _resolve_binance_symbol_catalog_mode(credential_id: str = '') -> bool:
 
     conn = None
     try:
-        conn = get_db_connection()
+        conn = build_sqlite_connection(timeout=10.0, row_factory=True)
         cursor = conn.cursor()
         cursor.execute(
             '''
@@ -18121,8 +17570,6 @@ def get_mt5_ready_symbols_for_broker(broker_name: str) -> List[str]:
     normalized_broker = canonicalize_broker_name(broker_name or '')
     if normalized_broker in ('Exness', 'XM', 'XM Global'):
         return [normalize_symbol_for_broker(symbol, normalized_broker) for symbol in sorted(VALID_SYMBOLS)]
-    if normalized_broker == 'Binance':
-        return sorted(BINANCE_VALID_SYMBOLS)
     if normalized_broker == 'FXCM':
         return list(FXCM_SAFE_SYMBOLS)
     return sorted(VALID_SYMBOLS)
@@ -18655,13 +18102,7 @@ def validate_and_correct_symbols(symbols, broker_name=None):
             else:
                 logger.warning(f"⚠️ Unsupported Binance symbol {symbol} - skipping")
 
-        if corrected:
-            return corrected
-
-        logger.warning(
-            "⚠️ Binance symbol validation produced no usable symbols - falling back to diversified curated set"
-        )
-        return validate_and_correct_symbols(BINANCE_CURATED_SCANNER_SYMBOLS, 'Binance')
+        return corrected or ['BTCUSDT']
 
     if broker_name == 'PXBT':
         if not symbols:
@@ -18793,7 +18234,7 @@ def _filter_binance_spot_symbols_for_wallet(
 ) -> List[str]:
     normalized_symbols = validate_and_correct_symbols(symbols or [], 'Binance')
     if not normalized_symbols:
-        normalized_symbols = validate_and_correct_symbols(BINANCE_CURATED_SCANNER_SYMBOLS, 'Binance')
+        normalized_symbols = ['BTCUSDT']
 
     stable_quotes = {'USDT', 'USDC', 'FDUSD', 'TUSD', 'BUSD'}
     preferred_quote = str(account_currency or 'USDT').strip().upper() or 'USDT'
@@ -18823,7 +18264,7 @@ def _filter_binance_spot_symbols_for_wallet(
         if symbol not in ordered_symbols:
             ordered_symbols.append(symbol)
 
-    return ordered_symbols or validate_and_correct_symbols(BINANCE_CURATED_SCANNER_SYMBOLS, 'Binance')
+    return ordered_symbols or ['BTCUSDT']
 
 # ==================== CENTRALIZED MULTI-ASSET EXECUTION MATRIX ====================
 PAIR_CONFIGS = {
@@ -19003,169 +18444,6 @@ def _build_pair_param_overrides(symbol: str, pair_config: Optional[Dict[str, Any
         overrides['max_slippage'] = round(point_size * max_spread_points, 6)
 
     return overrides
-
-
-# ==================== STRATEGY: PREFERRED TRADING DAYS & HOURS PER SYMBOL ====================
-# Source: curated from social media research (images saved to trading notes)
-# Days: 0=Monday … 4=Friday  |  Hours are LOCAL time (SAST = UTC+2) converted to UTC internally
-# "best_days"  – list of weekday numbers; bot applies a size-reduction outside these days
-# "best_hours" – (UTC hour start, UTC hour end); trades outside this window are demoted
-#                Gold 6:30pm–10:30pm SAST → UTC 16:30–20:30 → hours (16, 21)
-#                EURUSD London+NY overlap 8:30am–9:30pm SAST → UTC 06:30–19:30 → (6, 20)
-#                USDJPY/GBPJPY Tokyo+London 10:30am–2:30pm SAST → UTC 08:30–12:30 → (8, 13)
-#                AUDUSD Sydney+London 5:30am–10:30pm SAST → UTC 03:30–20:30 → (3, 21)
-# "preferred_day_size_mult" – position-size multiplier when trading on a non-preferred day
-# "off_hours_size_mult"      – position-size multiplier when trading outside preferred hours
-SYMBOL_PREFERRED_SCHEDULE: Dict[str, Dict[str, Any]] = {
-    # ---------- Preferred-day pairs (Image 1) ----------
-    'EURUSD':  {'best_days': [1, 3],        'best_hours': (6, 20),  'preferred_day_size_mult': 0.5, 'off_hours_size_mult': 0.6},
-    'EURUS':   {'best_days': [1, 3],        'best_hours': (6, 20),  'preferred_day_size_mult': 0.5, 'off_hours_size_mult': 0.6},  # alias
-    'GBPJPY':  {'best_days': [2, 4],        'best_hours': (8, 13),  'preferred_day_size_mult': 0.5, 'off_hours_size_mult': 0.6},
-    'AUDUSD':  {'best_days': [0, 2],        'best_hours': (3, 21),  'preferred_day_size_mult': 0.5, 'off_hours_size_mult': 0.6},
-    # ---------- Time-only pairs (Image 3) ----------
-    'XAUUSD':  {'best_days': [0, 1, 2, 3, 4], 'best_hours': (16, 21), 'preferred_day_size_mult': 1.0, 'off_hours_size_mult': 0.5},
-    'USDJPY':  {'best_days': [0, 1, 2, 3, 4], 'best_hours': (8, 13),  'preferred_day_size_mult': 1.0, 'off_hours_size_mult': 0.6},
-    # ---------- Defaults for everything else ----------
-    # No restriction — all days, London+NY overlap only lightly preferred
-    '_default': {'best_days': [0, 1, 2, 3, 4], 'best_hours': (6, 20),  'preferred_day_size_mult': 1.0, 'off_hours_size_mult': 0.8},
-}
-
-
-def _get_symbol_schedule(symbol: str) -> Dict[str, Any]:
-    """Return the preferred-schedule entry for a symbol (falls back to _default)."""
-    base = _normalize_symbol_base(str(symbol or '').upper())
-    return SYMBOL_PREFERRED_SCHEDULE.get(base) or SYMBOL_PREFERRED_SCHEDULE.get('_default') or {}
-
-
-def _check_symbol_schedule_multiplier(symbol: str, now_utc: Optional[datetime] = None) -> Tuple[float, str]:
-    """Return a (size_multiplier, reason) tuple based on preferred day/hour schedule.
-
-    Returns (1.0, '') when fully in-window, a fraction when demoted, and the reason string.
-    Callers should multiply their computed trade size by the returned multiplier.
-    """
-    sched = _get_symbol_schedule(symbol)
-    if not sched:
-        return 1.0, ''
-
-    now = now_utc or datetime.utcnow()
-    weekday = now.weekday()  # 0=Mon … 4=Fri
-    hour = now.hour
-
-    best_days: List[int] = list(sched.get('best_days') or [0, 1, 2, 3, 4])
-    best_hours: Tuple[int, int] = sched.get('best_hours') or (0, 24)
-    day_mult: float = float(sched.get('preferred_day_size_mult') or 1.0)
-    hour_mult: float = float(sched.get('off_hours_size_mult') or 1.0)
-
-    in_best_day = weekday in best_days
-    in_best_hours = best_hours[0] <= hour < best_hours[1]
-
-    if not in_best_day and not in_best_hours:
-        combined = min(day_mult, hour_mult) * 0.8  # compound penalty
-        return combined, f"off preferred day ({weekday}) and off preferred hours ({hour:02d}:00 UTC)"
-    if not in_best_day:
-        return day_mult, f"off preferred trading day ({weekday}) for {_normalize_symbol_base(symbol)}"
-    if not in_best_hours:
-        return hour_mult, f"off preferred trading hours ({hour:02d}:00 UTC) for {_normalize_symbol_base(symbol)}"
-
-    return 1.0, ''
-
-
-# ==================== STRATEGY: SESSION PHASE RULES (Trading Routine) ====================
-# Based on the curated trading routine (9:00 AM–3:15 PM frame mapped to Forex/24h sessions).
-# Phase sizes are expressed as multipliers applied on top of the normal computed size.
-# UTC hours used throughout (SAST = UTC+2 where relevant).
-_SESSION_PHASE_RULES: Dict[str, Dict[str, Any]] = {
-    # Market open – first 10 minutes: observe, do not enter
-    'OPEN_WATCH': {
-        'utc_hours': range(7, 8),          # London open ~ 07:00–08:00 UTC
-        'size_mult': 0.0,
-        'reason': 'Market-open watch period – wait for direction confirmation',
-        'allow_close': True,
-        'allow_open': False,
-    },
-    # Early session – look for breakout/breakdown, strict SL, book partials
-    'EARLY_SESSION': {
-        'utc_hours': range(8, 11),         # 08:00–11:00 UTC
-        'size_mult': 1.0,
-        'reason': 'Early session – breakout/breakdown setups, trade with plan',
-        'allow_close': True,
-        'allow_open': True,
-    },
-    # Mid session – market slows, avoid overtrading, quality only
-    'MID_SESSION': {
-        'utc_hours': range(11, 14),        # 11:00–14:00 UTC
-        'size_mult': 0.75,
-        'reason': 'Mid session – market slowing, focus on quality setups only',
-        'allow_close': True,
-        'allow_open': True,
-    },
-    # Afternoon session – strong trends, swing positions / quick scalps
-    'AFTERNOON_SESSION': {
-        'utc_hours': range(14, 17),        # 14:00–17:00 UTC (NY open overlap)
-        'size_mult': 1.0,
-        'reason': 'Afternoon session – strong trending, NY open overlap',
-        'allow_close': True,
-        'allow_open': True,
-    },
-    # Final hour – volatility spikes, book profits, avoid new big positions
-    'FINAL_HOUR': {
-        'utc_hours': range(17, 19),        # 17:00–19:00 UTC
-        'size_mult': 0.5,
-        'reason': 'Final hour – high volatility, book profits, avoid new large positions',
-        'allow_close': True,
-        'allow_open': True,   # allow but at half size
-    },
-    # After-hours – low liquidity, minimal new entries
-    'AFTER_HOURS': {
-        'utc_hours': list(range(0, 7)) + list(range(19, 24)),
-        'size_mult': 0.6,
-        'reason': 'After-hours – low liquidity session',
-        'allow_close': True,
-        'allow_open': True,
-    },
-}
-
-
-def _get_session_phase(now_utc: Optional[datetime] = None) -> Dict[str, Any]:
-    """Return the current session phase metadata based on UTC hour."""
-    hour = (now_utc or datetime.utcnow()).hour
-    for phase_name, rule in _SESSION_PHASE_RULES.items():
-        if hour in rule['utc_hours']:
-            return {**rule, 'phase': phase_name}
-    # Fallback
-    return {**_SESSION_PHASE_RULES['AFTER_HOURS'], 'phase': 'AFTER_HOURS'}
-
-
-def _apply_strategy_schedule_to_volume(
-    volume: float,
-    symbol: str,
-    bot_config: Optional[Dict[str, Any]] = None,
-    now_utc: Optional[datetime] = None,
-) -> Tuple[float, List[str]]:
-    """Scale down (or block) a trade volume based on preferred schedule + session phase.
-
-    Returns (adjusted_volume, [reason_strings]).
-    """
-    if volume <= 0:
-        return volume, []
-
-    reasons: List[str] = []
-    now = now_utc or datetime.utcnow()
-
-    # 1. Symbol preferred-day / preferred-hour multiplier
-    sched_mult, sched_reason = _check_symbol_schedule_multiplier(symbol, now)
-    if sched_mult < 1.0 and sched_reason:
-        reasons.append(f"schedule: {sched_reason}")
-
-    # 2. Session-phase multiplier
-    phase = _get_session_phase(now)
-    phase_mult = float(phase.get('size_mult', 1.0))
-    if phase_mult < 1.0:
-        reasons.append(f"session phase: {phase.get('reason', phase.get('phase', ''))}")
-
-    combined_mult = sched_mult * phase_mult
-    adjusted = round(volume * combined_mult, 8)
-    return adjusted, reasons
 
 
 # ==================== SYMBOL-SPECIFIC TRADING PARAMETERS ====================
@@ -21528,8 +20806,8 @@ def _get_recent_strategy_trade_stats(bot_config: Dict[str, Any], strategy_name: 
         closed_trades = closed_trades[-limit:]
 
     trade_count = len(closed_trades)
-    wins = sum(1 for trade in closed_trades if _trade_net_profit_value(trade) > 0)
-    total_profit = sum(_trade_net_profit_value(trade) for trade in closed_trades)
+    wins = sum(1 for trade in closed_trades if _safe_float(trade.get('profit'), 0.0) > 0)
+    total_profit = sum(_safe_float(trade.get('profit'), 0.0) for trade in closed_trades)
     return {
         'trades': trade_count,
         'wins': wins,
@@ -21719,11 +20997,9 @@ class DynamicPositionSizer:
         total_profit = bot_config.get('totalProfit', 0)
         max_drawdown = bot_config.get('maxDrawdown', 0)
         peak_profit = bot_config.get('peakProfit', 0)
-        sustained_profit_state = _resolve_sustained_profit_state(bot_config)
-        growth_allowed = bool(sustained_profit_state.get('allowed'))
         
         # 1. EQUITY SCALING - Scale by cumulative profit
-        if total_trades > 0 and total_profit > 0 and growth_allowed:
+        if total_trades > 0 and total_profit > 0:
             equity_multiplier = 1.0 + (total_profit / 1000)  # +10% size per $1000 profit
             size *= min(equity_multiplier, 1.5)  # Cap at 1.5x
         
@@ -21741,7 +21017,7 @@ class DynamicPositionSizer:
                     if win_streak > 0:
                         break
             
-            if win_streak > 2 and growth_allowed:
+            if win_streak > 2:
                 size *= (1.0 + (win_streak * 0.1))  # +10% per win in streak
             elif loss_streak >= 2:
                 size *= max(0.45, 1.0 - (loss_streak * 0.15))
@@ -21761,10 +21037,7 @@ class DynamicPositionSizer:
             'High': 0.8,     # Reduce in high volatility
             'Very High': 0.6 # Significantly reduce in extreme volatility
         }
-        vol_mult = volatility_multiplier.get(volatility_level, 1.0)
-        if vol_mult > 1.0 and not growth_allowed:
-            vol_mult = 1.0
-        size *= vol_mult
+        size *= volatility_multiplier.get(volatility_level, 1.0)
         
         # 4. DRAWDOWN PROTECTION - Reduce size during drawdowns
         if peak_profit > 0 and max_drawdown > 0:
@@ -21955,17 +21228,6 @@ EXNESS_DEFAULT_SYMBOL_DRAWDOWN_SHARES = {
     'XAGUSDM': 0.4,
 }
 
-BINANCE_DEFAULT_SYMBOL_DRAWDOWN_SHARES = {
-    # Keep BTC/ETH tighter than alts to avoid concentration blow-ups on small balances.
-    'BTCUSDT': 0.18,
-    'ETHUSDT': 0.18,
-    'SOLUSDT': 0.24,
-    'BNBUSDT': 0.24,
-    'XRPUSDT': 0.24,
-    'ADAUSDT': 0.24,
-    'DOGEUSDT': 0.24,
-}
-
 
 def _seed_symbol_drawdown_share_defaults(
     current_overrides: Any,
@@ -21974,7 +21236,7 @@ def _seed_symbol_drawdown_share_defaults(
 ) -> tuple[Dict[str, float], List[str]]:
     normalized_overrides, warnings = _normalize_symbol_drawdown_share_overrides(current_overrides, broker_name)
     normalized_broker = canonicalize_broker_name(broker_name)
-    if normalized_broker not in {'Exness', 'Binance'}:
+    if normalized_broker != 'Exness':
         return normalized_overrides, warnings
 
     if isinstance(symbols, str):
@@ -21985,24 +21247,16 @@ def _seed_symbol_drawdown_share_defaults(
         symbol_key = str(symbol or '').strip().upper()
         if not symbol_key or symbol_key in normalized_overrides:
             continue
-        if normalized_broker == 'Exness':
-            default_share = EXNESS_DEFAULT_SYMBOL_DRAWDOWN_SHARES.get(symbol_key)
-        else:
-            default_share = BINANCE_DEFAULT_SYMBOL_DRAWDOWN_SHARES.get(symbol_key)
+        default_share = EXNESS_DEFAULT_SYMBOL_DRAWDOWN_SHARES.get(symbol_key)
         if default_share is None:
             continue
         normalized_overrides[symbol_key] = default_share
         seeded_symbols.append(f"{symbol}={int(default_share * 100)}%")
 
     if seeded_symbols:
-        if normalized_broker == 'Exness':
-            warnings.append(
-                'Applied Exness minimum-lot drawdown defaults for ' + ', '.join(seeded_symbols)
-            )
-        else:
-            warnings.append(
-                'Applied Binance risk-share defaults for ' + ', '.join(seeded_symbols)
-            )
+        warnings.append(
+            'Applied Exness minimum-lot drawdown defaults for ' + ', '.join(seeded_symbols)
+        )
 
     return normalized_overrides, warnings
 
@@ -22075,15 +21329,6 @@ def _resolve_binance_futures_min_margin_budget(
                 futures_lot = futures_market_lot or futures_filters.get('LOT_SIZE', {})
                 futures_step = _safe_float(futures_lot.get('stepSize'), 0.0)
                 futures_min = _safe_float(futures_lot.get('minQty'), 0.0)
-                # Prefer LOT_SIZE when more restrictive (larger step) — avoids computing an
-                # artificially small min_margin_budget based on MARKET_LOT_SIZE micro-steps.
-                _lot_only = futures_filters.get('LOT_SIZE', {})
-                _lot_step_only = _safe_float(_lot_only.get('stepSize'), 0.0)
-                if _lot_step_only > 0 and (_lot_step_only > futures_step or futures_step <= 0):
-                    futures_step = _lot_step_only
-                    _lot_min_only = _safe_float(_lot_only.get('minQty'), _lot_step_only)
-                    if _lot_min_only > futures_min or futures_min <= 0:
-                        futures_min = _lot_min_only
                 if futures_step <= 0:
                     futures_step = 0.001
                 if futures_min <= 0:
@@ -22600,31 +21845,6 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
     symbols_to_scan = list(symbol_universe or sorted(VALID_SYMBOLS))
     total_symbols = len(symbols_to_scan)
     adaptive_floor = _adaptive_signal_threshold_floor(bot_config or {}) if bot_config else 20
-    normalized_broker = canonicalize_broker_name(
-        (bot_config or {}).get('brokerName')
-        or (bot_config or {}).get('broker_type')
-        or (bot_config or {}).get('broker')
-        or ''
-    )
-    mode_value = str((bot_config or {}).get('mode') or (bot_config or {}).get('botMode') or 'demo').strip().lower()
-    is_live = mode_value == 'live' or bool((bot_config or {}).get('is_live'))
-    binance_alt_signal_discount = max(
-        0.0,
-        min(12.0, _safe_float((bot_config or {}).get('binanceAltSignalThresholdDiscount'), 6.0)),
-    )
-    exness_signal_threshold_discount = max(
-        0.0,
-        min(12.0, _safe_float((bot_config or {}).get('exnessSignalThresholdDiscount'), 4.0)),
-    )
-    exness_floor_relaxation = max(
-        0.0,
-        min(15.0, _safe_float((bot_config or {}).get('exnessScannerFloorRelaxation'), 6.0)),
-    )
-    exness_min_scanner_floor = max(
-        35.0,
-        min(70.0, _safe_float((bot_config or {}).get('exnessMinScannerFloor'), 55.0)),
-    )
-    binance_major_bases = {'BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD'}
     if total_symbols > 0:
         logger.info(
             f"[SCANNER] Starting opportunity scan across {total_symbols} symbol(s) "
@@ -22634,23 +21854,6 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
         symbol_index = len(opportunities) + len(near_misses) + 1
         try:
             logger.debug(f"[SCANNER] Evaluating symbol {symbol_index}/{total_symbols}: {symbol}")
-            symbol_threshold = signal_threshold
-            symbol_floor = adaptive_floor
-            symbol_base = _normalize_symbol_base(symbol)
-            if (
-                normalized_broker == 'Binance'
-                and is_live
-                and symbol_base not in binance_major_bases
-                and binance_alt_signal_discount > 0
-            ):
-                symbol_threshold = max(symbol_floor, signal_threshold - binance_alt_signal_discount)
-            elif (
-                normalized_broker == 'Exness'
-                and is_live
-                and exness_signal_threshold_discount > 0
-            ):
-                symbol_floor = max(exness_min_scanner_floor, adaptive_floor - exness_floor_relaxation)
-                symbol_threshold = max(symbol_floor, signal_threshold - exness_signal_threshold_discount)
             market_data = _enrich_market_data_with_bot_context(bot_config, symbol)
             trade_params = _get_cached_strategy_params(
                 strategy_cache,
@@ -22664,14 +21867,14 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
             raw_signal = evaluate_real_trade_signal(symbol, market_data)
             raw_strength = raw_signal.get('strength', 0)
             if trade_params is None:
-                if raw_strength >= max(60, symbol_threshold):
+                if raw_strength >= max(60, signal_threshold):
                     logger.info(
                         f"[SCANNER] {symbol}: raw signal {raw_strength:.0f}/100 "
                         f"({raw_signal.get('signal', 'NEUTRAL')}) met visibility threshold, "
                         f"but the active strategy rejected execution: "
                         f"{raw_signal.get('entry_reason', 'Rejected by strategy')}"
                     )
-                raw_fallback_min_strength = max(symbol_floor, min(symbol_threshold, ADAPTIVE_FALLBACK_MIN_STRENGTH))
+                raw_fallback_min_strength = max(adaptive_floor, min(signal_threshold, ADAPTIVE_FALLBACK_MIN_STRENGTH))
                 raw_setup_eval = _score_signal_setup(
                     symbol,
                     market_data,
@@ -22716,7 +21919,7 @@ def scan_all_opportunities(strategy_func, account_id, risk_per_trade, signal_thr
                     })
                 continue
             strength = trade_params.get('signal', {}).get('strength', 0)
-            if strength >= symbol_threshold:
+            if strength >= signal_threshold:
                 opportunities.append({
                     'symbol': symbol,
                     'strength': strength,
@@ -23138,7 +22341,7 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
                 logger.info(f"🧠 Bot {bot_id}: ✅ Closed {symbol} (ticket {ticket}) for reallocation")
                 # Update trade in database
                 try:
-                    realloc_conn = get_db_connection()
+                    realloc_conn = build_sqlite_connection(timeout=30.0)
                     realloc_cursor = realloc_conn.cursor()
                     realloc_cursor.execute('''
                         UPDATE trades SET profit = ?, status = 'closed', time_close = ?,
@@ -23188,86 +22391,13 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
     new_trade_slots_used = len(current_open_symbols)
 
     # STEP 2: Add top scanner opportunities (highest priority, up to cap).
-    # Binance diversification guard: when qualified alts exist, do not let BTC/ETH
-    # consume all cycle slots by default.
-    def _is_binance_major_symbol(raw_symbol: Any) -> bool:
-        symbol_key = str(raw_symbol or '').strip().upper()
-        return symbol_key in {'BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD'}
-
-    binance_major_max_slots = 2
-    allow_major_backfill = True
-    if normalized_broker_type == 'Binance':
-        configured_symbols_for_guard = [str(sym).upper() for sym in (bot_config.get('symbols') or []) if sym]
-        configured_has_alt = any(not _is_binance_major_symbol(sym) for sym in configured_symbols_for_guard)
-        qualified_alt_exists = any(not _is_binance_major_symbol(opp.get('symbol')) for opp in tradeable_opportunities)
-        recent_closed = _recent_closed_trades(bot_config, limit=6)
-        recent_count = len(recent_closed)
-        recent_wins = sum(1 for trade in recent_closed if _safe_float(trade.get('profit'), 0.0) > 0)
-        recent_win_rate = (recent_wins / recent_count * 100.0) if recent_count else 100.0
-        recent_major_closed = [
-            trade for trade in recent_closed
-            if _is_binance_major_symbol(trade.get('symbol'))
-        ]
-        recent_major_count = len(recent_major_closed)
-        recent_major_wins = sum(1 for trade in recent_major_closed if _safe_float(trade.get('profit'), 0.0) > 0)
-        # ✅ FIX: lower freeze threshold — 1 losing major trade is enough to pause BTC/ETH when no wins
-        # Also freeze when ALL recent trades are major and all are losses (sole-symbol leak scenario)
-        all_recent_are_major = (recent_count > 0 and recent_count == recent_major_count)
-        freeze_major_rotation = bool(
-            is_live and (
-                (recent_major_count >= 2 and recent_major_wins == 0)
-                or (recent_major_count >= 1 and recent_major_wins == 0 and all_recent_are_major and recent_win_rate == 0.0)
-            )
-        )
-        defensive_rotation = (
-            bot_config.get('managementState') == 'recovery'
-            or (is_live and recent_count >= 4 and recent_win_rate < 40.0)
-        )
-        if freeze_major_rotation:
-            # ✅ FIX: also block backfill so BTC/ETH can't sneak in via fallback
-            allow_major_backfill = False
-            logger.info(
-                f"🧠 Bot {bot_id}: Freezing BTC/ETH cycle backfill after {recent_major_count} "
-                f"major losses with 0 wins (all_recent_major={all_recent_are_major}); prioritizing alts"
-            )
-        if configured_has_alt:
-            # ✅ FIX: apply slot cap even when no alt qualified right now, so BTC can't
-            # silently backfill just because alts happened to miss threshold this cycle
-            if qualified_alt_exists or freeze_major_rotation:
-                default_major_slots = 0 if is_live or defensive_rotation or freeze_major_rotation else 1
-            else:
-                # No alts qualified and not frozen — allow 1 major slot only
-                default_major_slots = 1 if is_live else 2
-            binance_major_max_slots = max(
-                0,
-                min(2, int(_safe_float(bot_config.get('binanceMajorMaxCycleSlots'), default_major_slots))),
-            )
-
-    deferred_major_opportunities: List[Dict[str, Any]] = []
-    selected_major_symbols = sum(1 for sym in cycle_symbols if _is_binance_major_symbol(sym))
     for opp in tradeable_opportunities:
         if new_trade_slots_used >= cycle_symbol_cap:
             break
-        if normalized_broker_type == 'Binance' and _is_binance_major_symbol(opp.get('symbol')):
-            if selected_major_symbols >= binance_major_max_slots:
-                deferred_major_opportunities.append(opp)
-                continue
         if opp['symbol'] not in dedup_symbols and _is_symbol_tradeable_now(opp['symbol']):
             cycle_symbols.append(opp['symbol'])
             dedup_symbols.add(opp['symbol'])
             new_trade_slots_used += 1
-            if normalized_broker_type == 'Binance' and _is_binance_major_symbol(opp.get('symbol')):
-                selected_major_symbols += 1
-
-    # Fill any leftover slots with deferred BTC/ETH opportunities (if alts were insufficient).
-    if allow_major_backfill:
-        for opp in deferred_major_opportunities:
-            if new_trade_slots_used >= cycle_symbol_cap:
-                break
-            if opp['symbol'] not in dedup_symbols and _is_symbol_tradeable_now(opp['symbol']):
-                cycle_symbols.append(opp['symbol'])
-                dedup_symbols.add(opp['symbol'])
-                new_trade_slots_used += 1
 
     # STEP 3: Append managed spot-inventory symbols (cap-exempt for SELL management).
     # These come AFTER scanner picks so they don't push scanner results out when sliced.
@@ -23277,19 +22407,10 @@ def execute_intelligent_reallocation(bot_id, bot_config, active_conn, is_mt5, mt
             dedup_symbols.add(sym)
     
     # If we still have slots, add fallback symbols from the active scanner universe.
-    # ✅ FIX: skip BTC/ETH in the fallback loop when the freeze is active so the bot
-    # cannot silently re-enter majors just because alts failed to qualify this cycle.
-    _fallback_major_frozen = (
-        normalized_broker_type == 'Binance'
-        and not allow_major_backfill
-    )
     fallback_symbols = symbol_universe or bot_config.get('symbols', ['EURUSDm'])
     for s in fallback_symbols:
         if new_trade_slots_used >= cycle_symbol_cap:
             break
-        if _fallback_major_frozen and _is_binance_major_symbol(s):
-            logger.debug(f"🧠 Bot {bot_id}: Skipping fallback major {s} (freeze active)")
-            continue
         fallback_eval = evaluate_real_trade_signal(s, _enrich_market_data_with_bot_context(bot_config, s))
         fallback_strength = _safe_float(fallback_eval.get('strength'), 0.0)
         adaptive_floor = _adaptive_signal_threshold_floor(bot_config)
@@ -23973,7 +23094,7 @@ def _rebuild_bot_profit_tracking(bot_state: Dict[str, Any]) -> None:
     profit_history = []
 
     for trade in closed_trades:
-        profit = _trade_net_profit_value(trade)
+        profit = float(trade.get('profit') or 0.0)
         total_profit += profit
         if profit > 0:
             winning_trades += 1
@@ -24035,7 +23156,7 @@ def _merge_bot_trade_history_from_db(bot_state: Dict[str, Any], bot_id: str) -> 
 
     tconn = None
     try:
-        tconn = get_db_connection()
+        tconn = build_sqlite_connection(timeout=10.0, row_factory=True)
         tcursor = tconn.cursor()
         tcursor.execute(
             '''
@@ -24397,9 +23518,9 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
                 _closed_trades.append(_trade)
         if _closed_trades:
             _db_closed = len(_closed_trades)
-            _db_profit = round(sum(_trade_net_profit_value(_trade) for _trade in _closed_trades), 2)
-            _db_wins = sum(1 for _trade in _closed_trades if _trade_net_profit_value(_trade) > 0)
-            _db_losses = round(sum(abs(_trade_net_profit_value(_trade)) for _trade in _closed_trades if _trade_net_profit_value(_trade) < 0), 2)
+            _db_profit = round(sum(_safe_float(_trade.get('profit'), 0.0) for _trade in _closed_trades), 2)
+            _db_wins = sum(1 for _trade in _closed_trades if _safe_float(_trade.get('profit'), 0.0) > 0)
+            _db_losses = round(sum(abs(_safe_float(_trade.get('profit'), 0.0)) for _trade in _closed_trades if _safe_float(_trade.get('profit'), 0.0) < 0), 2)
             bot_state['winningTrades'] = _db_wins
             bot_state['totalProfit'] = _db_profit
             bot_state['profit'] = _db_profit
@@ -24419,7 +23540,7 @@ def _restore_bot_runtime_state(row: sqlite3.Row) -> Dict[str, Any]:
     if not bot_state.get('open_positions'):
         bot_state['open_positions'] = {}
         try:
-            tconn2 = get_db_connection()
+            tconn2 = build_sqlite_connection(timeout=10.0, row_factory=True)
             tcursor2 = tconn2.cursor()
             tcursor2.execute(
                 "SELECT ticket, symbol, order_type, volume, price, time_open, trade_data FROM trades WHERE bot_id = ? AND status = 'open'",
@@ -24720,7 +23841,7 @@ def _purge_unconfirmed_restored_position(
         bot_config['totalTrades'] = max(0, int(bot_config.get('totalTrades', 0) or 0) - 1)
 
     try:
-        trade_conn = get_db_connection()
+        trade_conn = build_sqlite_connection(timeout=30.0)
         trade_cursor = trade_conn.cursor()
         trade_cursor.execute(
             '''
@@ -24911,16 +24032,6 @@ def _resolve_binance_account_market_hint(account_number: Any) -> str:
     if normalized_account.startswith('BINANCE-FUTURES-') or normalized_account in {'BINANCE-FUTURES', 'FUTURES'}:
         return 'futures'
     return ''
-
-
-def _resolve_binance_server_for_credential(
-    credential_data: Optional[Dict[str, Any]],
-    account_number: Any = None,
-) -> str:
-    server = str((credential_data or {}).get('server') or '').strip().lower()
-    if server not in {'spot', 'futures'}:
-        server = _resolve_binance_account_market_hint(account_number) or 'spot'
-    return server
 
 
 def _resolve_binance_display_currency(
@@ -25258,17 +24369,12 @@ def _queue_or_launch_bot_runtime(
     if bot_credentials is None:
         bot_credentials = _get_bot_thread_credentials(bot_config)
 
-    # ✅ Try to dispatch to worker pool (with error handling for Binance/MT5)
-    if manager:
-        try:
-            if manager.dispatch_bot(bot_id, user_id, bot_config, bot_credentials or {}):
-                if manager is binance_worker_pool_manager:
-                    logger.info(f"🚀 {log_label} {bot_id}: Dispatched to Binance worker pool")
-                    return 'binance-worker'
-                logger.info(f"🚀 {log_label} {bot_id}: Dispatched to worker pool")
-                return 'worker-pool'
-        except Exception as dispatch_error:
-            logger.warning(f"⚠️ Worker pool dispatch failed for {log_label} {bot_id}, falling back to local thread: {dispatch_error}")
+    if manager and manager.dispatch_bot(bot_id, user_id, bot_config, bot_credentials or {}):
+        if manager is binance_worker_pool_manager:
+            logger.info(f"🚀 {log_label} {bot_id}: Dispatched to Binance worker pool")
+            return 'binance-worker'
+        logger.info(f"🚀 {log_label} {bot_id}: Dispatched to worker pool")
+        return 'worker-pool'
 
     if bot_id in bot_threads and bot_threads[bot_id].is_alive():
         return 'local-thread'
@@ -25281,10 +24387,7 @@ def _queue_or_launch_bot_runtime(
         except Exception as e:
             clear_bot_start_pending(bot_id)
             running_bots[bot_id] = False
-            error_msg = f"Error starting {log_label.lower()} {bot_id}: {e}"
-            logger.error(error_msg)
-            # ✅ FIX: Record the startup error so the app can report it
-            record_bot_startup_error(bot_id, str(e))
+            logger.error(f"Error starting {log_label.lower()} {bot_id}: {e}")
 
     bot_thread = threading.Thread(
         target=_run_bot_locally,
@@ -25609,8 +24712,8 @@ def _ensure_enabled_bot_runtime(bot_id: str) -> Optional[Dict[str, Any]]:
         ):
             if not _capacity_allows_runtime_restart(runtime_bot):
                 return runtime_bot
-            # ✅ REMOVED: Mode filter should NOT apply to on-demand restores, only to backend startup
-            # ✅ When users explicitly request a bot (via API or dashboard), it should start regardless of mode filter
+            if not _should_auto_restart_bot_for_mode(bot_id, runtime_bot, 'on-demand runtime restore'):
+                return runtime_bot
             bot_stop_flags[bot_id] = False
             running_bots[bot_id] = True
             bot_credentials = _get_bot_thread_credentials(runtime_bot)
@@ -25635,8 +24738,8 @@ def _ensure_enabled_bot_runtime(bot_id: str) -> Optional[Dict[str, Any]]:
     if restored_bot.get('enabled') and not is_bot_start_pending(bot_id) and not _already_in_pool:
         if not _capacity_allows_runtime_restart(restored_bot):
             return restored_bot
-        # ✅ REMOVED: Mode filter should NOT apply to on-demand restores, only to backend startup
-        # ✅ When users explicitly request a bot (via API or dashboard), it should start regardless of mode filter
+        if not _should_auto_restart_bot_for_mode(bot_id, restored_bot, 'on-demand runtime restore'):
+            return restored_bot
         bot_stop_flags[bot_id] = False
         running_bots[bot_id] = True
         bot_credentials = _get_bot_thread_credentials(restored_bot)
@@ -26453,7 +25556,7 @@ def update_bot_config(bot_id):
                     'api_key': credential_data.get('api_key'),
                     'api_secret': credential_data.get('password'),
                     'account_number': account_number,
-                    'server': _resolve_binance_server_for_credential(credential_data, account_number),
+                    'server': credential_data.get('server') or 'spot',
                     'is_live': is_live,
                 })
                 if not binance_conn.connect():
@@ -27393,78 +26496,17 @@ def _update_account_profit_staircase(bot_config: Dict[str, Any], live_equity: fl
             profit_lock_scale = 0.90
             pullback_scale = 0.90
 
-    peak_drop_guard_percent = _safe_float(
-        bot_config.get('staircasePeakDropGuardPercent', os.getenv('STAIRCASE_PEAK_DROP_GUARD_PERCENT', '10')),
-        10.0,
-    )
-    peak_drop_guard_percent = max(1.0, min(80.0, peak_drop_guard_percent))
-    peak_drop_guard_active = bool(enabled and peak_gain >= material_gain_floor)
-    peak_drop_guard_floor = (
-        round(baseline_equity + (peak_gain * (1.0 - (peak_drop_guard_percent / 100.0))), 2)
-        if peak_drop_guard_active and peak_gain > 0
-        else 0.0
-    )
-
-    armed = bool(enabled and peak_gain >= material_gain_floor and (lock_share > 0 or peak_drop_guard_active))
+    armed = bool(enabled and lock_share > 0 and peak_gain >= material_gain_floor)
     locked_equity_floor = round(baseline_equity + (peak_gain * lock_share), 2) if armed else 0.0
-    if peak_drop_guard_floor > 0:
-        locked_equity_floor = max(locked_equity_floor, peak_drop_guard_floor)
     max_allowed_pullback = round(max(0.0, peak_equity - locked_equity_floor), 2) if armed else 0.0
     current_pullback = round(max(0.0, peak_equity - current_equity), 2) if peak_equity > 0 else 0.0
     breached = bool(armed and current_equity < locked_equity_floor and current_pullback >= max_allowed_pullback)
-
-    # Auto-reset: if the account has been in breach for more than STAIRCASE_MAX_BREACH_HOURS
-    # (default 12h), re-baseline to current equity so bots can resume trading.
-    # This prevents permanently locked-out bots when the market moved against the account.
-    staircase_max_breach_hours = max(0.5, float(os.getenv('STAIRCASE_MAX_BREACH_HOURS', '12')))
-    if breached and staircase_max_breach_hours > 0:
-        breach_since_raw = controller_state.get('breachSince')
-        if breach_since_raw:
-            try:
-                breach_since = datetime.fromisoformat(str(breach_since_raw))
-                breach_hours = (datetime.now() - breach_since).total_seconds() / 3600.0
-                if breach_hours >= staircase_max_breach_hours:
-                    logger.warning(
-                        f"[STAIRCASE] Auto-resetting staircase baseline after {breach_hours:.1f}h breach "
-                        f"(floor=${locked_equity_floor:.2f} > equity=${current_equity:.2f}). "
-                        f"New baseline: ${current_equity:.2f}"
-                    )
-                    # Reset: new baseline is current equity, peak reset too
-                    baseline_equity = current_equity
-                    peak_equity = current_equity
-                    peak_gain = 0.0
-                    current_gain = 0.0
-                    gain_ratio = 0.0
-                    stage = 'idle'
-                    stage_label = 'baseline'
-                    lock_share = 0.0
-                    armed = False
-                    locked_equity_floor = 0.0
-                    peak_drop_guard_floor = 0.0
-                    max_allowed_pullback = 0.0
-                    current_pullback = 0.0
-                    breached = False
-                    reason = 'staircase auto-reset after prolonged breach'
-            except Exception:
-                pass
-        else:
-            # Mark breach start time for the timeout clock
-            controller_state['breachSince'] = datetime.now().isoformat()
-
-    if not breached:
-        # Clear breach clock when no longer in breach
-        controller_state.pop('breachSince', None)
 
     if armed:
         reason = (
             f"{stage_label}: protecting {lock_share * 100:.0f}% of peak equity gains "
             f"after {gain_ratio * 100:.1f}% account growth"
         )
-        if peak_drop_guard_floor > 0:
-            reason += (
-                f" | peak-drop guard {peak_drop_guard_percent:.1f}% "
-                f"(floor ${peak_drop_guard_floor:.2f})"
-            )
 
     persisted_state = {
         'enabled': bool(enabled),
@@ -27483,13 +26525,10 @@ def _update_account_profit_staircase(bot_config: Dict[str, Any], live_equity: fl
         'maxAllowedPullback': max_allowed_pullback,
         'currentPullback': current_pullback,
         'lockShare': round(lock_share, 2),
-        'peakDropGuardPercent': round(peak_drop_guard_percent, 2),
-        'peakDropGuardFloor': round(peak_drop_guard_floor, 2),
         'riskScale': round(risk_scale, 2),
         'profitLockScale': round(profit_lock_scale, 2),
         'pullbackScale': round(pullback_scale, 2),
         'reason': reason,
-        'breachSince': controller_state.get('breachSince'),
     }
     previous_state = {
         key: controller_state.get(key)
@@ -27662,8 +26701,6 @@ def _resolve_adaptive_trade_amount(
     compound_enabled = _coerce_bool(bot_config.get('compoundProfits'), True)
     compound_ratio = 1.0
     compound_reason = ''
-    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
-    growth_allowed = bool(sustained_profit_state.get('allowed'))
     if compound_enabled:
         _initial_bal = _safe_float(bot_config.get('initialBalance'), 0.0)
         _current_bal = max(
@@ -27675,8 +26712,6 @@ def _resolve_adaptive_trade_amount(
             # Cap upside at 4× to prevent runaway sizing; floor at 0.5× so we
             # never drop below half the original size during a drawdown
             compound_ratio = max(0.5, min(4.0, compound_ratio))
-            if compound_ratio > 1.0 and not growth_allowed:
-                compound_ratio = 1.0
             if abs(compound_ratio - 1.0) > 0.005:  # only apply if >0.5% change
                 safe_base_amount = round(safe_base_amount * compound_ratio, 4)
                 compound_reason = (
@@ -27720,7 +26755,7 @@ def _resolve_adaptive_trade_amount(
     retrace_ratio = 0.0
     
     if profit_conditional:
-        if not growth_allowed:
+        if current_total_profit < 0:
             # In loss: revert to baseline sizing instead of multiplying into drawdown.
             loss_floor_multiplier = min(1.0, max(0.45, base_position_multiplier or 1.0))
             adjusted_amount = round(max(1.0, safe_base_amount * loss_floor_multiplier), 2)
@@ -27730,11 +26765,12 @@ def _resolve_adaptive_trade_amount(
             performance_state['multiplier'] = round(loss_floor_multiplier, 3)
             performance_state['state'] = 'defensive'
             performance_state['reason'] = (
-                f'profit-conditional: {sustained_profit_state.get("reason")}; using baseline {loss_floor_multiplier:.2f}x'
+                f'profit-conditional: in loss (R{current_total_profit:.2f}), '
+                f'using baseline {loss_floor_multiplier:.2f}x'
             )
             logger.info(
                 f"🛡️ Bot {bot_config.get('botId')}: LOSS PROTECTION - "
-                f"{sustained_profit_state.get('reason')}, using baseline {loss_floor_multiplier:.2f}x"
+                f"totalProfit={current_total_profit:.2f} < R0, using baseline {loss_floor_multiplier:.2f}x"
             )
             bot_config['lastSizingAdjustment'] = performance_state
             bot_config['tradeAmountAdaptation'] = {
@@ -27817,12 +26853,8 @@ def _resolve_adaptive_trade_amount(
 
         if state == 'hot' and daily_profit > 0:
             momentum_boost = min(0.18, max(0.0, daily_profit) / max(100.0, safe_base_amount * 10.0))
-            if growth_allowed:
-                multiplier *= (1.0 + momentum_boost)
-                reasons.append('sustained profit momentum')
-            else:
-                state = 'normal'
-                reasons.append('profit momentum boost locked until realized profit is sustained above zero')
+            multiplier *= (1.0 + momentum_boost)
+            reasons.append('sustained profit momentum')
         elif state == 'defensive':
             multiplier *= 0.78
             reasons.append('defensive sizing state')
@@ -27851,7 +26883,7 @@ def _resolve_adaptive_trade_amount(
         _safe_float(bot_config.get('accountEquity'), 0.0),
         _safe_float(bot_config.get('accountBalance'), 0.0),
     )
-    if growth_allowed and not is_live and bot_config.get('managementState') != 'recovery' and top_strength >= 85.0:
+    if not is_live and bot_config.get('managementState') != 'recovery' and top_strength >= 85.0:
         strong_setup_floor = 1.35 + min(0.9, max(0.0, (top_strength - 85.0) / 10.0))
         if scanner_market_multiplier >= 1.2:
             strong_setup_floor += min(0.8, (scanner_market_multiplier - 1.0) * 0.8)
@@ -27886,10 +26918,6 @@ def _resolve_adaptive_trade_amount(
         multiplier *= staircase_scale
         if staircase_reason:
             reasons.append(staircase_reason)
-
-    if not growth_allowed and multiplier > 1.0:
-        multiplier = 1.0
-        reasons.append(str(sustained_profit_state.get('reason') or 'growth multiplier locked'))
 
     adjusted_amount = round(max(1.0, safe_base_amount * multiplier), 2)
     bot_config['effectiveTradeAmount'] = adjusted_amount
@@ -27996,8 +27024,8 @@ def _collect_recent_closed_trade_profit_window(bot_config: Dict[str, Any], lookb
             break
 
     recent_closed_trades.reverse()
-    net_profit = round(sum(_trade_net_profit_value(trade) for trade in recent_closed_trades), 2)
-    gross_profit = round(sum(max(0.0, _trade_net_profit_value(trade)) for trade in recent_closed_trades), 2)
+    net_profit = round(sum(_safe_float(trade.get('profit'), 0.0) for trade in recent_closed_trades), 2)
+    gross_profit = round(sum(max(0.0, _safe_float(trade.get('profit'), 0.0)) for trade in recent_closed_trades), 2)
     return {
         'trades': recent_closed_trades,
         'sampleCount': len(recent_closed_trades),
@@ -28249,44 +27277,6 @@ def should_trade_today(bot_config, symbol):
                 level='warning',
             )
 
-    broker_name = canonicalize_broker_name(
-        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
-    )
-    # Minimum viable balance gate for live Binance futures.
-    # Below $5 USDT it is impossible to meet Binance's $20 minimum notional even at 10x.
-    # Accounts between $5-$20 enter micro-account mode: extra restrictions apply.
-    if broker_name == 'Binance' and str(bot_config.get('mode') or '').strip().lower() == 'live':
-        _bal_basis = max(
-            _safe_float(bot_config.get('accountBalance'), 0.0),
-            _safe_float(bot_config.get('accountEquity'), 0.0),
-            _safe_float(bot_config.get('initialBalance'), 0.0),
-        )
-        _binance_market = str(bot_config.get('binanceMarket') or bot_config.get('market') or 'futures').lower()
-        _min_viable = 5.0 if _binance_market == 'futures' else 2.0
-        if 0 < _bal_basis < _min_viable:
-            return _record_trade_risk_block(
-                bot_config,
-                symbol,
-                f"balance ${_bal_basis:.2f} USDT is below absolute minimum ${_min_viable:.2f} for Binance {_binance_market} "
-                f"(cannot meet $20 minimum notional even at max leverage — deposit more to trade)",
-                level='warning',
-            )
-        # Micro-account mode ($5-$20): block large-unit symbols where minimum order
-        # exceeds safe margin budget at this balance.
-        if 0 < _bal_basis < 20.0 and _binance_market == 'futures':
-            if not _is_symbol_viable_for_micro_account(symbol, 0.0, _bal_basis):
-                # 0.0 price — _is_symbol_viable_for_micro_account will check base whitelist only
-                return _record_trade_risk_block(
-                    bot_config,
-                    symbol,
-                    f"micro-account (${_bal_basis:.2f} USDT): {symbol} blocked — too expensive per unit "
-                    f"for minimum notional at 5x leverage. Use XRPUSDT, ETHUSDT, DOGEUSDT, or ADAUSDT instead.",
-                    level='warning',
-                )
-            # Store the micro-account floor for the signal check below (after signal is evaluated).
-            bot_config['_microAccountSignalFloor'] = 70
-            bot_config['_microAccountBalance'] = _bal_basis
-
     symbol_loss_pressure = _recent_symbol_loss_pressure(bot_config, symbol)
     last_symbol_close = symbol_loss_pressure.get('last_close_at')
     if last_symbol_close and getattr(last_symbol_close, 'tzinfo', None) is not None:
@@ -28330,44 +27320,9 @@ def should_trade_today(bot_config, symbol):
             symbol,
             f"setup score {setup_eval.get('score', 0.0):.1f}/10 below confluence gate: {setup_reasons}",
         )
-    # Micro-account signal floor (applied after signal is evaluated).
-    _micro_signal_floor = int(bot_config.get('_microAccountSignalFloor') or 0)
-    _micro_bal = _safe_float(bot_config.get('_microAccountBalance'), 0.0)
-    if _micro_signal_floor > 0 and 0 < _micro_bal < 20.0 and current_signal_strength < _micro_signal_floor:
-        return _record_trade_risk_block(
-            bot_config,
-            symbol,
-            f"micro-account (${_micro_bal:.2f} USDT): signal {current_signal_strength:.0f}/100 below micro floor {_micro_signal_floor} "
-            f"(small accounts need higher-conviction signals to overcome fee drag)",
-        )
-    # Fee-coverage gate for live Binance futures: expected net profit must exceed 2× the
-    # round-trip taker fee (0.08% of notional) so fees can never be the reason we lose.
-    # Expected profit = (TP distance in price / current price) × trade notional × RR denominator
-    if (
-        broker_name == 'Binance'
-        and str(bot_config.get('mode') or '').strip().lower() == 'live'
-        and current_signal_direction in {'BUY', 'SELL'}
-    ):
-        try:
-            _trade_plan = setup_eval.get('tradePlan') or {}
-            _rr = _safe_float(setup_eval.get('rr'), 0.0)
-            _current_price = _safe_float((current_market_data or {}).get('current_price', 0.0), 0.0)
-            _balance = _safe_float(bot_config.get('accountBalance', bot_config.get('initialBalance', 0.0)), 0.0)
-            _trade_ratio = _safe_float(bot_config.get('tradeAmount', bot_config.get('risk_per_trade', 5.0)), 5.0) / 100.0
-            _notional = _balance * _trade_ratio * _safe_float(bot_config.get('leverage', 10.0), 10.0)
-            _round_trip_fee = _notional * 0.0008  # 0.04% taker × 2 sides
-            _min_tp_price_move_pct = _safe_float(_trade_plan.get('tpPips', 0.0), 0.0) / max(_current_price, 1.0) if _current_price > 0 else 0.0
-            _expected_gross = _notional * _min_tp_price_move_pct if _min_tp_price_move_pct > 0 else 0.0
-            _fee_cover_ratio = 2.5  # expected profit must be ≥ 2.5× fees
-            if _notional > 0 and _round_trip_fee > 0 and 0 < _expected_gross < _round_trip_fee * _fee_cover_ratio:
-                return _record_trade_risk_block(
-                    bot_config,
-                    symbol,
-                    f"fee-coverage gate: expected gross ${_expected_gross:.3f} < {_fee_cover_ratio}× round-trip fee ${_round_trip_fee:.3f} "
-                    f"(notional=${_notional:.1f}, rr={_rr:.1f}) — setup not profitable enough net of fees",
-                )
-        except Exception:
-            pass  # Never block a trade due to an error in the fee gate itself
+    broker_name = canonicalize_broker_name(
+        bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
+    )
     exness_runtime_risk = _resolve_exness_runtime_risk_profile(bot_config) if broker_name == 'Exness' else {}
     session_perf = _evaluate_session_hour_performance(bot_config, now)
     active_session_perf = session_perf.get('activeSession') if isinstance(session_perf, dict) else {}
@@ -32968,7 +31923,7 @@ def _resolve_scanner_capital_boost_cap(
 
 # Tier | Daily P&L as % of balance | Trade-amount mult | ATR/SL-TP mult
 # ─────┼───────────────────────────┼───────────────────┼───────────────
-#  μ   | >0 % –  5 %              |  1.2 ×            |  1.2 ×
+#  μ   |  0 % –  5 %              |  1.2 ×            |  1.2 ×
 #  1   |  5 % – 10 %              |  2.0 ×            |  2.0 ×
 #  2   | 10 % – 20 %              |  3.0 ×            |  4.0 ×
 #  3   | 20 % – 40 %              |  5.0 ×            |  8.0 ×
@@ -32981,82 +31936,13 @@ _PROFIT_SCALE_TIERS = [
     (20.0,  5.0,  8.0),
     (10.0,  3.0,  4.0),
     ( 5.0,  2.0,  2.0),
-    ( 0.01, 1.2,  1.2),
+    ( 0.0,  1.2,  1.2),
 ]
-
-
-def _resolve_sustained_profit_state(
-    bot_config: Optional[Dict[str, Any]],
-    balance: float = 0.0,
-) -> Dict[str, Any]:
-    """Return whether growth multipliers may engage for this bot.
-
-    Upside scaling is intentionally tied to realized closed-trade profit, not
-    open/floating P&L or a zero-value default. Defensive reductions are handled
-    elsewhere and do not need this gate.
-    """
-    if not isinstance(bot_config, dict):
-        return {'allowed': False, 'reason': 'missing bot config'}
-
-    today = datetime.now().strftime('%Y-%m-%d')
-    daily_profits = bot_config.get('dailyProfits') if isinstance(bot_config.get('dailyProfits'), dict) else {}
-    total_profit = _safe_float(bot_config.get('totalProfit', bot_config.get('profit', 0.0)), 0.0)
-    daily_profit = _safe_float(daily_profits.get(today, bot_config.get('dailyProfit', 0.0)), 0.0)
-    balance_basis = max(
-        _safe_float(balance, 0.0),
-        _safe_float(bot_config.get('accountEquity'), 0.0),
-        _safe_float(bot_config.get('accountBalance'), 0.0),
-    )
-    min_profit_floor = max(0.01, min(5.0, balance_basis * 0.001 if balance_basis > 0 else 0.01))
-
-    trade_history = bot_config.get('tradeHistory') or []
-    closed_trades: List[Dict[str, Any]] = []
-    for trade in trade_history:
-        if not isinstance(trade, dict):
-            continue
-        status = str(trade.get('status') or '').lower()
-        if status == 'closed' or trade.get('exitTime') or trade.get('time_close'):
-            closed_trades.append(trade)
-    closed_trades.sort(key=_trade_history_timestamp_key)
-    recent_closed = closed_trades[-5:]
-    recent_count = len(recent_closed)
-    recent_profit = round(sum(_safe_float(trade.get('profit'), 0.0) for trade in recent_closed), 2)
-    recent_wins = sum(1 for trade in recent_closed if _safe_float(trade.get('profit'), 0.0) > 0)
-    recent_losses = sum(1 for trade in recent_closed if _safe_float(trade.get('profit'), 0.0) < 0)
-
-    total_trades = max(0, int(bot_config.get('totalTrades') or len(closed_trades) or 0))
-    winning_trades = max(0, int(bot_config.get('winningTrades') or 0))
-    has_positive_net = total_profit > min_profit_floor
-    has_recent_confirmation = recent_count >= 2 and recent_profit > 0 and recent_wins >= 2 and recent_losses == 0
-    has_lifetime_confirmation = total_trades >= 2 and winning_trades >= 2 and daily_profit > 0
-    allowed = bool(has_positive_net and (has_recent_confirmation or has_lifetime_confirmation))
-    reason = (
-        f"realized profit sustained above zero: total={total_profit:.2f}, daily={daily_profit:.2f}, "
-        f"recent={recent_profit:.2f}/{recent_count} trades"
-        if allowed else
-        f"growth locked until realized profit is sustained above zero "
-        f"(total={total_profit:.2f}, floor={min_profit_floor:.2f}, recent={recent_profit:.2f}/{recent_count})"
-    )
-    return {
-        'allowed': allowed,
-        'reason': reason,
-        'totalProfit': round(total_profit, 2),
-        'dailyProfit': round(daily_profit, 2),
-        'recentProfit': recent_profit,
-        'recentTradeCount': recent_count,
-        'recentWins': recent_wins,
-        'minProfitFloor': round(min_profit_floor, 2),
-    }
-
-
-def _has_sustained_realized_profit(bot_config: Optional[Dict[str, Any]], balance: float = 0.0) -> bool:
-    return bool(_resolve_sustained_profit_state(bot_config, balance).get('allowed'))
 
 
 def _get_profit_scale_multipliers(
     realized_pnl: float,
     balance: float,
-    bot_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float]:
     """
     Return (trade_amount_multiplier, atr_multiplier) keyed on today's
@@ -33065,8 +31951,6 @@ def _get_profit_scale_multipliers(
     Returns (1.0, 1.0) when the symbol/bot is not yet in profit.
     """
     if realized_pnl <= 0 or balance <= 0:
-        return 1.0, 1.0
-    if bot_config is not None and not _has_sustained_realized_profit(bot_config, balance):
         return 1.0, 1.0
     pct = (realized_pnl / balance) * 100.0
     for min_pct, ta_m, atr_m in _PROFIT_SCALE_TIERS:
@@ -33136,14 +32020,12 @@ def _resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> Dict[
     configured_base_leverage = _safe_float(bot_config.get('binanceFuturesBaseLeverage'), 0.0)
     configured_peak_leverage = _safe_float(bot_config.get('binanceFuturesPeakLeverage'), 0.0)
     configured_effective_leverage = _safe_float(bot_config.get('effectiveBinanceFuturesLeverage'), 0.0)
-    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
-    growth_allowed = bool(sustained_profit_state.get('allowed'))
 
     base_leverage = int(max(1, min(
         BINANCE_FUTURES_MAX_LEVERAGE,
-        configured_base_leverage or (configured_effective_leverage if growth_allowed else 0.0) or BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE,
+        configured_base_leverage or configured_effective_leverage or BINANCE_FUTURES_DEFAULT_BASE_LEVERAGE,
     )))
-    if growth_allowed and configured_effective_leverage > 0 and configured_peak_leverage <= max(configured_base_leverage, 0.0):
+    if configured_effective_leverage > 0 and configured_peak_leverage <= max(configured_base_leverage, 0.0):
         base_leverage = int(max(base_leverage, min(BINANCE_FUTURES_MAX_LEVERAGE, configured_effective_leverage)))
     peak_leverage = int(max(base_leverage, min(
         BINANCE_FUTURES_MAX_LEVERAGE,
@@ -33154,8 +32036,8 @@ def _resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> Dict[
     if margin_type not in {'ISOLATED', 'CROSSED'}:
         margin_type = 'ISOLATED'
 
-    target_leverage = peak_leverage if (not auto_leverage and growth_allowed) else base_leverage
-    reason = 'manual peak leverage' if growth_allowed else str(sustained_profit_state.get('reason') or 'baseline leverage until sustained realized profit')
+    target_leverage = peak_leverage if not auto_leverage else base_leverage
+    reason = 'manual peak leverage'
 
     if auto_leverage:
         sizing_state = bot_config.get('lastSizingAdjustment') if isinstance(bot_config.get('lastSizingAdjustment'), dict) else {}
@@ -33169,15 +32051,15 @@ def _resolve_binance_futures_order_controls(bot_config: Dict[str, Any]) -> Dict[
             _min_lv = int(max(1, _safe_float(bot_config.get('binanceFuturesMinLeverage'), BINANCE_FUTURES_MIN_LEVERAGE)))
             target_leverage = max(_min_lv, min(base_leverage, _defensive_lv))
             reason = 'defensive state or consecutive losses'
-        elif growth_allowed and state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
+        elif state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
             target_leverage = peak_leverage
             reason = 'hot profitable regime'
-        elif growth_allowed and (scanner_multiplier >= 1.05 or current_total_profit > 0):
+        elif scanner_multiplier >= 1.05 or current_total_profit > 0:
             target_leverage = max(base_leverage, int(round(base_leverage + (peak_leverage - base_leverage) * 0.6)))
             reason = 'profitable/supportive regime'
         else:
             target_leverage = base_leverage
-            reason = 'baseline leverage' if growth_allowed else str(sustained_profit_state.get('reason') or 'baseline leverage until sustained realized profit')
+            reason = 'baseline leverage'
 
     target_leverage = int(max(1, min(BINANCE_FUTURES_MAX_LEVERAGE, target_leverage)))
     return {
@@ -33231,8 +32113,6 @@ def _resolve_mt5_position_multiplier(
         return {'enabled': False, 'multiplier': 1.0, 'reason': 'non-MT5 broker', 'targetLeverage': 0.0, 'accountLeverage': 0}
 
     auto = _coerce_bool(bot_config.get('mt5AutoLeverage', True), True)
-    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
-    growth_allowed = bool(sustained_profit_state.get('allowed'))
     account_info = account_info if isinstance(account_info, dict) else {}
     account_leverage = int(max(1.0, _safe_float(
         account_info.get('leverage', bot_config.get('accountLeverage', MT5_PEAK_REFERENCE_LEVERAGE)),
@@ -33268,14 +32148,6 @@ def _resolve_mt5_position_multiplier(
     )))
 
     if not auto:
-        if not growth_allowed:
-            return {
-                'enabled': True,
-                'multiplier': 1.0,
-                'reason': str(sustained_profit_state.get('reason') or 'baseline multiplier until sustained realized profit'),
-                'targetLeverage': base_reference_leverage,
-                'accountLeverage': account_leverage,
-            }
         return {
             'enabled': True,
             'multiplier': peak_mult,
@@ -33290,19 +32162,21 @@ def _resolve_mt5_position_multiplier(
     consecutive_losses = int(sizing_state.get('consecutiveLosses') or 0)
     current_total_profit = _safe_float(bot_config.get('totalProfit', bot_config.get('profit', 0.0)), 0.0)
     
-    # Profit-conditional multiplier safeguard: only use aggressive MT5 exposure
-    # after realized closed-trade profit is sustained above zero.
+    # � PROFIT-CONDITIONAL MULTIPLIER SAFEGUARD
+    # Only use aggressive multipliers when bot is profitable (totalProfit >= 0).
+    # When in loss (totalProfit < 0), force to basePositionSizeMultiplier (1.0) to prevent
+    # compounding losses with aggressive sizing.
     profit_conditional = _coerce_bool(bot_config.get('profitConditionalMultiplier', False), False)
     base_position_multiplier = _safe_float(bot_config.get('basePositionSizeMultiplier'), 1.0)
     
     if profit_conditional:
-        if not growth_allowed:
+        if current_total_profit < 0:
             # Baseline sizing in drawdown prevents multiplying into losses.
             loss_floor_multiplier = min(1.0, max(0.1, base_position_multiplier or 1.0))
             return {
                 'enabled': True,
                 'multiplier': loss_floor_multiplier,
-                'reason': f'profit-conditional: {sustained_profit_state.get("reason")}; using baseline {loss_floor_multiplier:.2f}x',
+                'reason': f'profit-conditional: in loss (R{current_total_profit:.2f}), using baseline {loss_floor_multiplier:.2f}x',
                 'targetLeverage': base_reference_leverage,
                 'accountLeverage': account_leverage,
             }
@@ -33346,18 +32220,18 @@ def _resolve_mt5_position_multiplier(
         target = defensive_mult
         target_leverage = defensive_reference_leverage
         reason = 'defensive state or consecutive losses'
-    elif growth_allowed and state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
+    elif state == 'hot' and scanner_multiplier >= 1.05 and current_total_profit > 0:
         target = peak_mult
         target_leverage = peak_reference_leverage
         reason = 'hot profitable regime at max MT5 exposure'
-    elif growth_allowed and (scanner_multiplier >= 1.05 or current_total_profit > 0):
+    elif scanner_multiplier >= 1.05 or current_total_profit > 0:
         target = supportive_mult
         target_leverage = supportive_reference_leverage
         reason = 'profitable/supportive regime'
     else:
-        target = base_mult if growth_allowed else 1.0
+        target = base_mult
         target_leverage = base_reference_leverage
-        reason = 'baseline multiplier' if growth_allowed else str(sustained_profit_state.get('reason') or 'baseline multiplier until sustained realized profit')
+        reason = 'baseline multiplier'
 
     target = float(max(0.01, min(MT5_MAX_MULTIPLIER, target)))
     return {
@@ -34071,10 +32945,8 @@ def _default_setup_score_for_broker_profile(
 
     if normalized_broker == 'Binance':
         if normalized_mode == 'live':
-            # Higher gate for live Binance: fees (0.08% round-trip + funding) require
-            # genuinely strong setups to profit net of costs.
-            return 6.5 if normalized_management_mode == 'manual' else 6.0
-        return 5.5 if normalized_management_mode == 'manual' else 5.0
+            return 5.5 if normalized_management_mode == 'manual' else 6.0
+        return 5.5 if normalized_management_mode == 'manual' else 6.5
 
     if normalized_broker == 'Exness' and normalized_mode == 'live':
         if normalized_profile in {'advanced', 'fast_growth'}:
@@ -34134,19 +33006,7 @@ EXNESS_CURATED_SCANNER_SYMBOLS = [
     # Live Exness keep set — blocked symbols handled at validation layer
     'AUDUSDm', 'GBPUSDm', 'WFCm', 'US500m', 'USDCADm', 'US30m',
 ]
-BINANCE_CURATED_SCANNER_SYMBOLS = [
-    # Tier 1 — Large Cap (highest liquidity, all USDT)
-    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'TONUSDT', 'XLMUSDT',
-    # Tier 2 — High Volume Altcoins
-    'AVAXUSDT', 'LINKUSDT', 'LTCUSDT', 'DOTUSDT', 'MATICUSDT',
-    'TRXUSDT', 'ATOMUSDT', 'HBARUSDT', 'BCHUSDT', 'ETCUSDT',
-    # Tier 3 — DeFi & Layer-2 leaders
-    'UNIUSDT', 'ARBUSDT', 'NEARUSDT', 'INJUSDT', 'SUIUSDT',
-    'APTUSDT', 'AAVEUSDT', 'OPUSDT', 'FTMUSDT', 'SEIUSDT',
-    # Tier 4 — High-beta / meme liquid
-    'SHIBUSDT', 'PEPEUSDT', 'WIFUSDT',
-]
+BINANCE_CURATED_SCANNER_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT']
 
 # ---------------------------------------------------------------------------
 # Binance USDT Top-Movers dynamic scanner
@@ -34156,96 +33016,12 @@ _TOP_MOVERS_TTL_SECONDS = 120  # refresh every 2 minutes — catches new pumps q
 _TOP_MOVERS_MIN_CHANGE_PCT = 3.0    # at least 3% 24h move (up or down)
 _TOP_MOVERS_MIN_VOLUME_USDT = 5_000_000  # at least $5M 24h volume
 _TOP_MOVERS_MAX_SYMBOLS = 10         # cap to keep cycle time reasonable
-_TOP_MOVERS_MAJOR_SYMBOLS = {'BTCUSDT', 'ETHUSDT'}
-try:
-    _TOP_MOVERS_MAX_MAJORS_IN_LIST = max(1, int(float(os.getenv('TOP_MOVERS_MAX_MAJORS', '2') or '2')))
-except (ValueError, TypeError):
-    _TOP_MOVERS_MAX_MAJORS_IN_LIST = 2
 # Stablecoins, leveraged tokens, and very low-quality pairs to exclude
 _TOP_MOVERS_EXCLUDE_BASES = {
     'USDC', 'BUSD', 'TUSD', 'DAI', 'FDUSD', 'USDP', 'GUSD', 'FRAX',
     'BTCUP', 'BTCDOWN', 'ETHUP', 'ETHDOWN', 'BNBUP', 'BNBDOWN',
     'LINKUP', 'LINKDOWN', 'DEFI', 'BEAR', 'BULL',
 }
-
-# ---------------------------------------------------------------------------
-# Micro-account balance-aware symbol selection
-# ---------------------------------------------------------------------------
-# Bases whose per-unit price is low enough that the Binance $20 minimum
-# notional is reachable with $4 margin (5x leverage) without the position
-# sizing exceeding ~90% of a sub-$20 account balance.
-# BTCUSDT (~$100k/unit) and BNBUSDT (~$640/unit) are excluded because their
-# minimum order size forces notionals far above $20.
-# SOLUSDT (~$170/unit, 0.1-unit step) forces $17–34 notional steps which are
-# borderline and often rejected — excluded for safety.
-# All symbols listed here have unit prices < $20 so $4 margin at 5x ≥ $20 notional.
-_MICRO_ACCOUNT_VIABLE_BASES = {
-    'XRP', 'DOGE', 'ADA', 'TRX', 'SHIB', 'PEPE', 'LUNC', 'WIN', 'HOT',
-    'VET', 'ANKR', 'ONE', 'JASMY', 'GALA', 'CHZ', 'MANA', 'ENJ',
-    'SAND', 'PEOPLE', 'FLOKI', 'BONK', 'WIF', 'NOT', 'TON', 'XLM',
-    'HBAR', 'MATIC', 'OP', 'ARB', 'FTM', 'SEI', 'NEAR', 'ATOM',
-    'SUI', 'APT', 'INJ', 'LINK', 'UNI', 'DOT', 'LTC', 'ETC',
-    'AVAX', 'ETH',  # ETH included: 0.01 step × ~$1660 = $16.6, auto-bumped to 0.02 = $33
-}
-# Symbols that are always blocked for micro-accounts regardless of price tier
-_MICRO_ACCOUNT_HARD_BLOCKED = {'BTCUSDT', 'BNBUSDT', 'SOLUSDT'}
-# Per-unit price cap for a symbol to be considered micro-viable when not in the whitelist above
-_MICRO_ACCOUNT_MAX_UNIT_PRICE_USDT = 50.0
-
-
-def _is_symbol_viable_for_micro_account(symbol: str, last_price: float, balance_usdt: float, leverage: int = 5) -> bool:
-    """Return True if this symbol can be traded at Binance's $20 min notional given the balance.
-
-    Uses a conservative 90% margin budget to leave room for fees and slippage.
-    """
-    sym_upper = str(symbol or '').upper()
-    if sym_upper in _MICRO_ACCOUNT_HARD_BLOCKED:
-        return False
-    # If price is unknown, allow it (gateway checks will catch issues later)
-    if last_price <= 0:
-        return True
-    base = sym_upper[:-4] if sym_upper.endswith('USDT') else sym_upper
-    if base in _MICRO_ACCOUNT_VIABLE_BASES:
-        return True
-    # Dynamic check: can we fit $20 min notional within 90% of balance at given leverage?
-    max_margin_budget = balance_usdt * 0.90
-    max_notional = max_margin_budget * leverage
-    return max_notional >= 20.0 and last_price <= _MICRO_ACCOUNT_MAX_UNIT_PRICE_USDT
-
-
-def _select_diversified_top_movers(candidates: List[tuple], max_symbols: int) -> List[tuple]:
-    """Prefer altcoin movers first, then backfill with BTC/ETH when needed."""
-    if not candidates or max_symbols <= 0:
-        return []
-
-    majors = [row for row in candidates if str(row[0] or '').upper() in _TOP_MOVERS_MAJOR_SYMBOLS]
-    alts = [row for row in candidates if str(row[0] or '').upper() not in _TOP_MOVERS_MAJOR_SYMBOLS]
-    max_majors = max(1, min(_TOP_MOVERS_MAX_MAJORS_IN_LIST, max_symbols))
-
-    selected: List[tuple] = []
-    used_alt_count = 0
-    used_major_count = 0
-    if alts:
-        alt_target = max(1, max_symbols - max_majors)
-        selected.extend(alts[:alt_target])
-        used_alt_count = min(len(alts), alt_target)
-
-    remaining = max_symbols - len(selected)
-    if remaining > 0 and majors:
-        major_take = min(max_majors, remaining)
-        selected.extend(majors[:major_take])
-        used_major_count = major_take
-
-    remaining = max_symbols - len(selected)
-    if remaining > 0:
-        selected.extend(alts[used_alt_count:used_alt_count + remaining])
-        used_alt_count += min(remaining, max(0, len(alts) - used_alt_count))
-
-    remaining = max_symbols - len(selected)
-    if remaining > 0:
-        selected.extend(majors[used_major_count:used_major_count + remaining])
-
-    return selected[:max_symbols]
 
 
 def _fetch_binance_top_movers(spot: bool = True) -> List[str]:
@@ -34286,8 +33062,7 @@ def _fetch_binance_top_movers(spot: bool = True) -> List[str]:
             candidates.append((sym, pct, vol))
         # Sort by % change descending, then by volume as tiebreaker
         candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
-        selected_candidates = _select_diversified_top_movers(candidates, _TOP_MOVERS_MAX_SYMBOLS)
-        result = [sym for sym, _, _ in selected_candidates]
+        result = [sym for sym, _, _ in candidates[:_TOP_MOVERS_MAX_SYMBOLS]]
         _TOP_MOVERS_CACHE['symbols'] = result
         _TOP_MOVERS_CACHE['fetched_at'] = now
         logger.info(f"[TopMovers] Refreshed Binance top movers: {result}")
@@ -34340,9 +33115,8 @@ def _fetch_binance_top_movers_with_data(spot: bool = True) -> Dict[str, Dict[str
                 continue
             candidates.append((sym, raw_pct, pct, vol, last_price))
         candidates.sort(key=lambda x: (x[2], x[3]), reverse=True)
-        selected_candidates = _select_diversified_top_movers(candidates, _TOP_MOVERS_MAX_SYMBOLS)
         result: Dict[str, Dict[str, Any]] = {}
-        for sym, raw_pct, pct, vol, last_price in selected_candidates:
+        for sym, raw_pct, pct, vol, last_price in candidates[:_TOP_MOVERS_MAX_SYMBOLS]:
             result[sym] = {
                 'pct_change': raw_pct,
                 'abs_pct': pct,
@@ -34375,82 +33149,20 @@ def _get_top_movers_direct_trade_candidates(
         return []
     open_positions = bot_config.get('open_positions') or {}
     open_symbols = {str(p.get('symbol') or '').upper() for p in open_positions.values()} if isinstance(open_positions, dict) else set()
-    open_major_positions = 0
-    if isinstance(open_positions, dict):
-        for tracked in open_positions.values():
-            if not isinstance(tracked, dict):
-                continue
-            if str(tracked.get('status') or 'open').lower() not in {'open', ''}:
-                continue
-            if str(tracked.get('symbol') or '').upper() in _TOP_MOVERS_MAJOR_SYMBOLS:
-                open_major_positions += 1
-
-    # Micro-account balance check: filter out symbols not viable for the account size
-    _dm_bal = max(
-        _safe_float(bot_config.get('accountBalance'), 0.0),
-        _safe_float(bot_config.get('accountEquity'), 0.0),
-        _safe_float(bot_config.get('initialBalance'), 0.0),
-    )
-    _dm_is_micro = (
-        0 < _dm_bal < 20.0
-        and str(bot_config.get('mode') or '').strip().lower() == 'live'
-        and not spot
-    )
-
     min_pct = float(bot_config.get('topMoverMinChangePct', 4.0))  # configurable, default 4%
-    major_cap = max(0, min(2, int(_safe_float(bot_config.get('topMoverDirectMaxMajors', 1), 1))))
-    cooldown_minutes = max(0.0, _safe_float(bot_config.get('topMoverDirectSymbolCooldownMinutes', 15.0), 15.0))
-    cooldown_map = bot_config.get('topMoverDirectCooldownUntil') if isinstance(bot_config.get('topMoverDirectCooldownUntil'), dict) else {}
-    now = datetime.now()
-
     candidates = []
     for sym, data in movers.items():
-        sym_upper = str(sym).upper()
-        if sym_upper in open_symbols:
+        if sym.upper() in open_symbols:
             continue  # already holding this symbol
         if data['abs_pct'] < min_pct:
             continue
-        # Micro-account: skip symbols whose per-unit price would make the minimum
-        # notional unachievable within the bot's margin budget
-        if _dm_is_micro and not _is_symbol_viable_for_micro_account(
-            sym_upper, data.get('last_price', 0.0), _dm_bal
-        ):
-            continue
-
-        cooldown_until_raw = cooldown_map.get(sym_upper)
-        if cooldown_until_raw:
-            try:
-                cooldown_until = datetime.fromisoformat(str(cooldown_until_raw))
-                if now < cooldown_until:
-                    continue
-            except Exception:
-                pass
-
-        if (
-            sym_upper in _TOP_MOVERS_MAJOR_SYMBOLS
-            and major_cap > 0
-            and open_major_positions >= major_cap
-            and any(str(_sym).upper() not in _TOP_MOVERS_MAJOR_SYMBOLS for _sym in movers.keys())
-        ):
-            continue
-
         candidates.append({
-            'symbol': sym_upper,
+            'symbol': sym,
             'direction': data['direction'],
             'pct_change': data['pct_change'],
             'volume_usdt': data['volume_usdt'],
             'last_price': data['last_price'],
-            'cooldown_minutes': cooldown_minutes,
         })
-
-    # Prefer alt movers before BTC/ETH to reduce concentration when both qualify.
-    candidates.sort(
-        key=lambda c: (
-            str(c.get('symbol') or '').upper() in _TOP_MOVERS_MAJOR_SYMBOLS,
-            -_safe_float(c.get('pct_change'), 0.0),
-            -_safe_float(c.get('volume_usdt'), 0.0),
-        )
-    )
     return candidates
 
 
@@ -34479,9 +33191,6 @@ DEFAULT_PROFIT_PROTECTION_CONFIG = {
     'stallSignalStrengthFloor': 55.0,
     'stallMinTpProgress': 0.70,
     'minimumHoldMinutes': 20.0,       # Hold trades for at least 20 min before profit protection can close (allows trends to develop)
-    'negativeTradeFloorEnabled': True,
-    'negativeTradeFloorMinAgeMinutes': 8.0,
-    'negativeTradeFloorShareOfHardLoss': 0.65,
 }
 
 
@@ -34909,39 +33618,6 @@ def _normalize_profit_protection_config(config: Optional[Dict[str, Any]]) -> Dic
         ),
     )
     normalized['minimumHoldMinutes'] = max(0.0, min(60.0, _safe_float(raw.get('minimumHoldMinutes', raw.get('minimum_hold_minutes', normalized.get('minimumHoldMinutes', 1.0))), normalized.get('minimumHoldMinutes', 1.0))))
-    normalized['negativeTradeFloorEnabled'] = _coerce_bool(
-        raw.get(
-            'negativeTradeFloorEnabled',
-            raw.get('negative_trade_floor_enabled', normalized.get('negativeTradeFloorEnabled', True)),
-        ),
-        normalized.get('negativeTradeFloorEnabled', True),
-    )
-    normalized['negativeTradeFloorMinAgeMinutes'] = max(
-        0.0,
-        min(
-            60.0,
-            _safe_float(
-                raw.get(
-                    'negativeTradeFloorMinAgeMinutes',
-                    raw.get('negative_trade_floor_min_age_minutes', normalized.get('negativeTradeFloorMinAgeMinutes', 8.0)),
-                ),
-                normalized.get('negativeTradeFloorMinAgeMinutes', 8.0),
-            ),
-        ),
-    )
-    normalized['negativeTradeFloorShareOfHardLoss'] = max(
-        0.25,
-        min(
-            0.95,
-            _safe_float(
-                raw.get(
-                    'negativeTradeFloorShareOfHardLoss',
-                    raw.get('negative_trade_floor_share_of_hard_loss', normalized.get('negativeTradeFloorShareOfHardLoss', 0.65)),
-                ),
-                normalized.get('negativeTradeFloorShareOfHardLoss', 0.65),
-            ),
-        ),
-    )
     normalized['peakProfitHardLockShare'] = max(
         MIN_PEAK_PROFIT_LOCK_SHARE,
         _safe_float(normalized.get('peakProfitHardLockShare'), MIN_PEAK_PROFIT_LOCK_SHARE),
@@ -35231,12 +33907,12 @@ def _resolve_profit_protection_for_symbol(
     ):
         is_btc_runner = base_symbol in {'BTCUSD', 'BTCUSDT'}
         resolved['activationMinProfit'] = max(
-            0.18 if is_btc_runner else 0.12,
-            min(_safe_float(resolved.get('activationMinProfit'), 2.0), 0.30 if is_btc_runner else 0.22),
+            0.35 if is_btc_runner else 0.28,
+            min(_safe_float(resolved.get('activationMinProfit'), 2.0), 0.55 if is_btc_runner else 0.45),
         )
         resolved['minLockedProfit'] = max(
-            0.08,
-            min(_safe_float(resolved.get('minLockedProfit'), 1.0), 0.14 if is_btc_runner else 0.12),
+            0.18,
+            min(_safe_float(resolved.get('minLockedProfit'), 1.0), 0.30 if is_btc_runner else 0.25),
         )
         resolved['peakProfitHardLockShare'] = max(
             _safe_float(resolved.get('peakProfitHardLockShare'), 0.95),
@@ -35244,19 +33920,19 @@ def _resolve_profit_protection_for_symbol(
         )
         resolved['retraceClosePercent'] = min(_safe_float(resolved.get('retraceClosePercent'), 35.0), 8.0 if is_btc_runner else 10.0)
         resolved['breakEvenBufferProfit'] = max(
-            0.10,
-            min(_safe_float(resolved.get('breakEvenBufferProfit'), 2.0), 0.16 if is_btc_runner else 0.14),
+            0.20,
+            min(_safe_float(resolved.get('breakEvenBufferProfit'), 2.0), 0.30 if is_btc_runner else 0.25),
         )
-        resolved['breakEvenActivationShare'] = min(_safe_float(resolved.get('breakEvenActivationShare'), 0.5), 0.14 if is_btc_runner else 0.12)
-        resolved['minimumHoldMinutes'] = min(_safe_float(resolved.get('minimumHoldMinutes'), 20.0), 1.0 if is_btc_runner else 0.75)
+        resolved['breakEvenActivationShare'] = min(_safe_float(resolved.get('breakEvenActivationShare'), 0.5), 0.18 if is_btc_runner else 0.16)
+        resolved['minimumHoldMinutes'] = min(_safe_float(resolved.get('minimumHoldMinutes'), 20.0), 2.0 if is_btc_runner else 1.5)
         resolved['protectedSymbolCooldownMinutes'] = max(_safe_float(resolved.get('protectedSymbolCooldownMinutes'), 5.0), 8.0)
         resolved['neverNegativeActivationProfit'] = max(
-            0.12,
-            min(_safe_float(resolved.get('neverNegativeActivationProfit'), 1.0), 0.18 if is_btc_runner else 0.15),
+            0.20,
+            min(_safe_float(resolved.get('neverNegativeActivationProfit'), 1.0), 0.30 if is_btc_runner else 0.25),
         )
         resolved['neverNegativeFloorProfit'] = max(
-            0.05,
-            min(_safe_float(resolved.get('neverNegativeFloorProfit'), 0.25), 0.08 if is_btc_runner else 0.07),
+            0.08,
+            min(_safe_float(resolved.get('neverNegativeFloorProfit'), 0.25), 0.15 if is_btc_runner else 0.12),
         )
         resolved['stallProfitGivebackPercent'] = min(_safe_float(resolved.get('stallProfitGivebackPercent'), 30.0), 18.0)
         resolved['stallSignalStrengthFloor'] = max(_safe_float(resolved.get('stallSignalStrengthFloor'), 55.0), 58.0)
@@ -35897,7 +34573,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         tracked['profitProtectionBucket'] = effective_protection.get('volatilityBucket')
         # Persist peakProfit and lockedProfitFloor to trade_data so backend restarts don't reset them
         try:
-            _pp_conn = get_db_connection()
+            _pp_conn = build_sqlite_connection(timeout=10.0)
             _pp_conn.execute(
                 "UPDATE trades SET trade_data = json_set(COALESCE(trade_data, '{}'), "
                 "'$.peakProfit', ?, '$.lockedProfitFloor', ?), updated_at = ? "
@@ -35911,14 +34587,6 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             pass  # Non-critical — in-memory value is still correct
 
         peak_profit = _safe_float(tracked.get('peakProfit'), 0.0)
-        effective_meaningful_profit_peak = meaningful_profit_peak
-        if peak_profit > 0 and meaningful_profit_peak > peak_profit:
-            # When configured arming thresholds are above observed peak profit,
-            # keep protection realistic so strong but smaller winners can still lock.
-            effective_meaningful_profit_peak = min(
-                meaningful_profit_peak,
-                max(0.05, round(peak_profit * 0.88, 2)),
-            )
         hard_peak_lock_share = _safe_float(effective_protection.get('peakProfitHardLockShare'), 0.9)
         hard_peak_lock_floor = round(max(0.0, peak_profit * hard_peak_lock_share), 2)
         if hard_peak_lock_floor > 0:
@@ -36035,18 +34703,18 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
 
         # ── HARD LOSS CAP: force-close if per-trade loss exceeds limit ──────────
         _hard_loss_limit, _stale_loss_threshold = _resolve_hard_loss_limits(bot_config)
-        _currency_label = str(bot_config.get('displayCurrency') or 'USD').upper()
-        if base_symbol == 'GBPUSD' and _currency_label not in {'ZAR'}:
+        if base_symbol == 'GBPUSD':
             _hard_loss_limit = min(_hard_loss_limit, 7.5)
             _stale_loss_threshold = max(_stale_loss_threshold, -2.25)
-        if peak_profit >= effective_meaningful_profit_peak:
+        if peak_profit >= meaningful_profit_peak:
             # Once a trade has already produced meaningful profit, stop allowing it
             # to consume the full initial hard-loss budget on a reversal.
             _hard_loss_limit = min(
                 _hard_loss_limit,
-                max(0.5, round(max(effective_meaningful_profit_peak, peak_profit) * 0.25, 2)),
+                max(0.5, round(max(meaningful_profit_peak, peak_profit) * 0.25, 2)),
             )
         _catastrophic_loss_limit = max(_hard_loss_limit * 1.5, _hard_loss_limit + 1.0)
+        _currency_label = str(bot_config.get('displayCurrency') or 'USD').upper()
         _locked_profit_floor = _safe_float(tracked.get('lockedProfitFloor'), 0.0)
         _profit_retrace_guard_armed = (
             bool(tracked.get('profitProtectionArmed'))
@@ -36061,29 +34729,6 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             protection_hold_satisfied
             or (is_exness_forex_position and time_in_position >= _hard_loss_min_age)
         )
-        negative_floor_enabled = _coerce_bool(effective_protection.get('negativeTradeFloorEnabled', True), True)
-        negative_floor_min_age = max(
-            0.0,
-            _safe_float(effective_protection.get('negativeTradeFloorMinAgeMinutes', 8.0), 8.0),
-        )
-        negative_floor_share = max(
-            0.25,
-            min(0.95, _safe_float(effective_protection.get('negativeTradeFloorShareOfHardLoss', 0.65), 0.65)),
-        )
-        negative_trade_floor = -max(0.25, round(_hard_loss_limit * negative_floor_share, 2))
-        if (
-            not close_reason
-            and negative_floor_enabled
-            and peak_profit <= 0
-            and current_profit <= negative_trade_floor
-            and time_in_position >= negative_floor_min_age
-            and not _recent_close_request(tracked)
-        ):
-            close_reason = 'NEGATIVE_TRADE_FLOOR_LOCK'
-            logger.info(
-                f"[LOSS] Bot {bot_id}: position {ticket} hit negative trade floor "
-                f"({current_profit:.2f} {_currency_label} <= {negative_trade_floor:.2f} {_currency_label})"
-            )
         if (
             not close_reason
             and current_profit < -_hard_loss_limit
@@ -36125,8 +34770,8 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         current_signal_strength = _safe_float(signal_eval.get('strength'), 0.0)
         tp_progress_ratio = _estimate_take_profit_progress_ratio(tracked, current_position)
         locked_floor = _safe_float(tracked.get('lockedProfitFloor'), 0.0)
-        upswing_retrace_floor = max(effective_meaningful_profit_peak * 0.5, round(peak_profit * UPSWING_RETRACE_CLOSE_SHARE, 2))
-        spike_retrace_floor = max(effective_meaningful_profit_peak * 0.5, round(peak_profit * SPIKE_RETRACE_CLOSE_SHARE, 2))
+        upswing_retrace_floor = max(meaningful_profit_peak * 0.5, round(peak_profit * UPSWING_RETRACE_CLOSE_SHARE, 2))
+        spike_retrace_floor = max(meaningful_profit_peak * 0.5, round(peak_profit * SPIKE_RETRACE_CLOSE_SHARE, 2))
         stall_profit_giveback_percent = _safe_float(effective_protection.get('stallProfitGivebackPercent'), 30.0)
         stall_retrace_floor = max(0.25, round(peak_profit * (1.0 - (stall_profit_giveback_percent / 100.0)), 2))
         never_negative_activation_profit = max(0.25, _safe_float(effective_protection.get('neverNegativeActivationProfit'), 1.0))
@@ -36140,38 +34785,6 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             5.0,
             _safe_float(tracked.get('pyramidMaxHoldMinutes'), PYRAMID_ADDON_MAX_HOLD_MINUTES),
         )
-
-        if not close_reason:
-            if (
-                early_profit_exit_allowed
-                and peak_profit > 0
-                and peak_profit < meaningful_profit_peak
-                and current_profit > 0
-                and not _recent_close_request(tracked)
-            ):
-                early_capture_floor = max(0.02, round(peak_profit * 0.88, 2))
-                early_capture_retrace = max(0.0, (peak_profit - current_profit) / max(peak_profit, 1e-9))
-                early_capture_min_peak = max(0.12, meaningful_profit_peak * 0.45)
-                early_capture_signal_floor = max(
-                    45.0,
-                    _safe_float(effective_protection.get('stallSignalStrengthFloor'), 55.0) - 8.0,
-                )
-                signal_stalling = (
-                    current_signal_strength < early_capture_signal_floor
-                    or _signal_reversed_for_position(tracked.get('type', ''), current_signal)
-                )
-                if (
-                    peak_profit >= early_capture_min_peak
-                    and current_profit <= early_capture_floor
-                    and early_capture_retrace >= 0.10
-                    and signal_stalling
-                ):
-                    close_reason = 'EARLY_PEAK_PROFIT_CAPTURE'
-                    logger.info(
-                        f"[TP] Bot {bot_id}: position {ticket} early peak capture on {symbol} "
-                        f"(peak={peak_profit:.2f} {_currency_label}, current={current_profit:.2f} {_currency_label}, "
-                        f"configured_arm={meaningful_profit_peak:.2f}, adaptive_arm={effective_meaningful_profit_peak:.2f})"
-                    )
 
         if not close_reason:
             margin_take_profit_target = max(
@@ -36192,9 +34805,9 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if is_exness_forex_position or is_exness_index_runner_position:
                 # Arm at meaningful_profit_peak (R5) — not break_even_activation_amount (R20).
                 # A trade that peaks at R18 and retraces deserves protection even if R20 was never hit.
-                hard_peak_lock_eligible = peak_profit >= effective_meaningful_profit_peak
+                hard_peak_lock_eligible = peak_profit >= meaningful_profit_peak
             elif is_binance_position:
-                hard_peak_lock_eligible = peak_profit >= effective_meaningful_profit_peak
+                hard_peak_lock_eligible = peak_profit >= meaningful_profit_peak
             else:
                 hard_peak_lock_eligible = peak_profit > 0
             if (
@@ -36224,13 +34837,13 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             zero_loss_lock_active = effective_protection.get('zeroLossLockEnabled', True)
             # Only suppress zero-loss lock for trend-following when peak is truly small (< R5 meaningful floor).
             # Peaks of R5+ are real profit that must be protected regardless of strategy width.
-            if allow_wider_trend_exits and peak_profit < effective_meaningful_profit_peak:
+            if allow_wider_trend_exits and peak_profit < meaningful_profit_peak:
                 zero_loss_lock_active = False
 
             zero_loss_hold_satisfied = (
                 protection_hold_satisfied
                 if (is_exness_forex_position or is_exness_index_runner_position)
-                else (protection_hold_satisfied or peak_profit >= effective_meaningful_profit_peak)
+                else (protection_hold_satisfied or peak_profit >= meaningful_profit_peak)
             )
 
             if zero_loss_lock_active and peak_profit > 0 and current_profit <= 0 and zero_loss_hold_satisfied and not _recent_close_request(tracked):
@@ -36239,10 +34852,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         if not close_reason:
             stall_signal_strength_floor = _safe_float(effective_protection.get('stallSignalStrengthFloor'), 55.0)
             stall_tp_progress_floor = _safe_float(effective_protection.get('stallMinTpProgress'), 0.70)
-            stall_exit_hold_satisfied = (
-                protection_hold_satisfied 
-                or time_in_position >= TRADE_STALL_EXIT_MIN_HOLD_MINUTES  # ✅ CONFIGURABLE: Increased to 15 min default
-            )
+            stall_exit_hold_satisfied = protection_hold_satisfied or time_in_position >= min(12.0, max(5.0, protection_min_hold_minutes * 0.35))
             signal_follow_through = (
                 current_signal_strength >= stall_signal_strength_floor
                 and not _signal_reversed_for_position(tracked.get('type', ''), current_signal)
@@ -36250,7 +34860,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             tp_follow_through = tp_progress_ratio is not None and tp_progress_ratio >= stall_tp_progress_floor
             if (
                 stall_exit_hold_satisfied
-                and peak_profit >= effective_meaningful_profit_peak
+                and peak_profit >= meaningful_profit_peak
                 and current_profit > 0
                 and current_profit <= stall_retrace_floor
                 and (not tp_follow_through or not signal_follow_through)
@@ -36261,7 +34871,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         if not close_reason:
             if (
                 protection_hold_satisfied
-                and peak_profit >= effective_meaningful_profit_peak
+                and peak_profit >= meaningful_profit_peak
                 and current_profit > 0
                 and current_profit <= spike_retrace_floor
                 and not _recent_close_request(tracked)
@@ -36272,7 +34882,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if (
                 early_profit_exit_allowed
                 and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
-                and peak_profit >= effective_meaningful_profit_peak
+                and peak_profit >= meaningful_profit_peak
                 and current_profit > 0
                 and current_profit <= upswing_retrace_floor
                 and not _recent_close_request(tracked)
@@ -36283,7 +34893,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             if (
                 early_profit_exit_allowed
                 and time_in_position >= UPSWING_RETRACE_MIN_AGE_MINUTES
-                and peak_profit >= effective_meaningful_profit_peak
+                and peak_profit >= meaningful_profit_peak
                 and current_profit > 0
                 and _signal_reversed_for_position(tracked.get('type', ''), current_signal)
                 and not _recent_close_request(tracked)
@@ -36297,13 +34907,13 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             near_tp_min_progress = 0.70  # At least 70% of the way to TP
             near_tp_max_progress = 0.95  # But not yet at TP (give room to hit it if momentum strong)
             momentum_fade_signal_floor = 60.0  # Signal strength must drop below this
-            near_tp_min_hold = TRADE_NEAR_TP_MIN_HOLD_MINUTES  # ✅ CONFIGURABLE: Allow more time to reach TP
+            near_tp_min_hold = 3.0  # At least 3 minutes in the trade
             
             if (
                 early_profit_exit_allowed
                 and tp_progress_ratio is not None
                 and near_tp_min_progress <= tp_progress_ratio < near_tp_max_progress
-                and current_profit > effective_meaningful_profit_peak
+                and current_profit > meaningful_profit_peak
                 and time_in_position >= near_tp_min_hold
                 and current_signal_strength < momentum_fade_signal_floor
                 and not _recent_close_request(tracked)
@@ -36330,13 +34940,13 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         # Fires when the signal has gone neutral/flat and the position is going nowhere.
         # Applies to ALL selected symbols — not just movers. Prevents capital being tied
         # up in symbols that have stopped moving, freeing the bot to find better setups.
-        _stagnation_min_hold = TRADE_MOMENTUM_STAGNATION_MIN_HOLD_MINUTES  # ✅ CONFIGURABLE: Increased to 30 min default
+        _stagnation_min_hold = 20.0 if is_exness_forex_position else 12.0
         _stagnation_signal_cap = 35.0   # signal strength below this = symbol has no momentum
         if not close_reason:
             if (
                 not tracked.get('isPyramidAddon')
                 and (protection_hold_satisfied or time_in_position >= _stagnation_min_hold)
-                and peak_profit <= effective_meaningful_profit_peak   # never meaningfully profitable
+                and peak_profit <= meaningful_profit_peak   # never meaningfully profitable
                 and current_profit < 0                     # position is losing (not flat positive)
                 and current_profit > stale_loss_threshold  # not yet at stale-loss threshold (that already fires)
                 and (current_signal == 'NEUTRAL' or current_signal_strength < _stagnation_signal_cap)
@@ -36354,7 +34964,7 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
         # (requires stale_loss_threshold to be hit), this fires as soon as the signal reverses
         # against a losing position that never reached meaningful profit.
         # Covers all selected symbols and top-mover adds equally.
-        _decline_min_hold = TRADE_MOMENTUM_DECLINE_MIN_HOLD_MINUTES  # ✅ CONFIGURABLE: Increased to 15 min default
+        _decline_min_hold = 8.0 if is_exness_forex_position else 5.0
         _decline_loss_trigger = stale_loss_threshold * 0.5  # half of stale threshold — fires earlier
         if not close_reason:
             if (
@@ -36623,15 +35233,11 @@ def _clamp_int_value(field_name: str, raw_value, minimum: int, maximum: int, def
 
 
 def _resolve_assisted_cycle_symbol_cap(bot_config: Dict[str, Any]) -> int:
-    normalized_broker = canonicalize_broker_name(
-        bot_config.get('brokerName') or bot_config.get('broker_type') or ''
-    )
-    binance_default = 25 if normalized_broker == 'Binance' else DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE
-    configured_cap = bot_config.get('assistedCycleSymbolCap', binance_default)
+    configured_cap = bot_config.get('assistedCycleSymbolCap', DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE)
     try:
         cycle_cap = int(round(float(configured_cap)))
     except (TypeError, ValueError):
-        cycle_cap = binance_default
+        cycle_cap = DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE
     return max(1, min(MAX_ASSISTED_SYMBOLS_PER_CYCLE, cycle_cap))
 
 
@@ -36650,15 +35256,6 @@ def _safe_float(raw_value, default_value: float = 0.0) -> float:
         return float(raw_value)
     except (TypeError, ValueError):
         return default_value
-
-
-def _trade_net_profit_value(trade: Dict[str, Any]) -> float:
-    if not isinstance(trade, dict):
-        return 0.0
-    gross = _safe_float(trade.get('profit', trade.get('pnl', 0.0)), 0.0)
-    commission = _safe_float(trade.get('commission', 0.0), 0.0)
-    swap = _safe_float(trade.get('swap', 0.0), 0.0)
-    return gross + commission + swap
 
 
 def _is_meaningful_broker_trade(trade: Dict[str, Any]) -> bool:
@@ -37288,24 +35885,12 @@ def derive_binance_default_trade_amount(
     normalized_market = str(market_name or 'spot').strip().lower()
     safe_positions = max(1, min(8, int(round(_safe_float(max_open_positions, 3) or 3))))
 
-    # Small live account: keep sizing conservative to prevent rapid equity drain.
+    # Small live account: use 20% of balance per trade (meaningful sizing for futures).
     # Thresholds in native currency: <200 USD/USDT, <3000 ZAR.
     small_account_threshold = 3000.0 if normalized_currency == 'ZAR' else 200.0
     if is_live and safe_balance < small_account_threshold:
-        effective_slots = max(1, min(safe_positions, 2))
-        if normalized_market == 'futures':
-            risk_ratio = 0.12
-            hard_cap_ratio = 0.10
-            min_trade = 2.0
-        else:
-            risk_ratio = 0.18
-            hard_cap_ratio = 0.16
-            min_trade = 4.0
-
-        per_trade_target = safe_balance * risk_ratio / effective_slots
-        per_trade_cap = safe_balance * hard_cap_ratio
-        result = round(min(per_trade_target, per_trade_cap), 2)
-        return max(result, min_trade)
+        result = round(safe_balance * 0.20, 2)
+        return max(result, 1.0)
 
     quote_floor_map = {
         'USD': 40.0,
@@ -37733,11 +36318,9 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
     )
     management_mode = str(bot_config.get('managementMode') or 'assisted').strip().lower()
-    sustained_profit_state = _resolve_sustained_profit_state(bot_config)
-    growth_allowed = bool(sustained_profit_state.get('allowed'))
 
     if broker_name == 'Binance' and management_mode == 'manual':
-        if growth_allowed and top_strength >= 80.0:
+        if top_strength >= 80.0:
             scanner_market_multiplier = 1.08
             reasons.append('manual Binance futures sizing keeps slight high-signal bias')
         return {
@@ -37760,7 +36343,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         }
 
     if recent_count >= PERFORMANCE_SIZING_MIN_SAMPLE:
-        if recent_profit > 0 and recent_win_rate >= 65.0 and growth_allowed:
+        if recent_profit > 0 and recent_win_rate >= 65.0:
             hot_bonus = min(0.18, (recent_win_rate - 60.0) / 100.0)
             multiplier += hot_bonus
             state = 'hot'
@@ -37773,7 +36356,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
             state = 'defensive'
             reasons.append(f"recent win rate {recent_win_rate:.0f}%")
 
-    if consecutive_wins >= 3 and growth_allowed:
+    if consecutive_wins >= 3:
         multiplier += 0.07
         state = 'hot'
         reasons.append(f'{consecutive_wins} trade win streak')
@@ -37782,7 +36365,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         state = 'defensive'
         reasons.append(f'{consecutive_losses} trade loss streak')
 
-    if qualifying_opportunities >= 3 and top_strength >= 75.0 and state != 'defensive' and growth_allowed:
+    if qualifying_opportunities >= 3 and top_strength >= 75.0 and state != 'defensive':
         multiplier += 0.08
         state = 'hot'
         reasons.append(f'{qualifying_opportunities} strong scanner setups')
@@ -37793,30 +36376,30 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
 
     # Scanner-driven capital allocation layer. This is the part that lets the bot
     # press harder in strong market periods and scale down when market quality fades.
-    if growth_allowed and qualifying_opportunities >= 4 and top_strength >= 85.0 and top_average_strength >= 78.0:
+    if qualifying_opportunities >= 4 and top_strength >= 85.0 and top_average_strength >= 78.0:
         scanner_market_multiplier = 1.65
         reasons.append(f'scanner regime very strong ({qualifying_opportunities} setups, avg {top_average_strength:.0f})')
-    elif growth_allowed and qualifying_opportunities >= 3 and top_strength >= 80.0 and top_average_strength >= 74.0:
+    elif qualifying_opportunities >= 3 and top_strength >= 80.0 and top_average_strength >= 74.0:
         scanner_market_multiplier = 1.42
         reasons.append(f'scanner regime strong ({qualifying_opportunities} setups, avg {top_average_strength:.0f})')
-    elif growth_allowed and qualifying_opportunities >= 2 and top_strength >= 72.0:
+    elif qualifying_opportunities >= 2 and top_strength >= 72.0:
         scanner_market_multiplier = 1.22
         reasons.append(f'scanner regime supportive ({qualifying_opportunities} setups)')
-    elif growth_allowed and qualifying_opportunities == 1 and top_strength >= 68.0:
+    elif qualifying_opportunities == 1 and top_strength >= 68.0:
         scanner_market_multiplier = 1.08
         reasons.append('single high-quality scanner setup')
     elif qualifying_opportunities == 0:
         scanner_market_multiplier = 0.82
         reasons.append('scanner found no qualified setups')
 
-    if growth_allowed and recent_profit > 0 and recent_win_rate >= 60.0 and scanner_market_multiplier > 1.0:
+    if recent_profit > 0 and recent_win_rate >= 60.0 and scanner_market_multiplier > 1.0:
         scanner_market_multiplier += 0.10
         reasons.append('recent profits confirm scanner momentum')
     elif recent_profit < 0 and recent_win_rate <= 45.0:
         scanner_market_multiplier = min(scanner_market_multiplier, 0.78)
         reasons.append('recent losses override aggressive scanner sizing')
 
-    if growth_allowed and aggregate_open_profit > 0 and positive_open_positions > 0 and top_strength >= 78.0:
+    if aggregate_open_profit > 0 and positive_open_positions > 0 and top_strength >= 78.0:
         scanner_market_multiplier += 0.08
         reasons.append('open positions support increasing capital deployment')
     elif aggregate_open_profit < 0:
@@ -37838,7 +36421,6 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
 
     if (
         open_positions
-        and growth_allowed
         and aggregate_open_profit >= UPSWING_SCALE_MIN_OPEN_PROFIT
         and positive_open_positions > 0
         and top_strength >= UPSWING_SCALE_MIN_SIGNAL_STRENGTH
@@ -37854,7 +36436,7 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
         state = 'defensive'
         reasons.append(f'open P/L pressure {aggregate_open_profit:.2f}')
 
-    if growth_allowed and best_open_peak >= UPSWING_RETRACE_MIN_PEAK_PROFIT and aggregate_open_profit > 0 and state != 'defensive':
+    if best_open_peak >= UPSWING_RETRACE_MIN_PEAK_PROFIT and aggregate_open_profit > 0 and state != 'defensive':
         multiplier += 0.05
         reasons.append(f'open trade peak reached {best_open_peak:.2f}')
 
@@ -37880,7 +36462,6 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
     if (
         is_live
         and not guarded_small_live
-        and growth_allowed
         and state == 'hot'
         and recent_profit > 0
         and recent_win_rate >= 68.0
@@ -37896,15 +36477,6 @@ def _build_performance_sizing_state(bot_config: Dict[str, Any], volatility_level
     scanner_market_multiplier = min(scanner_market_multiplier, scanner_boost_cap)
     if guarded_small_live:
         reasons.append('small live account cap')
-
-    if not growth_allowed:
-        if multiplier > 1.0:
-            multiplier = 1.0
-            if state != 'defensive':
-                state = 'normal'
-        if scanner_market_multiplier > 1.0:
-            scanner_market_multiplier = 1.0
-        reasons.append(str(sustained_profit_state.get('reason') or 'growth multiplier locked'))
 
     multiplier = max(PERFORMANCE_SIZING_MAX_REDUCTION, min(multiplier, PERFORMANCE_SIZING_MAX_BOOST))
     if abs(multiplier - 1.0) < 0.03:
@@ -39049,7 +37621,7 @@ def create_bot():
                             'api_key': credential_data.get('api_key'),
                             'api_secret': credential_data.get('password'),
                             'account_number': account_number,
-                            'server': _resolve_binance_server_for_credential(credential_data, account_number),
+                            'server': credential_data.get('server') or 'spot',
                             'is_live': bool(is_live),
                             'prefetch_account_info': False,
                             'auth_timeout': 5,
@@ -39154,12 +37726,7 @@ def create_bot():
             trading_mode = sanitized_risk_config['tradingMode']
             trading_interval = sanitized_risk_config['tradingInterval']
             poll_interval = sanitized_risk_config['pollInterval']
-            trading_enabled = _coerce_bool(merged_bot_data.get('enabled', True), True)
-            if auto_start and not trading_enabled:
-                logger.info(
-                    f"Bot {bot_id}: autoStart=true overrides enabled=false so the bot can start immediately"
-                )
-                trading_enabled = True
+            trading_enabled = merged_bot_data.get('enabled', True)
             auto_adaptation_enabled = _coerce_bool(merged_bot_data.get('autoAdaptationEnabled', True), True)
             selected_preset = selected_preset or (str(merged_bot_data.get('selectedPreset') or '').strip() or None)
             preset_name = str(merged_bot_data.get('presetName') or preset_name_from_defaults or '').strip() or None
@@ -39405,34 +37972,20 @@ def create_bot():
 
             logger.info(f"✅ Created bot {bot_id} for user {user_id}")
             logger.info(f"   Broker: {broker_name} | Account: {account_number} | Mode: {mode}")
-            logger.info(f"   RETURN -> {{'botId': '{bot_id}', 'mode': '{mode}', 'broker': '{broker_name}', 'user_id': '{user_id}'}}")
 
-            startup_launch_error = None
-            launch_mode = 'disabled'
             if auto_start:
                 running_bots[bot_id] = True
                 bot_stop_flags[bot_id] = False
                 mark_bot_start_pending(bot_id)
 
                 # ==================== WORKER POOL DISPATCH ====================
-                # ✅ FIX: Prepare credentials BEFORE launching bot (same as in start_enabled_bots_on_startup)
-                bot_credentials_for_startup = _get_bot_thread_credentials(active_bots[bot_id])
-                try:
-                    launch_mode = _queue_or_launch_bot_runtime(
-                        bot_id,
-                        user_id,
-                        active_bots[bot_id],
-                        bot_credentials_for_startup,
-                        startup_delay=0.5,
-                        log_label='Bot',
-                    )
-                except Exception as launch_error:
-                    startup_launch_error = str(launch_error)
-                    clear_bot_start_pending(bot_id)
-                    running_bots[bot_id] = False
-                    bot_stop_flags[bot_id] = True
-                    record_bot_startup_error(bot_id, startup_launch_error)
-                    logger.error(f"❌ Bot {bot_id}: Auto-start launch failed after creation: {startup_launch_error}")
+                _queue_or_launch_bot_runtime(
+                    bot_id,
+                    user_id,
+                    active_bots[bot_id],
+                    startup_delay=0.5,
+                    log_label='Bot',
+                )
             else:
                 running_bots[bot_id] = False
                 bot_stop_flags[bot_id] = False
@@ -39473,7 +38026,7 @@ def create_bot():
                             'api_key': credential_data.get('api_key'),
                             'api_secret': credential_data.get('password'),
                             'account_number': account_number,
-                            'server': _resolve_binance_server_for_credential(credential_data, account_number),
+                            'server': credential_data.get('server') or 'spot',
                             'is_live': bool(is_live),
                             'prefetch_account_info': False,
                             'auth_timeout': 4,
@@ -39548,21 +38101,8 @@ def create_bot():
                     'allowAdaptiveRawFallback': allow_adaptive_raw_fallback,
                 },
                 'warnings': (sanitized_risk_config or {}).get('warnings', []),
-                'message': (
-                    'Bot ' + bot_id + ' created and starting...'
-                    if auto_start and not startup_launch_error
-                    else (
-                        'Bot ' + bot_id + ' created but auto-start failed. Use /api/bot/start to retry.'
-                        if startup_launch_error
-                        else 'Bot ' + bot_id + ' created and waiting to be started'
-                    )
-                ),
-                'status': (
-                    'STARTING' if auto_start and not startup_launch_error else
-                    ('START_FAILED' if startup_launch_error else 'INACTIVE')
-                ),
-                'launchMode': launch_mode,
-                'startupError': startup_launch_error,
+                'message': ('Bot ' + bot_id + ' created ' + ('and starting...' if auto_start else 'and waiting to be started')), 
+                'status': 'STARTING' if auto_start else 'INACTIVE'
             }), 201
     except TimeoutError as e:
         logger.warning(f"Bot creation busy: {e}")
@@ -39868,8 +38408,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         def is_market_open_for_symbol(symbol, mt5_conn=None):
             """Check if market is open for the given symbol"""
             try:
-                now_utc = datetime.utcnow()
-                current_day = now_utc.weekday()  # 0=Monday, 6=Sunday
                 # ==================== CRYPTO 24/7 OVERRIDE ====================
                 # Crypto symbols (BTC, ETH, etc) trade 24/7 - bypass day-of-week check
                 symbol_upper = symbol.upper()
@@ -39880,17 +38418,13 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                 
                 symbol_cat = get_symbol_category(symbol)
                 category_hours = market_hours.get(symbol_cat, market_hours['FOREX'])
-
-                # Exness non-crypto instruments are generally unavailable on weekends.
-                # Keep bots idle until weekday sessions resume to avoid repeated failed cycles.
-                allowed_days = category_hours['days']
-                if normalized_broker == 'Exness' and symbol_cat in {'FOREX', 'INDICES', 'STOCKS', 'COMMODITIES'}:
-                    allowed_days = [0, 1, 2, 3, 4]
-
+                
+                now_utc = datetime.utcnow()
+                current_day = now_utc.weekday()  # 0=Monday, 6=Sunday
                 current_time = (now_utc.hour, now_utc.minute)
                 
                 # Check if today is a trading day
-                if current_day not in allowed_days:
+                if current_day not in category_hours['days']:
                     return False, f"Market closed (day {current_day} not in trading days)"
                 
                 open_time = category_hours['open']
@@ -39911,7 +38445,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         
         while not bot_stop_flags.get(bot_id, False):
             try:
-                # Emergency kill switch is deprecated; allow normal loop control via stop flags.
+                if is_user_kill_switch_active(bot_config.get('user_id') or user_id):
+                    logger.warning(f"🛑 Bot {bot_id}: user kill switch active — halting trading loop")
+                    bot_stop_flags[bot_id] = True
+                    bot_config['enabled'] = False
+                    running_bots[bot_id] = False
+                    break
                 trade_cycle += 1
                 logger.info(f"🔄 Bot {bot_id}: Trade cycle #{trade_cycle} starting at {datetime.now().isoformat()}")
                 
@@ -40608,17 +39147,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             logger.info(f"⏭️ Bot {bot_id}: Skipping {symbol} - {symbol_market_status}")
                             continue
 
-                        # Check profit peak protection before trading this symbol
-                        if PROFIT_PEAK_PROTECTION_AVAILABLE and PROFIT_PEAK_PROTECTION_ENABLED:
-                            should_trade_symbol, peak_reason = should_trade_symbol_with_peak_protection(
-                                bot_config,
-                                symbol,
-                            )
-                            if not should_trade_symbol:
-                                last_order_block_reason = peak_reason
-                                logger.info(f"⏭️ Bot {bot_id}: {peak_reason}")
-                                continue
-
                         bot_config['_lastRiskBlockReason'] = None
                         if not should_trade_symbol_based_on_risk_management(bot_config, symbol):
                             last_order_block_reason = (
@@ -40727,7 +39255,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         today_str = datetime.now().strftime('%Y-%m-%d')
                         _daily_profits_map = bot_config.get('dailyProfits') if isinstance(bot_config.get('dailyProfits'), dict) else {}
                         _today_realized = _safe_float(_daily_profits_map.get(today_str, bot_config.get('dailyProfit', 0.0)), 0.0)
-                        _ta_scale_mult, _atr_scale_mult = _get_profit_scale_multipliers(_today_realized, _acct_balance_for_scale, bot_config)
+                        _ta_scale_mult, _atr_scale_mult = _get_profit_scale_multipliers(_today_realized, _acct_balance_for_scale)
                         # Small-account safety gate: scale DOWN base for very small deposits so
                         # min broker lot/qty does not over-expose the account.
                         # NOTE: skip for Binance futures — the capital-safety-net already caps
@@ -41894,7 +40422,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             if (
                                 _mt5_mult_ctrl.get('enabled')
                                 and _mt5_mult_ctrl.get('multiplier', 1.0) != 1.0
-                                and not (normalized_broker == 'Exness' and not pyramid_decision['allowed'])
+                                and not (normalized_broker == 'Exness' and configured_fixed_trade_volume > 0 and not pyramid_decision['allowed'])
                             ):
                                 _mt5_mult = float(_mt5_mult_ctrl['multiplier'])
                                 adjusted_volume = round(max(0.01, adjusted_volume * _mt5_mult), 4)
@@ -41906,19 +40434,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             bot_config['effectiveMt5PosMultiplier'] = _mt5_mult_ctrl.get('multiplier', 1.0)
                             bot_config['lastMt5PosMultiplierReason'] = _mt5_mult_ctrl.get('reason')
                             bot_config['accountLeverage'] = _mt5_mult_ctrl.get('accountLeverage')
-                            # ────────────────────────────────────────────────────────────────
-
-                            # ── Strategy schedule: preferred days/hours + session phase ──────
-                            _sched_vol, _sched_reasons = _apply_strategy_schedule_to_volume(
-                                adjusted_volume, symbol, bot_config
-                            )
-                            if _sched_vol < adjusted_volume and _sched_reasons:
-                                logger.info(
-                                    f"📅 Bot {bot_id}: Schedule-adjusted {symbol} volume "
-                                    f"{adjusted_volume:.4f} → {_sched_vol:.4f} "
-                                    f"({'; '.join(_sched_reasons)})"
-                                )
-                                adjusted_volume = max(0.01, _sched_vol)
                             # ────────────────────────────────────────────────────────────────
 
                             if normalized_broker == 'Exness':
@@ -42153,7 +40668,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     _set_symbol_entry_lock(
                                         bot_config,
                                         symbol,
-                                        45.0 if validation_block else 20.0,
+                                        8.0 if validation_block else 20.0,
                                         'BROKER_PRECHECK_BLOCK' if validation_block else 'BROKER_RECENT_REJECTED_ENTRY',
                                     )
                                     last_order_block_reason = f"{execution_broker_type} rejected {symbol}: {order_result.get('error') or 'unknown error'}"
@@ -42328,9 +40843,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         'broker': broker_type,
                                     }
 
-                                    trade_conn = None
                                     try:
-                                        trade_conn = get_db_connection()
+                                        trade_conn = build_sqlite_connection(timeout=30.0)
                                         trade_cursor = trade_conn.cursor()
                                         trade_cursor.execute(
                                             "SELECT 1 FROM trades WHERE ticket = ? AND bot_id = ? AND status = 'open' LIMIT 1",
@@ -42359,19 +40873,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 open_trade['timestamp'],
                                                 open_trade.get('broker', broker_type),
                                             ))
-                                        # CRITICAL FIX: Ensure commit happens after INSERT
                                         trade_conn.commit()
-                                        logger.info(f"✅ Bot {bot_id}: Trade record committed to database for {open_trade['ticket']}")
+                                        trade_conn.close()
                                     except Exception as e:
-                                        if trade_conn:
-                                            try:
-                                                trade_conn.rollback()
-                                            except:
-                                                pass
-                                        logger.error(f"Bot {bot_id}: Error storing immediate Binance spot buy fill: {e}", exc_info=True)
-                                    finally:
-                                        if trade_conn:
-                                            trade_conn.close()
+                                        logger.error(f"Bot {bot_id}: Error storing immediate Binance spot buy fill: {e}")
 
                                     trade_history = bot_config.setdefault('tradeHistory', [])
                                     existing_index = next(
@@ -42417,7 +40922,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     # If runtime open_pos missing entry, fall back to DB
                                     if entry_price == 0:
                                         try:
-                                            _ep_conn = get_db_connection()
+                                            _ep_conn = build_sqlite_connection(timeout=10.0)
                                             _ep_cur = _ep_conn.cursor()
                                             _ep_cur.execute(
                                                 "SELECT price, time_open FROM trades WHERE ticket = ? AND bot_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1",
@@ -42466,9 +40971,8 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     }
 
                                     # Update the existing open DB row if found, else insert closed row
-                                    trade_conn = None
                                     try:
-                                        trade_conn = get_db_connection()
+                                        trade_conn = build_sqlite_connection(timeout=30.0)
                                         trade_cursor = trade_conn.cursor()
                                         trade_cursor.execute(
                                             '''UPDATE trades SET profit = ?, status = 'closed', time_close = ?,
@@ -42493,19 +40997,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 closed_trade['timestamp'],
                                                 closed_trade.get('broker', broker_type),
                                             ))
-                                        # CRITICAL FIX: Ensure commit happens after UPDATE/INSERT
                                         trade_conn.commit()
-                                        logger.info(f"✅ Bot {bot_id}: Trade closed and committed to database for {open_ticket}")
+                                        trade_conn.close()
                                     except Exception as e:
-                                        if trade_conn:
-                                            try:
-                                                trade_conn.rollback()
-                                            except:
-                                                pass
-                                        logger.error(f"Bot {bot_id}: Error storing immediate Binance spot SELL: {e}", exc_info=True)
-                                    finally:
-                                        if trade_conn:
-                                            trade_conn.close()
+                                        logger.error(f"Bot {bot_id}: Error storing immediate Binance spot SELL: {e}")
 
                                     # Remove from runtime open_positions
                                     if open_ticket in bot_config.get('open_positions', {}):
@@ -42600,7 +41095,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 }
 
                                 try:
-                                    trade_conn = get_db_connection()
+                                    trade_conn = build_sqlite_connection(timeout=30.0)
                                     trade_cursor = trade_conn.cursor()
                                     trade_id = f"trade_{int(datetime.now().timestamp()*1000)}_{bot_id[-8:]}"
                                     trade_cursor.execute('''
@@ -42624,22 +41119,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         closed_trade['timestamp'],
                                         closed_trade.get('broker', broker_type),
                                     ))
-                                    # CRITICAL FIX: Ensure commit happens after INSERT
                                     trade_conn.commit()
-                                    logger.info(f"✅ Bot {bot_id}: Trade record committed to database")
+                                    trade_conn.close()
                                 except Exception as e:
-                                    if trade_conn:
-                                        try:
-                                            trade_conn.rollback()
-                                        except:
-                                            pass
-                                    logger.error(f"Bot {bot_id}: Error storing Binance spot fill without positions: {e}", exc_info=True)
-                                finally:
-                                    if trade_conn:
-                                        try:
-                                            trade_conn.close()
-                                        except:
-                                            pass
+                                    logger.error(f"Bot {bot_id}: Error storing Binance spot fill without positions: {e}")
 
                                 trade_history = bot_config.setdefault('tradeHistory', [])
                                 existing_index = next(
@@ -42759,7 +41242,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     }
 
                                     try:
-                                        trade_conn = get_db_connection()
+                                        trade_conn = build_sqlite_connection(timeout=30.0)
                                         trade_cursor = trade_conn.cursor()
                                         trade_id = f"trade_{int(datetime.now().timestamp()*1000)}_{bot_id[-8:]}"
                                         trade_cursor.execute('''
@@ -42783,22 +41266,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             closed_trade['timestamp'],
                                             closed_trade.get('broker', broker_type),
                                         ))
-                                        # CRITICAL FIX: Ensure commit happens after INSERT
                                         trade_conn.commit()
-                                        logger.info(f"✅ Bot {bot_id}: Trade record committed to database")
+                                        trade_conn.close()
                                     except Exception as e:
-                                        if trade_conn:
-                                            try:
-                                                trade_conn.rollback()
-                                            except:
-                                                pass
-                                        logger.error(f"Bot {bot_id}: Error storing Binance spot sell trade: {e}", exc_info=True)
-                                    finally:
-                                        if trade_conn:
-                                            try:
-                                                trade_conn.close()
-                                            except:
-                                                pass
+                                        logger.error(f"Bot {bot_id}: Error storing Binance spot sell trade: {e}")
 
                                     trade_history = bot_config.setdefault('tradeHistory', [])
                                     existing_index = next(
@@ -42878,7 +41349,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     trade_conn = None
                                     trade_cursor = None
                                     try:
-                                        trade_conn = get_db_connection()
+                                        trade_conn = build_sqlite_connection(timeout=30.0)
                                         trade_cursor = trade_conn.cursor()
                                         if _ticket_is_numeric:
                                             trade_cursor.execute(
@@ -43142,9 +41613,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 # (e.g. Binance spot, partial fills, or stale closed-trade lookup)
                                 # compute it from tracked entry/exit prices so trades don't
                                 # persist with profit=0 despite a real price differential.
-                                # For Binance futures we also deduct the round-trip taker fee
-                                # (0.04% entry + 0.04% exit = 0.08% of notional) so the computed
-                                # fallback profit matches the actual wallet impact.
                                 if abs(_safe_float(real_profit, 0.0)) < 1e-9:
                                     _entry_px = _safe_float(
                                         tracked.get('entryPrice')
@@ -43172,12 +41640,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             real_profit = round((_exit_px - _entry_px) * _vol_px, 4)
                                         elif 'SELL' in _dir_px:
                                             real_profit = round((_entry_px - _exit_px) * _vol_px, 4)
-                                        # Deduct round-trip trading fee for Binance futures (taker 0.04% each side)
-                                        if broker_type == 'Binance' and getattr(active_conn, 'market', 'spot') == 'futures':
-                                            _notional = _entry_px * _vol_px
-                                            _fee = round(_notional * 0.0008, 6)  # 0.08% round-trip
-                                            trade_commission = round(-_fee, 6)
-                                            real_profit = round(real_profit - _fee, 4)
                                         if abs(real_profit) > 1e-9:
                                             logger.info(
                                                 f"Bot {bot_id}: Computed fallback close P&L for {tracked.get('symbol')} "
@@ -43214,7 +41676,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 # is not numeric — match by _db_trade_id or by symbol to avoid a
                                 # PostgreSQL "invalid input syntax for type bigint" error.
                                 try:
-                                    trade_conn = get_db_connection()
+                                    trade_conn = build_sqlite_connection(timeout=30.0)
                                     trade_cursor = trade_conn.cursor()
                                     _close_ticket_is_numeric = str(ticket_str).lstrip('-').isdigit()
                                     if _close_ticket_is_numeric:
@@ -43469,7 +41931,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 # Also insert into DB if not already there
                                 if existing_th is None:
                                     try:
-                                        disc_conn = get_db_connection()
+                                        disc_conn = build_sqlite_connection(timeout=30.0)
                                         disc_cursor = disc_conn.cursor()
                                         trade_id = f"disc_{int(datetime.now().timestamp()*1000)}_{dp_ticket}"
                                         disc_cursor.execute('''
@@ -43637,34 +42099,34 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     'status': 'open',
                                 })
 
-                                if existing_th is None:
-                                    try:
-                                        disc_conn = get_db_connection()
-                                        disc_cursor = disc_conn.cursor()
-                                        trade_id = f"disc_{int(datetime.now().timestamp()*1000)}_{bot_id[-8:]}"
-                                        _disc_ticket_is_numeric = str(dp_ticket).lstrip('-').isdigit()
-                                        _disc_ticket_db = int(dp_ticket) if _disc_ticket_is_numeric else None
-                                        disc_cursor.execute('''
-                                            INSERT OR IGNORE INTO trades (trade_id, bot_id, user_id, symbol, order_type, volume, price, profit, ticket, time_open, status, created_at, trade_data, timestamp)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                        ''', (
-                                            trade_id, bot_id, user_id, dp_symbol, dp_type, dp_volume,
-                                            dp_entry_price, dp_profit, _disc_ticket_db, dp_open_time,
-                                            'open', datetime.now().isoformat(),
-                                            json.dumps({'ticket': str(dp_ticket), 'symbol': dp_symbol, 'type': dp_type, 'entryPrice': dp_entry_price, 'source': 'DISCOVERED_BINANCE_FUTURES'}),
-                                            int(datetime.now().timestamp() * 1000)
-                                        ))
-                                        disc_conn.commit()
-                                        bot_config.setdefault('open_positions', {}).setdefault(str(dp_ticket), {})['_db_trade_id'] = trade_id
-                                        disc_conn.close()
-                                    except Exception as disc_db_e:
-                                        logger.warning(f"Bot {bot_id}: Error saving discovered Binance futures trade: {disc_db_e}")
+                            if existing_th is None:
+                                try:
+                                    disc_conn = build_sqlite_connection(timeout=30.0)
+                                    disc_cursor = disc_conn.cursor()
+                                    trade_id = f"disc_{int(datetime.now().timestamp()*1000)}_{bot_id[-8:]}"
+                                    _disc_ticket_is_numeric = str(dp_ticket).lstrip('-').isdigit()
+                                    _disc_ticket_db = int(dp_ticket) if _disc_ticket_is_numeric else None
+                                    disc_cursor.execute('''
+                                        INSERT OR IGNORE INTO trades (trade_id, bot_id, user_id, symbol, order_type, volume, price, profit, ticket, time_open, status, created_at, trade_data, timestamp)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    ''', (
+                                        trade_id, bot_id, user_id, dp_symbol, dp_type, dp_volume,
+                                        dp_entry_price, dp_profit, _disc_ticket_db, dp_open_time,
+                                        'open', datetime.now().isoformat(),
+                                        json.dumps({'ticket': str(dp_ticket), 'symbol': dp_symbol, 'type': dp_type, 'entryPrice': dp_entry_price, 'source': 'DISCOVERED_BINANCE_FUTURES'}),
+                                        int(datetime.now().timestamp() * 1000)
+                                    ))
+                                    disc_conn.commit()
+                                    bot_config.setdefault('open_positions', {}).setdefault(str(dp_ticket), {})['_db_trade_id'] = trade_id
+                                    disc_conn.close()
+                                except Exception as disc_db_e:
+                                    logger.warning(f"Bot {bot_id}: Error saving discovered Binance futures trade: {disc_db_e}")
 
-                                if discovered_count > 0:
-                                    logger.info(
-                                        f"🔍 Bot {bot_id}: Discovered {discovered_count} untracked Binance futures position(s) "
-                                        f"on {', '.join(discovered_symbols or sorted(bot_symbols))}"
-                                    )
+                        if discovered_count > 0:
+                            logger.info(
+                                f"🔍 Bot {bot_id}: Discovered {discovered_count} untracked Binance futures position(s) "
+                                f"on {', '.join(discovered_symbols or sorted(bot_symbols))}"
+                            )
                 
                 except Exception as disc_e:
                     logger.warning(f"Bot {bot_id}: Error discovering untracked positions: {disc_e}")
@@ -43733,18 +42195,10 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 _safe_float(bot_config.get('totalFundingFees'), 0.0) + _new_ff_total, 4
                                             )
                                             bot_config['_lastFundingFeeTs'] = _new_last_ts
-                                            # Apply funding fees to totalProfit so the dashboard
-                                            # reflects the true wallet impact (funding fees are
-                                            # debited directly from the Binance wallet every 8h).
-                                            bot_config['totalProfit'] = round(
-                                                _safe_float(bot_config.get('totalProfit'), 0.0) + _new_ff_total, 4
-                                            )
-                                            bot_config['profit'] = bot_config['totalProfit']
                                             logger.info(
                                                 f"Bot {bot_id}: Binance funding fees this period: "
                                                 f"{_new_ff_total:+.4f} USDT "
-                                                f"(total: {bot_config['totalFundingFees']:+.4f}) "
-                                                f"| Applied to totalProfit -> {bot_config['totalProfit']:+.4f}"
+                                                f"(total: {bot_config['totalFundingFees']:+.4f})"
                                             )
                                     bot_config['_lastFundingFeeCheckTs'] = _now_ts
                             except Exception as _ff_err:
@@ -43968,7 +42422,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                 }
 
                                             try:
-                                                trade_conn = get_db_connection()
+                                                trade_conn = build_sqlite_connection(timeout=30.0)
                                                 trade_cursor = trade_conn.cursor()
                                                 _poll_close_ticket = str(closed_ticket)
                                                 _poll_close_ticket_is_numeric = _poll_close_ticket.lstrip('-').isdigit()
@@ -44054,42 +42508,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
 
                         poll_symbol_universe = build_scanner_symbol_universe(bot_config, tradable_symbol_keys)
 
-                        # Micro-account auto-augmentation: if balance < $20 on Binance live futures
-                        # and the bot's entire symbol universe only contains blocked/expensive symbols,
-                        # automatically inject cheap-per-unit symbols so the bot can actually trade.
-                        _aug_is_binance_live_fut = (
-                            canonicalize_broker_name(
-                                bot_config.get('brokerName') or bot_config.get('broker_type') or ''
-                            ) == 'Binance'
-                            and str(bot_config.get('mode') or '').strip().lower() == 'live'
-                            and str(bot_config.get('marketType') or bot_config.get('market') or '').lower() == 'futures'
-                        )
-                        if _aug_is_binance_live_fut:
-                            _aug_bal = max(
-                                _safe_float(bot_config.get('accountBalance'), 0.0),
-                                _safe_float(bot_config.get('accountEquity'), 0.0),
-                                _safe_float(bot_config.get('initialBalance'), 0.0),
-                            )
-                            if 0 < _aug_bal < 20.0:
-                                # Check how many configured symbols are viable for this balance
-                                _viable_in_list = [
-                                    s for s in poll_symbol_universe
-                                    if _is_symbol_viable_for_micro_account(s, 0.0, _aug_bal)
-                                ]
-                                if not _viable_in_list:
-                                    # None of the configured symbols are viable — auto-inject micro-safe ones
-                                    _auto_micro_symbols = [
-                                        'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'TRXUSDT', 'XLMUSDT',
-                                        'HBARUSDT', 'MATICUSDT', 'SHIBUSDT', 'PEPEUSDT',
-                                    ]
-                                    _injected = [s for s in _auto_micro_symbols if s not in set(poll_symbol_universe)]
-                                    if _injected:
-                                        poll_symbol_universe = list(poll_symbol_universe) + _injected
-                                        logger.info(
-                                            f"[MicroAccount] Bot {bot_id}: balance ${_aug_bal:.2f} — "
-                                            f"no viable symbols in config, auto-injecting micro-safe symbols: {_injected}"
-                                        )
-
                         # Symbols added by the top-movers SCAN augmentation only — these are not
                         # in the bot's tradable set, so a qualifying signal on them must not trigger
                         # an immediate trade cycle (the cycle can't act on them) unless direct
@@ -44103,36 +42521,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                         # Default ON for all Binance bots; set topMoversEnabled=False to opt out
                         if _is_binance and bot_config.get('topMoversEnabled', True):
                             _is_futures = str(bot_config.get('marketType') or bot_config.get('market') or '').lower() == 'futures'
-                            # For micro-accounts (< $20), fetch full data so we can price-filter movers
-                            _tm_bal = max(
-                                _safe_float(bot_config.get('accountBalance'), 0.0),
-                                _safe_float(bot_config.get('accountEquity'), 0.0),
-                                _safe_float(bot_config.get('initialBalance'), 0.0),
-                            )
-                            _is_micro_tm = (
-                                0 < _tm_bal < 20.0
-                                and str(bot_config.get('mode') or '').strip().lower() == 'live'
-                                and _is_futures
-                            )
-                            if _is_micro_tm:
-                                # Use data-enriched fetch so we can filter by unit price
-                                _movers_data = _fetch_binance_top_movers_with_data(spot=not _is_futures)
-                                _movers = [
-                                    sym for sym, info in _movers_data.items()
-                                    if _is_symbol_viable_for_micro_account(sym, info.get('last_price', 0.0), _tm_bal)
-                                ]
-                                if _movers_data and not _movers:
-                                    logger.info(
-                                        f"[TopMovers] Bot {bot_id}: micro-account ${_tm_bal:.2f} — "
-                                        f"all top movers filtered (none viable at balance). Will use bot symbol list only."
-                                    )
-                                elif _movers:
-                                    logger.debug(
-                                        f"[TopMovers] Bot {bot_id}: micro-account ${_tm_bal:.2f} — "
-                                        f"balance-filtered movers: {_movers}"
-                                    )
-                            else:
-                                _movers = _fetch_binance_top_movers(spot=not _is_futures)
+                            _movers = _fetch_binance_top_movers(spot=not _is_futures)
                             if _movers:
                                 _existing = set(poll_symbol_universe)
                                 _new_movers = [s for s in _movers if s not in _existing]
@@ -44161,11 +42550,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                 # Store the direction hint so the trade cycle uses it
                                 bot_config['_topMoverDirectDirection'] = _dm['direction']
                                 bot_config['_topMoverDirectSymbol'] = _dm['symbol']
-                                _cooldowns = bot_config.get('topMoverDirectCooldownUntil') if isinstance(bot_config.get('topMoverDirectCooldownUntil'), dict) else {}
-                                _cd_minutes = max(0.0, _safe_float(_dm.get('cooldown_minutes'), 15.0))
-                                if _cd_minutes > 0:
-                                    _cooldowns[str(_dm['symbol']).upper()] = (datetime.now() + timedelta(minutes=_cd_minutes)).isoformat()
-                                    bot_config['topMoverDirectCooldownUntil'] = _cooldowns
                                 break  # one trade per poll cycle
 
 
@@ -44276,8 +42660,6 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
         logger.error(f"Bot {bot_id}: FATAL error in trading loop: {e}")
         running_bots[bot_id] = False
         clear_bot_start_pending(bot_id)
-        # ✅ Record startup error if bot fails during initialization
-        record_bot_startup_error(bot_id, f"Fatal error during bot startup: {e}")
 
 
 def get_broker_connection(credential_id: str, user_id: str, bot_id: str = None):
@@ -44646,7 +43028,7 @@ def quick_create_bot():
                 'api_key': credential_data.get('api_key'),
                 'api_secret': credential_data.get('password'),
                 'account_number': account_number,
-                'server': _resolve_binance_server_for_credential(credential_data, account_number),
+                'server': credential_data.get('server') or 'spot',
                 'is_live': bool(is_live),
                 'prefetch_account_info': False,
                 'auth_timeout': 5,
@@ -44679,17 +43061,7 @@ def quick_create_bot():
                 ],
                 'large_cap_only': [
                     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ADAUSDT', 'XRPUSDT'
-                ],
-                # Micro-account preset: low per-unit price so $20 min notional is reachable
-                # at 5x leverage even with < $20 balance. BTC/SOL/BNB are excluded.
-                'micro_account': [
-                    'XRPUSDT',   # ~$2.4/unit — very liquid, low step size
-                    'ADAUSDT',   # ~$0.78/unit — excellent for tiny margin
-                    'DOGEUSDT',  # ~$0.24/unit — ultra cheap per unit
-                    'TRXUSDT',   # ~$0.28/unit — high volume, cheap
-                    'XLMUSDT',   # ~$0.30/unit — stable mover
-                    'HBARUSDT',  # ~$0.25/unit — good liquidity
-                ],
+                ]
             }
 
             symbols = BINANCE_PRESETS.get(preset, BINANCE_PRESETS['top_edge'])
@@ -44816,13 +43188,10 @@ def quick_create_bot():
             bot_stop_flags[bot_id] = False
 
             # ==================== WORKER POOL DISPATCH (QUICK BOT) ====================
-            # ✅ FIX: Prepare credentials BEFORE launching bot (same as in start_enabled_bots_on_startup)
-            bot_credentials_for_startup = _get_bot_thread_credentials(active_bots[bot_id])
             _queue_or_launch_bot_runtime(
                 bot_id,
                 user_id,
                 active_bots[bot_id],
-                bot_credentials_for_startup,
                 startup_delay=0.5,
                 log_label='Quick bot',
             )
@@ -44885,7 +43254,7 @@ def start_bot():
         if is_user_kill_switch_active(user_id):
             return jsonify({
                 'success': False,
-                'error': 'Emergency kill switch is active for this user. Resume first to start bots.',
+                'error': 'Emergency kill switch is active for this account. Resume trading from the dashboard before starting bots.',
                 'killSwitchActive': True,
             }), 423
 
@@ -45141,13 +43510,10 @@ def start_bot():
             running_bots[bot_id] = True
             bot_config['enabled'] = True
             persist_bot_runtime_state(bot_id)
-
-            # ✅ FIX: Prepare credentials BEFORE launching thread
-            bot_credentials_for_start = _get_bot_thread_credentials(bot_config)
             
             bot_thread = threading.Thread(
                 target=continuous_bot_trading_loop,
-                args=(bot_id, user_id, bot_credentials_for_start),
+                args=(bot_id, user_id, None),
                 daemon=True,
                 name=f"BotThread-{bot_id}"
             )
@@ -45390,7 +43756,6 @@ def bot_status():
                 'effectiveTradeAmount': round(_safe_float(bot.get('effectiveTradeAmount'), _safe_float(bot.get('tradeAmount'), 0.0)), 2),
                 'tradeAmountAdaptation': bot.get('tradeAmountAdaptation'),
                 'portfolioGuard': _evaluate_user_portfolio_profit_guard(bot),
-                'startupError': get_bot_startup_error(bot.get('botId', '')),  # ✅ Check if bot had startup errors
             }
             if include_history:
                 enhanced_bot['tradeHistory'] = normalized_trade_history  # Include full trade history for analytics
@@ -45504,54 +43869,6 @@ def bot_status():
     
     except Exception as e:
         logger.error(f"Error getting bot status: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/bot/startup-status', methods=['GET'])
-@require_session
-def check_bot_startup_status():
-    """Check if a bot had any startup errors after creation.
-    
-    Query params:
-    - bot_id: Check specific bot
-    
-    Returns:
-    {
-        'botId': 'bot_1234',
-        'hasError': true,
-        'error': 'Error message if any',
-        'isRunning': true/false,
-        'isPending': true/false (startup still in progress)
-    }
-    """
-    try:
-        user_id = request.user_id
-        bot_id = (request.args.get('bot_id') or '').strip()
-        
-        if not bot_id:
-            return jsonify({'success': False, 'error': 'bot_id query parameter required'}), 400
-        
-        # Verify bot belongs to user
-        bot_config = active_bots.get(bot_id)
-        if not bot_config or bot_config.get('user_id') != user_id:
-            return jsonify({'success': False, 'error': 'Bot not found or access denied'}), 404
-        
-        startup_error = get_bot_startup_error(bot_id)
-        is_running = running_bots.get(bot_id, False)
-        is_pending = bot_id in bot_start_pending
-        
-        return jsonify({
-            'success': True,
-            'botId': bot_id,
-            'hasError': bool(startup_error),
-            'error': startup_error,
-            'isRunning': is_running,
-            'isPending': is_pending,
-            'status': 'PENDING' if is_pending else ('RUNNING' if is_running else 'STOPPED'),
-        }), 200
-    
-    except Exception as e:
-        logger.error(f"Error checking bot startup status: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -45887,7 +44204,7 @@ def _upsert_copy_trading_open_trade(
     open_trade: Dict[str, Any],
 ) -> None:
     try:
-        trade_conn = get_db_connection()
+        trade_conn = build_sqlite_connection(timeout=30.0)
         trade_cursor = trade_conn.cursor()
         trade_cursor.execute(
             "SELECT 1 FROM trades WHERE ticket = ? AND bot_id = ? AND status = 'open' LIMIT 1",
@@ -45919,22 +44236,10 @@ def _upsert_copy_trading_open_trade(
                     open_trade.get('broker', follower_broker),
                 ),
             )
-        # CRITICAL FIX: Ensure commit happens after INSERT
         trade_conn.commit()
-        logger.info(f"✅ Copy-trade open record committed for {follower_bot_id}")
+        trade_conn.close()
     except Exception as open_db_error:
-        if trade_conn:
-            try:
-                trade_conn.rollback()
-            except:
-                pass
-        logger.error(f"Bot {follower_bot_id}: Failed to store copy-trade open row: {open_db_error}", exc_info=True)
-    finally:
-        if trade_conn:
-            try:
-                trade_conn.close()
-            except:
-                pass
+        logger.warning(f"Bot {follower_bot_id}: Failed to store copy-trade open row: {open_db_error}")
 
     trade_history = follower_bot.setdefault('tradeHistory', [])
     existing_index = next(
@@ -46216,7 +44521,7 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
         # rehydrate. Covers long-running bots that missed cycle==1 rehydration.
         if not tracked_positions:
             try:
-                _heal_conn = get_db_connection()
+                _heal_conn = build_sqlite_connection(timeout=10.0)
                 _heal_cur = _heal_conn.cursor()
                 _heal_cur.execute(
                     "SELECT COUNT(*) FROM trades WHERE bot_id = ? AND status = 'open'",
@@ -46496,7 +44801,7 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
                     }
 
                     try:
-                        trade_conn = get_db_connection()
+                        trade_conn = build_sqlite_connection(timeout=30.0)
                         trade_cursor = trade_conn.cursor()
                         trade_cursor.execute(
                             '''UPDATE trades SET profit = ?, status = 'closed', time_close = ?,
@@ -46601,7 +44906,7 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
             }
 
             try:
-                trade_conn = get_db_connection()
+                trade_conn = build_sqlite_connection(timeout=30.0)
                 trade_cursor = trade_conn.cursor()
                 trade_cursor.execute(
                     '''UPDATE trades SET profit = ?, status = 'closed', time_close = ?,
@@ -46633,22 +44938,10 @@ def _run_binance_spot_tracker(bot_id: str, bot_config: Dict[str, Any], active_co
                             closed_trade.get('broker', bot_config.get('brokerType') or bot_config.get('broker') or 'Binance'),
                         ),
                     )
-                # CRITICAL FIX: Ensure commit happens after UPDATE/INSERT
                 trade_conn.commit()
-                logger.info(f"✅ Trade closed and committed for {bot_id}: {spot_ticket}")
+                trade_conn.close()
             except Exception as db_e:
-                if trade_conn:
-                    try:
-                        trade_conn.rollback()
-                    except:
-                        pass
-                logger.error(f"Bot {bot_id}: Auto-close DB update failed: {db_e}", exc_info=True)
-            finally:
-                if trade_conn:
-                    try:
-                        trade_conn.close()
-                    except:
-                        pass
+                logger.error(f"Bot {bot_id}: Auto-close DB update failed: {db_e}")
 
             trade_history = bot_config.setdefault('tradeHistory', [])
             existing_index = next(
@@ -47164,11 +45457,11 @@ def bot_summary():
                 _summary_query = '''
                     SELECT bot_id
                     FROM user_bots
-                    WHERE ub.user_id = ? AND ub.status = 'active'
+                    WHERE user_id = ? AND enabled = 1 AND status = 'active'
                 '''
                 _summary_params = [user_id]
                 if mode_filter in ('LIVE', 'DEMO'):
-                    _summary_query += ' AND ub.is_live = ?'
+                    _summary_query += ' AND is_live = ?'
                     _summary_params.append(1 if mode_filter == 'LIVE' else 0)
                 _summary_cur.execute(_summary_query, _summary_params)
                 for _summary_row in _summary_cur.fetchall():
@@ -48917,7 +47210,7 @@ def _record_bot_position_close(
         bot_config['dailyProfit'] = daily[today]
 
     try:
-        trade_conn = get_db_connection()
+        trade_conn = build_sqlite_connection(timeout=30.0)
         trade_cursor = trade_conn.cursor()
         _close_trade_payload = json.dumps({
             'ticket': ticket_str,
@@ -48983,7 +47276,7 @@ def _close_bot_positions_for_delete(bot_id: str, user_id: str, bot_config: Dict[
 
     trade_conn = None
     try:
-        trade_conn = get_db_connection()
+        trade_conn = build_sqlite_connection(timeout=10.0, row_factory=True)
         trade_cursor = trade_conn.cursor()
         trade_cursor.execute(
             '''
@@ -49726,135 +48019,6 @@ def _insert_user_session(conn, user_id, token, expires_at, session_id=None, crea
             pass
 
     return session_id
-
-
-@app.route('/api/user/logout', methods=['POST'])
-@require_session
-def logout_user():
-    """Invalidate current session token."""
-    try:
-        session_token = request.headers.get('X-Session-Token', '')
-        user_id = request.user_id
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE user_sessions SET is_active = 0 WHERE token = ? AND user_id = ?',
-            (session_token, user_id),
-        )
-        conn.commit()
-        conn.close()
-        SESSION_VALIDATION_CACHE.pop(session_token, None)
-        TEMP_SESSION_CACHE.pop(session_token, None)
-        return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
-    except Exception as e:
-        logger.error(f"Logout failed: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/user/sessions', methods=['GET'])
-@require_session
-def list_user_sessions():
-    """List active sessions for current user for device/session management."""
-    try:
-        user_id = request.user_id
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            '''
-            SELECT session_id, token, created_at, expires_at, is_active, ip_address, user_agent
-            FROM user_sessions
-            WHERE user_id = ? AND is_active = 1
-            ORDER BY created_at DESC
-            ''',
-            (user_id,),
-        )
-        rows = cursor.fetchall()
-        conn.close()
-
-        sessions = []
-        for row in rows:
-            token = str(row['token'] or '')
-            sessions.append({
-                'session_id': row['session_id'],
-                'token_preview': f"{token[:8]}...{token[-4:]}" if len(token) > 12 else token,
-                'created_at': row['created_at'],
-                'expires_at': row['expires_at'],
-                'ip_address': row.get('ip_address') if hasattr(row, 'get') else row['ip_address'],
-                'user_agent': row.get('user_agent') if hasattr(row, 'get') else row['user_agent'],
-            })
-
-        return jsonify({'success': True, 'sessions': sessions}), 200
-    except Exception as e:
-        logger.error(f"List sessions failed: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/user/sessions/revoke-all', methods=['POST'])
-@require_session
-def revoke_all_other_sessions():
-    """Invalidate every active session except the current one."""
-    try:
-        user_id = request.user_id
-        current_token = request.headers.get('X-Session-Token', '')
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            '''
-            UPDATE user_sessions
-            SET is_active = 0
-            WHERE user_id = ? AND token != ?
-            ''',
-            (user_id, current_token),
-        )
-        revoked = cursor.rowcount or 0
-        conn.commit()
-        conn.close()
-
-        stale_tokens = [
-            key for key, value in list(SESSION_VALIDATION_CACHE.items())
-            if str(value.get('user_id')) == str(user_id) and key != current_token
-        ]
-        for key in stale_tokens:
-            SESSION_VALIDATION_CACHE.pop(key, None)
-            TEMP_SESSION_CACHE.pop(key, None)
-
-        return jsonify({'success': True, 'revoked_sessions': revoked}), 200
-    except Exception as e:
-        logger.error(f"Revoke sessions failed: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/user/refresh-session', methods=['POST'])
-@require_session
-def refresh_user_session():
-    """Extend current session expiry for rolling sessions."""
-    try:
-        user_id = request.user_id
-        session_token = request.headers.get('X-Session-Token', '')
-        expires_at = (datetime.now() + timedelta(days=30)).isoformat()
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            '''
-            UPDATE user_sessions
-            SET expires_at = ?
-            WHERE user_id = ? AND token = ? AND is_active = 1
-            ''',
-            (expires_at, user_id, session_token),
-        )
-        conn.commit()
-        conn.close()
-
-        if session_token in SESSION_VALIDATION_CACHE:
-            SESSION_VALIDATION_CACHE[session_token]['expires_at'] = expires_at
-            SESSION_VALIDATION_CACHE[session_token]['validated_at'] = time.time()
-        if session_token in TEMP_SESSION_CACHE:
-            TEMP_SESSION_CACHE[session_token]['expires_at'] = expires_at
-
-        return jsonify({'success': True, 'expires_at': expires_at}), 200
-    except Exception as e:
-        logger.error(f"Refresh session failed: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/user/login', methods=['POST'])
 def login_user():
@@ -56223,7 +54387,6 @@ def apply_profile_bulk():
 
 
 if __name__ == '__main__':
-    _require_postgres_or_raise('startup-main')
     logger.info("Starting Zwesta Multi-Broker Backend")
     logger.info(f"Mode: {ENVIRONMENT.upper()}")
     logger.info("Connections will be established when users provide broker credentials")
@@ -56289,6 +54452,13 @@ if __name__ == '__main__':
     logger.info(f"[OK] Loaded {user_bots_count} user bots from database")
     logger.info(f"[OK] Total bots ready: {len(active_bots)}")
 
+    restarted_bots = None  # Will be set by background thread
+    def _bg_bot_startup():
+        n = start_enabled_bots_on_startup()
+        logger.info(f"[OK] Auto-restarted {n} enabled bots after backend startup")
+    threading.Thread(target=_bg_bot_startup, daemon=True).start()
+    logger.info("[OK] Bot startup running in background - Flask starting now")
+    
     # ==================== START WORKER POOLS ====================
     if worker_pool_manager and worker_pool_manager.enabled:
         logger.info(f"🏭 Starting worker pool with {WORKER_COUNT} workers...")
@@ -56308,13 +54478,6 @@ if __name__ == '__main__':
         )
     else:
         logger.info("[OK] Binance worker pool disabled (BINANCE_WORKER_COUNT=0) - using local Binance threads")
-
-    restarted_bots = None  # Will be set by background thread
-    def _bg_bot_startup():
-        n = start_enabled_bots_on_startup()
-        logger.info(f"[OK] Auto-restarted {n} enabled bots after backend startup")
-    threading.Thread(target=_bg_bot_startup, daemon=True).start()
-    logger.info("[OK] Bot startup running in background - Flask starting now")
     
     # ==================== START SOCKET BRIDGES ====================
     if socket_bridge_manager and socket_bridge_manager._bridges:
