@@ -512,6 +512,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               botId.contains(_searchQuery.toLowerCase()) ||
               symbol.contains(_searchQuery.toLowerCase()) ||
               strategy.contains(_searchQuery.toLowerCase());
+          final isEnabled = bot['enabled'] == true ||
+              (bot['status'] ?? '').toString().toUpperCase() == 'ACTIVE';
           final matchesFilter = _filterStatus == 'all' ||
               (_filterStatus == 'active' && isEnabled) ||
               (_filterStatus == 'inactive' && !isEnabled);
