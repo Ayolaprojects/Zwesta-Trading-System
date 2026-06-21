@@ -2199,7 +2199,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       ),
     );
 
-  /// Quick create Binance bot with preset
+/// Quick create Binance bot with preset
   void _quickCreateBinanceBot(BuildContext context, String preset) async {
     Navigator.pop(context); // Close dialog
     
@@ -2212,9 +2212,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
         return;
       }
       
-      final brokerService = BrokerCredentialsService();
-      
-      await brokerService.fetchCredentials();
+      // Use the existing broker service from provider instead of creating a new one
+      final brokerService = Provider.of<BrokerCredentialsService>(context, listen: false);
       final credential = brokerService.activeCredential;
       
       if (credential == null) {
@@ -2235,7 +2234,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       
       // Show loading dialog
       showDialog(
-        context: context,
+        context: this.context,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF1A1A2E),
@@ -2267,16 +2266,20 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       ).timeout(const Duration(seconds: 15));
       
       if (!mounted) return;
-      Navigator.pop(context); // Close loading dialog
+      Navigator.pop(this.context); // Close loading dialog
       
       if (response.statusCode == 201 || response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final botId = data['botId'] ?? 'Bot';
         final pairs = (data['pairs'] as List?)?.join(', ') ?? 'N/A';
         
-        // Show success dialog
+        // Immediate bot list refresh before showing success dialog
+        final botService = Provider.of<BotService>(this.context, listen: false);
+        await botService.fetchActiveBots(tradingMode: _tradingMode, force: true);
+        
+// Show success dialog
         showDialog(
-          context: context,
+          context: this.context,
           builder: (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF1A1A2E),
             title: Row(
@@ -2301,12 +2304,14 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
             ),
             actions: [
               TextButton(
-                onPressed: () {
+                onPressed: () async {
                   Navigator.pop(ctx);
-                  // Refresh bot list
-                  final botService = Provider.of<BotService>(context, listen: false);
-                  botService.fetchActiveBots(tradingMode: _tradingMode);
-                  setState(() {});
+                  // Refresh bot list and await completion
+                  final botService = Provider.of<BotService>(this.context, listen: false);
+                  await botService.fetchActiveBots(tradingMode: _tradingMode, force: true);
+                  if (mounted) {
+                    setState(() {});
+                  }
                 },
                 child: Text('Done', style: GoogleFonts.poppins(color: const Color(0xFF00E5FF))),
               ),

@@ -91,9 +91,7 @@ class BotService extends ChangeNotifier {
   void startPolling({String? tradingMode, Duration interval = const Duration(seconds: 5)}) {
     final mode = tradingMode ?? _lastTradingMode;
     _pollTimer?.cancel();
-    if (_authPollingDisabled) {
-      return;
-    }
+    // Don't skip polling due to auth state - let _fetchActiveBotsInternal handle auth errors
     _pollTimer = Timer.periodic(interval, (_) {
       fetchActiveBots(tradingMode: mode);
     });
@@ -214,9 +212,8 @@ class BotService extends ChangeNotifier {
       _lastTradingMode = mode;
 
       // Avoid hammering protected endpoints without auth header.
+      // Let future requests retry - don't permanently disable polling
       if (sessionToken == null || sessionToken.isEmpty) {
-        _authPollingDisabled = true;
-        stopPolling();
         _isLoading = false;
         _errorMessage = 'Session token missing. Please login again.';
         notifyListeners();
@@ -242,7 +239,7 @@ class BotService extends ChangeNotifier {
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        _authPollingDisabled = false;
+        _authPollingDisabled = false; // Reset on successful fetch
         final data = jsonDecode(response.body);
         if (data['success'] == true) {
           final fetchedBots = List<Map<String, dynamic>>.from(data['bots'] ?? []);
@@ -268,10 +265,6 @@ class BotService extends ChangeNotifier {
         }
       } else {
         _errorMessage = 'Backend returned status ${response.statusCode}';
-        if (response.statusCode == 401 || response.statusCode == 403) {
-          _authPollingDisabled = true;
-          stopPolling();
-        }
         // Don't wipe _activeBots - preserve previous data on error
       }
     } catch (e) {

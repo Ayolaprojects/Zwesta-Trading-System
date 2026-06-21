@@ -3666,10 +3666,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
       // Treat capacity-full as a successful creation flow so the new bot is visible.
       if (mounted && (startSucceeded || startDeniedByCapacity)) {
-        Navigator.of(context).popUntil((route) => route.isFirst);
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (context) => const DashboardScreen()),
-        );
+        Navigator.of(context).pop(true); // Return true to trigger bot list refresh in parent
       }
     } catch (e) {
       _showError('Error: ${e.toString()}');
