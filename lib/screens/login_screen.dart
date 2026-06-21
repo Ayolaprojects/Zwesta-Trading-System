@@ -211,6 +211,38 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Widget _StatusBanner({
+    required IconData icon,
+    required Color color,
+    required String message,
+    required VoidCallback onDismiss,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.3),
+            ),
+          ),
+          GestureDetector(
+            onTap: onDismiss,
+            child: const Icon(Icons.close, color: Colors.white70, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
+
   // Build MFA/2FA form
   Widget _buildMfaForm(AppLocalizations loc) => Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
