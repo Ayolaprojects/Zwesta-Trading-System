@@ -80,20 +80,24 @@ class RealtimePriceWebSocketService {
   // REST fallback URL for polling prices
   static String get _restBaseUrl => EnvironmentConfig.apiUrl;
   
-  late WebSocketChannel? _channel;
-  String? _connectionId;
-  bool _isConnected = false;
-  bool _useRestFallback = false;  // If WebSocket fails, fall back to REST polling
-  Timer? _restPollingTimer;
-  String? _brokerName;
-  String? _sessionToken;
-  bool _isDisposed = false;
-  Timer? _heartbeatTimer;
-  Timer? _reconnectTimer;
-  int _reconnectAttempts = 0;
-  static const int _maxReconnectAttempts = 10;
-  static const Duration _heartbeatInterval = Duration(seconds: 30);
-  static const Duration _reconnectDelay = Duration(seconds: 5);
+late WebSocketChannel? _channel;
+   String? _connectionId;
+   bool _isConnected = false;
+   bool _useRestFallback = false;  // If WebSocket fails, fall back to REST polling
+   Timer? _restPollingTimer;
+   String? _brokerName;
+   String? _sessionToken;
+   bool _isDisposed = false;
+   Timer? _heartbeatTimer;
+   Timer? _reconnectTimer;
+   int _reconnectAttempts = 0;
+   static const int _maxReconnectAttempts = 10;
+   static const Duration _heartbeatInterval = Duration(seconds: 30);
+   static const Duration _reconnectDelay = Duration(seconds: 5);
+   
+   // Callback storage
+   final Map<String, List<PriceUpdateCallback>> _priceCallbacks = {};
+   final List<ConnectionStatusCallback> _statusCallbacks = [];
 
   // ==================== CONNECTION ====================
 
