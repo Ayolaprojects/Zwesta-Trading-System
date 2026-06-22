@@ -1,6 +1,6 @@
 """Audit VPS backend endpoints"""
 import requests
-VPS = 'http://38.247.146.198:9000'
+VPS = 'http://localhost:9000'
 
 results = []
 

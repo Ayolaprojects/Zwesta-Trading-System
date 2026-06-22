@@ -73,7 +73,7 @@ typedef ConnectionStatusCallback = void Function(bool isConnected);
 class RealtimePriceWebSocketService {
   // WebSocket URL - uses VPS IP directly (ws:// for non-SSL, wss:// for SSL)
   static String get _wsBaseUrl {
-    final httpUrl = EnvironmentConfig.apiUrl; // e.g. http://38.247.146.198:9000
+    final httpUrl = EnvironmentConfig.apiUrl;
     return httpUrl.replaceFirst('http://', 'ws://').replaceFirst('https://', 'wss://');
   }
   

@@ -3,11 +3,11 @@ import 'package:flutter/foundation.dart';
 enum Environment { development, staging, production }
 
 class EnvironmentConfig {
-  // Production builds default to the VPS backend. Development and staging
-  // keep a local fallback so the app can still run in test setups.
+  // All environments point to the local backend by default.
+  // Override via API_URL dart-define or setApiUrl() at runtime.
   static const String _devApiUrl = 'http://localhost:9000';
   static const String _stagingApiUrl = 'http://localhost:9000';
-  static const String _prodApiUrl = 'http://148.113.5.39:9000';
+  static const String _prodApiUrl = 'http://localhost:9000';
   static const int _localApiPort = 9000;
   static const bool _defaultUseLocalWebApi = false;
 

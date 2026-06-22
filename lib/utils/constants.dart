@@ -72,7 +72,7 @@ class AppSpacing {
 
 class AppConstants {
   static const String appName = 'Zwesta Trading System';
-  static const String apiBaseUrl = 'https://api.zwesta-trading.com';
+  static const String apiBaseUrl = 'http://localhost:9000';
   static const Duration connectionTimeout = Duration(seconds: 30);
   static const Duration receiveTimeout = Duration(seconds: 30);
 

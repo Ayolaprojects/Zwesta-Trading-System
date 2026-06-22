@@ -10,7 +10,7 @@ import sys
 import os
 
 # Configuration
-VPS_URL = "http://38.247.146.198:9000"  # Update if different
+VPS_URL = "http://localhost:9000"  # Local backend
 USER_ID = "23386f67-aeb4-4de2-98a7-33c1fced2755"  # Your user ID
 SESSION_TOKEN = "your_session_token_here"  # Get from browser dev tools or backend logs
 

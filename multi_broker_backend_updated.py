@@ -45411,6 +45411,7 @@ def bot_summary():
         # Support mode=ALL (or empty) to return bots of any mode so that Binance
         # live bots are visible even when the app's stored trading_mode is DEMO.
         mode_filter = _raw_mode if _raw_mode in ('LIVE', 'DEMO') else ''
+        logger.info(f"[BOT SUMMARY] user={user_id} mode_filter={mode_filter!r} start")
         persisted_lookup_ready = False
         persisted_bot_ids = set()
 
@@ -45448,7 +45449,9 @@ def bot_summary():
             break
 
         if not has_matching_runtime_bot:
+            logger.info("[BOT SUMMARY] loading user bots from database")
             load_user_bots_from_database(enabled_only=False)
+            logger.info("[BOT SUMMARY] loaded user bots from database")
 
         try:
             _summary_conn = get_db_connection()
@@ -45463,14 +45466,19 @@ def bot_summary():
                 if mode_filter in ('LIVE', 'DEMO'):
                     _summary_query += ' AND is_live = ?'
                     _summary_params.append(1 if mode_filter == 'LIVE' else 0)
+                logger.info("[BOT SUMMARY] querying enabled bots from DB")
                 _summary_cur.execute(_summary_query, _summary_params)
-                for _summary_row in _summary_cur.fetchall():
+                db_rows = _summary_cur.fetchall()
+                logger.info(f"[BOT SUMMARY] found {len(db_rows)} enabled bots in DB")
+                for _summary_row in db_rows:
                     _ensure_enabled_bot_runtime(_summary_row['bot_id'])
+                logger.info("[BOT SUMMARY] ensured runtime for enabled bots")
             finally:
                 _summary_conn.close()
         except Exception as summary_restore_error:
             logger.warning(f"Could not ensure enabled bot runtime during summary build: {summary_restore_error}")
 
+        logger.info("[BOT SUMMARY] building runtime bot ids list")
         runtime_bot_ids = []
         for runtime_bot in list(active_bots.values()):
             if runtime_bot.get('user_id') != user_id:
@@ -45490,6 +45498,7 @@ def bot_summary():
                 runtime_bot_ids.append(runtime_bot_id)
         trade_stats_by_bot = trade_stats_loader(runtime_bot_ids)
 
+        logger.info(f"[BOT SUMMARY] iterating active_bots for user {user_id}")
         bots_list = []
         fxcm_snapshot_cache: Dict[str, Dict[str, Any]] = {}
         binance_snapshot_cache: Dict[str, Dict[str, Any]] = {}
@@ -45555,6 +45564,8 @@ def bot_summary():
             bot_is_live = str(bot_mode_value).lower() == 'live'
             display_currency = _resolve_display_currency_for_mode(bot_mode_value, bot.get('displayCurrency', 'USD'))
             broker_name = canonicalize_broker_name(bot.get('brokerName') or bot.get('broker_type') or bot.get('broker') or 'MT5')
+            if bot.get('brokerName') or bot.get('broker_type') or bot.get('broker'):
+                logger.info(f"[BOT SUMMARY] bot {bot_id} broker_name={broker_name}")
             broker_snapshot_source = 'runtime-cache'
             if broker_name == 'FXCM':
                 fxcm_snapshot = _build_fxcm_bot_broker_snapshot(

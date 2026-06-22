@@ -4,7 +4,7 @@ import os
 
 import requests
 
-VPS = os.getenv("ZWESTA_VPS", "http://38.247.146.198:9000").rstrip("/")
+VPS = os.getenv("ZWESTA_VPS", "http://localhost:9000").rstrip("/")
 LOGIN_EMAIL = os.getenv("ZWESTA_EVAL_EMAIL", "trader2@example.com")
 LOGIN_PASSWORD = os.getenv("ZWESTA_EVAL_PASSWORD", "password123")
 ALLOW_DESTRUCTIVE = os.getenv("ZWESTA_EVAL_ALLOW_DESTRUCTIVE", "0").strip().lower() in {"1", "true", "yes", "on"}

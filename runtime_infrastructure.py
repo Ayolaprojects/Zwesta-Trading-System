@@ -59,8 +59,12 @@ def get_database_url() -> str:
 
 def using_postgres() -> bool:
     backend = get_database_backend()
+    if backend == 'postgres':
+        return True
+    if backend == 'sqlite':
+        return False
     database_url = get_database_url().lower()
-    return backend == 'postgres' or database_url.startswith(('postgresql://', 'postgres://'))
+    return database_url.startswith(('postgresql://', 'postgres://'))
 
 
 def build_sqlite_connection(

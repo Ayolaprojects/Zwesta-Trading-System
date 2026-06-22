@@ -10,7 +10,7 @@ import time
 import sys
 
 # Backend URL - Change this if your backend is on a different IP/port
-BACKEND_URL = "http://38.247.146.198:9000"
+BACKEND_URL = "http://localhost:9000"
 
 def create_bot(bot_config):
     """Create a trading bot via API"""
