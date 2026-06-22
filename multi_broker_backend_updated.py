@@ -43222,6 +43222,158 @@ def quick_create_bot():
         if conn:
             conn.close()
 
+@app.route('/api/bot/quick-create-exness', methods=['POST'])
+@require_session
+def quick_create_exness_bot():
+    """One-click bot creation for Exness users with predefined trading pairs
+    
+    FEATURES:
+    - No symbol selection needed (uses predefined pairs for each preset)
+    - Optimized for Exness MT5 integration
+    - Instant creation and activation
+    - Works only for Exness broker
+    
+    REQUEST:
+    {
+        "credentialId": "uuid",           // Required: Exness credential
+        "preset": "edge_pairs" | "majors" | "gold" | "indices"  // Optional: pair selection
+    }
+    
+    RESPONSE: {bot_id, status, message, pairs}
+    """
+    conn = None
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'success': False, 'error': 'No configuration provided'}), 400
+
+        user_id = request.user_id
+        if not user_id:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        credential_id = data.get('credentialId')
+        if not credential_id:
+            return jsonify({'success': False, 'error': 'credentialId required'}), 400
+
+        preset = data.get('preset', 'edge_pairs')
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Verify credential exists and belongs to user AND is Exness
+        credential_row = _resolve_requested_broker_credential_for_user(
+            user_id,
+            credential_id,
+            'Exness',
+        )
+        if not credential_row:
+            return jsonify({'success': False, 'error': 'Exness broker credential not found'}), 404
+
+        credential_data = dict(credential_row)
+        credential_id = str(credential_data.get('credential_id') or credential_id).strip()
+        broker_name = credential_data['broker_name']
+
+        if canonicalize_broker_name(broker_name) != 'Exness':
+            return jsonify({
+                'success': False,
+                'error': f'Quick bot creation only works for Exness. You are using {broker_name}'
+            }), 400
+
+        with bot_creation_guard(requires_lock=False, label=f'quick-create:Exness:{credential_id}'):
+            account_number = credential_data['account_number']
+            is_live = credential_data['is_live']
+            mode = 'live' if is_live else 'demo'
+
+            # Predefined Exness trading pairs by preset
+            EXNESS_PRESETS = {
+                'edge_pairs': ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'US500'],
+                'majors': ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD'],
+                'gold': ['XAUUSD'],
+                'indices': ['US500', 'US30'],
+            }
+
+            symbols = EXNESS_PRESETS.get(preset, EXNESS_PRESETS['edge_pairs'])
+
+            # Use default trading profile
+            quick_profit_defaults = BOT_MANAGEMENT_PROFILES.get('balanced', {})
+            management_profile = 'balanced'
+            management_mode = 'assisted'
+            signal_threshold = 55
+            allowed_volatility = ['Low', 'Medium']
+            max_open_positions = min(3, int(quick_profit_defaults.get('maxOpenPositions', 3) or 3))
+            max_positions_per_symbol = 1
+            intelligent_scanner = True
+            profit_protection = {
+                'enabled': True,
+                'activationPercent': 3,
+                'activationMinProfit': 2,
+                'retraceClosePercent': 22,
+                'switchOnReversal': True,
+            }
+
+            bot_id = _generate_persisted_bot_id('quick_exness_bot')
+            strategy = 'Trend Following'
+            risk_per_trade = 3
+            max_daily_loss = 90
+            profit_lock = 40
+            drawdown_pause_percent = 5
+            drawdown_pause_hours = 4
+            trading_enabled = True
+            spot_min_hold_minutes = 3.0
+            spot_min_net_exit_amount = 1.0
+            spot_allow_loss_exit = False
+
+            account_id = f"{broker_name}_{account_number}"
+            created_at = datetime.now().isoformat()
+
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+
+            bot_id = _persist_new_bot_records(
+                bot_id=bot_id,
+                user_id=user_id,
+                bot_name=f'Quick Exness ({preset})',
+                strategy=strategy,
+                status='active',
+                trading_enabled=trading_enabled,
+                account_id=account_id,
+                symbols=symbols,
+                is_live=bool(is_live),
+                created_at=created_at,
+                credential_id=credential_id,
+                id_prefix='quick_exness_bot',
+            )
+
+            now = datetime.now()
+            logger.info(f"   Preset: {preset} | Symbols: {symbols}")
+
+            return jsonify({
+                'success': True,
+                'botId': bot_id,
+                'status': 'active',
+                'message': f'Quick Exness bot created with preset: {preset}',
+                'pairs': symbols,
+                'strategy': strategy,
+                'riskPerTrade': risk_per_trade,
+                'managementProfile': management_profile,
+                'signalThreshold': signal_threshold,
+                'allowedVolatility': allowed_volatility,
+                'tradingEnabled': trading_enabled,
+            }), 201
+    except TimeoutError as e:
+        logger.warning(f"Quick Exness bot creation busy: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 409
+    except Exception as e:
+        logger.error(f"Error in quick_create_exness_bot: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 @app.route('/api/bot/start', methods=['POST'])
 @require_session
