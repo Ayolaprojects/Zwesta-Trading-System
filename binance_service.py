@@ -346,7 +346,9 @@ def _sync_server_time(url: str, force: bool = False, timeout: int = 5) -> None:
         return
 
     try:
-        resp = requests.get(_time_endpoint_for_url(url), timeout=max(1, int(timeout or 5)))
+        # Use a session with timeout to prevent SSL hangs
+        session = requests.Session()
+        resp = session.get(_time_endpoint_for_url(url), timeout=max(1, int(timeout or 5)))
         if resp.status_code != 200:
             return
         payload = resp.json() if resp.content else {}
@@ -372,7 +374,10 @@ def _response_is_timestamp_error(response) -> bool:
 def _signed_request(method: str, url: str, *, headers: dict, params: dict = None, timeout: int = 10, api_secret: str = None):
     request_params = dict(params or {})
     _sync_server_time(url, timeout=min(max(1, int(timeout or 5)), 5))
-    response = requests.request(
+    
+    # Use a session to avoid connection pool issues and enforce timeout on SSL handshakes
+    session = requests.Session()
+    response = session.request(
         method,
         url,
         headers=headers,
@@ -384,7 +389,7 @@ def _signed_request(method: str, url: str, *, headers: dict, params: dict = None
 
     logger.warning(f"Binance timestamp drift detected for {method.upper()} {url}; resyncing server time and retrying once")
     _sync_server_time(url, force=True, timeout=min(max(1, int(timeout or 5)), 5))
-    return requests.request(
+    return session.request(
         method,
         url,
         headers=headers,

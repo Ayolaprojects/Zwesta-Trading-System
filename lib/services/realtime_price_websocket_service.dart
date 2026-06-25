@@ -77,10 +77,10 @@ class RealtimePriceWebSocketService {
     return httpUrl.replaceFirst('http://', 'ws://').replaceFirst('https://', 'wss://');
   }
   
-  // REST fallback URL for polling prices
+// REST fallback URL for polling prices
   static String get _restBaseUrl => EnvironmentConfig.apiUrl;
   
-late WebSocketChannel? _channel;
+  WebSocketChannel? _channel;
   String? _connectionId;
   bool _isConnected = false;
   bool _useRestFallback = false;  // If WebSocket fails, fall back to REST polling
@@ -98,11 +98,7 @@ late WebSocketChannel? _channel;
   // Subscriptions storage
   final Map<String, List<PriceUpdateCallback>> _priceCallbacks = {};
   final List<ConnectionStatusCallback> _statusCallbacks = [];
-   
-   // Callback storage
-   final Map<String, List<PriceUpdateCallback>> _priceCallbacks = {};
-   final List<ConnectionStatusCallback> _statusCallbacks = [];
-
+    
   // ==================== CONNECTION ====================
 
   /// Connect to websocket for real-time prices

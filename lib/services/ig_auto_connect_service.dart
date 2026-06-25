@@ -120,21 +120,31 @@ class IGAutoConnectService extends ChangeNotifier {
 
   /// Auto-connect using saved credentials (called on app startup)
   Future<void> autoConnect() async {
-    final prefs = await SharedPreferences.getInstance();
-    final hasCreds = prefs.getBool(_keyIGSaved) == true;
-    final autoEnabled = prefs.getBool(_keyIGAutoConnect) == true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final hasCreds = prefs.getBool(_keyIGSaved) == true;
+      final autoEnabled = prefs.getBool(_keyIGAutoConnect) == true;
 
-    if (!hasCreds || !autoEnabled) return;
+      if (!hasCreds || !autoEnabled) {
+        debugPrint('IGAutoConnect: No saved credentials or auto-connect disabled');
+        return;
+      }
 
-    final apiKey = prefs.getString(_keyIGApiKey) ?? '';
-    final username = prefs.getString(_keyIGUsername) ?? '';
-    final password = prefs.getString(_keyIGPassword) ?? '';
-    final accountId = prefs.getString(_keyIGAccountId) ?? '';
-    final isLive = prefs.getBool(_keyIGIsLive) ?? false;
+      final apiKey = prefs.getString(_keyIGApiKey) ?? '';
+      final username = prefs.getString(_keyIGUsername) ?? '';
+      final password = prefs.getString(_keyIGPassword) ?? '';
+      final accountId = prefs.getString(_keyIGAccountId) ?? '';
+      final isLive = prefs.getBool(_keyIGIsLive) ?? false;
 
-    if (apiKey.isEmpty || username.isEmpty || password.isEmpty || accountId.isEmpty) return;
+      if (apiKey.isEmpty || username.isEmpty || password.isEmpty || accountId.isEmpty) {
+        debugPrint('IGAutoConnect: Incomplete credentials, skipping connection');
+        return;
+      }
 
-    await connect(apiKey: apiKey, username: username, password: password, accountId: accountId, isLive: isLive);
+      await connect(apiKey: apiKey, username: username, password: password, accountId: accountId, isLive: isLive);
+    } catch (e) {
+      debugPrint('IGAutoConnect: autoConnect failed: $e');
+    }
   }
 
   /// Connect to IG API through the backend

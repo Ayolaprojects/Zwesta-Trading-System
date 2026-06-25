@@ -11,8 +11,8 @@ import '../utils/environment_config.dart';
 import 'mock_data_provider.dart';
 
 class TradingService extends ChangeNotifier {
-
-  TradingService(String? token) : _token = token {
+  TradingService(String? token) {
+    _token = token;
     _apiUrl = EnvironmentConfig.apiUrl;
     _useApi = !EnvironmentConfig.offlineMode;
 
@@ -25,7 +25,7 @@ class TradingService extends ChangeNotifier {
     // Start auto-refresh of trades every 30 seconds
     _startAutoRefresh();
   }
-  late String? _token;
+  String? _token;
   String? _apiUrl;
   bool _useApi = false;
   bool _isConnected = false;
@@ -407,10 +407,34 @@ class TradingService extends ChangeNotifier {
           print('Note: Live MT5 positions not available: $e');
         }
 
-        // De-duplicate by ticket/id and keep recent first for the Trades screen.
+        // De-duplicate by ticket/id, keeping the freshest data based on timestamps.
+        // Priority: open trades (live positions) > most recent openedAt > most recent closedAt
         final deduped = <String, Trade>{};
         for (final trade in allTrades) {
-          deduped[trade.id] = trade;
+          final existing = deduped[trade.id];
+          if (existing == null) {
+            deduped[trade.id] = trade;
+          } else {
+            // Prefer open trades over closed ones (live positions have freshest profit info)
+            if (trade.status == TradeStatus.open) {
+              deduped[trade.id] = trade;
+            } else if (existing.status == TradeStatus.open) {
+              // Keep existing open trade
+            } else {
+              // Both are closed - compare openedAt timestamps, prefer more recent
+              if (trade.openedAt.isAfter(existing.openedAt)) {
+                deduped[trade.id] = trade;
+              } else if (trade.openedAt.isAtSameMomentAs(existing.openedAt)) {
+                // If openedAt is same, prefer the one with more recent closedAt
+                if (trade.closedAt != null) {
+                  if (existing.closedAt == null || trade.closedAt!.isAfter(existing.closedAt!)) {
+                    deduped[trade.id] = trade;
+                  }
+                }
+                // If trade has no closedAt but existing does, keep existing
+              }
+            }
+          }
         }
         final mergedTrades = deduped.values.toList();
         mergedTrades.sort((a, b) => b.openedAt.compareTo(a.openedAt));

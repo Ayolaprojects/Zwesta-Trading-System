@@ -505,430 +505,58 @@ class _TradesScreenState extends State<TradesScreen> {
               style: TextStyle(
                 fontSize: 12,
                 color: isSelected ? Colors.white70 : AppColors.grey,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+),
+               ),
+             ],
+           ),
+         ),
+       );
+}
 
-  Widget _buildTradesList(BuildContext context, TradingService tradingService) {
-    // Handle Live MT5 Tab (case 3)
-    if (_selectedTab == 3) {
-      final livePositions = tradingService.liveOpenPositions;
-
-      if (livePositions.isEmpty) {
-        return Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.cloud_off_outlined,
-                size: 64,
-                color: AppColors.lightGrey,
-              ),
-              const SizedBox(height: AppSpacing.md),
-              Text(
-                'No live MT5 positions',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Text(
-                'Live positions from MT5 will appear here',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
-        );
-      }
-
-      return ListView.builder(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: livePositions.length,
-        itemBuilder: (context, index) =>
-            _buildLivePositionCard(context, livePositions[index]),
-      );
-    }
-
-    // Regular Trades List for tabs 0, 1, 2
-    List<Trade> trades;
-
-    switch (_selectedTab) {
-      case 1:
-        trades = tradingService.activeTrades;
-        break;
-      case 2:
-        trades = tradingService.closedTrades;
-        break;
-      default:
-        trades = tradingService.trades;
-    }
-
-    if (trades.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.trending_up,
-              size: 64,
-              color: AppColors.lightGrey,
-            ),
-            const SizedBox(height: AppSpacing.md),
-            Text(
-              _selectedTab == 1
-                  ? 'No open trades'
-                  : 'No ${_selectedTab == 2 ? 'closed' : ''} trades',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            Text(
-              _selectedTab == 1
-                  ? 'Tap + to open a new trade'
-                  : 'You haven\'t closed any trades yet',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
-        ),
-      );
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.all(AppSpacing.md),
-      itemCount: trades.length,
-      itemBuilder: (context, index) {
-        final trade = trades[index];
-        final tc = trade.currency.toUpperCase();
-        final tradeSymbol = tc == 'ZAR' ? 'R'
-            : tc == 'USD' ? r'$'
-            : tc == 'EUR' ? '\u20AC'
-            : tc == 'GBP' ? '\u00A3'
-            : '$tc ';
-        return TradeCard(
-          symbol: trade.symbol,
-          type: trade.type.toString().split('.').last,
-          quantity: trade.quantity,
-          entryPrice: trade.entryPrice,
-          currentPrice: trade.currentPrice ?? trade.entryPrice,
-          profit: trade.profit ?? 0,
-          profitPercentage: trade.profitPercentage ?? 0,
-          currencySymbol: tradeSymbol,
-          openedAt: trade.openedAt,
-          closedAt: trade.closedAt,
-          onTap: () {
-            tradingService.selectTrade(trade);
-            _showTradeDetailsDialog(context, trade, tradingService);
-          },
-        );
-      },
-    );
-  }
-
-  /// Fetch trading symbols from the backend API
-  Future<List<Map<String, String>>> _fetchTradingSymbolsForDialog() async {
-    try {
-      final response = await http
-          .get(
-            Uri.parse('${EnvironmentConfig.apiUrl}/api/commodities/list'),
-          )
-          .timeout(const Duration(seconds: 15));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final commodities = data['commodities'] as Map;
-
-        final symbols = <Map<String, String>>[];
-
-        commodities.forEach((category, items) {
-          if (items is List) {
-            for (final item in items) {
-              if (item is Map) {
-                final symbol = item['symbol'] ?? '';
-                final name = item['name'] ?? '';
-                if (symbol.isNotEmpty && name.isNotEmpty) {
-                  symbols.add({
-                    'symbol': symbol,
-                    'name': name,
-                  });
-                }
-              }
-            }
-          }
-        });
-
-        return symbols;
-      }
-    } catch (e) {
-      print('Error fetching trading symbols: $e');
-    }
-
-    // Fallback to minimal list if API fails
-    return [
-      {'symbol': 'EURUSD', 'name': 'EUR/USD'},
-      {'symbol': 'GBPUSD', 'name': 'GBP/USD'},
-      {'symbol': 'XPTUSD', 'name': 'Platinum'},
-      {'symbol': 'XAUUSD', 'name': 'Gold (XAU/USD)'},
-    ];
-  }
-
-  void _showOpenTradeDialog(BuildContext context) {
-    final quantityController = TextEditingController();
-    final entryPriceController = TextEditingController();
-    final takeProfitController = TextEditingController();
-    final stopLossController = TextEditingController();
-    var selectedType = 'buy';
-    var selectedSymbol = 'EURUSD';
-
-    // Initialize with empty list, will be populated from API
-    var tradingSymbols = <Map<String, String>>[];
-
-    // Fetch trading symbols from backend API
-    _fetchTradingSymbolsForDialog().then((symbols) {
-      // This is used in the showDialog below
-      tradingSymbols = symbols;
-    });
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Open New Trade'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<String>(
-                value: selectedType,
-                decoration: const InputDecoration(labelText: 'Trade Type'),
-                items: const [
-                  DropdownMenuItem(value: 'buy', child: Text('Buy')),
-                  DropdownMenuItem(value: 'sell', child: Text('Sell')),
-                ],
-                onChanged: (value) {
-                  selectedType = value ?? 'buy';
-                },
-              ),
-              const SizedBox(height: AppSpacing.md),
-              DropdownButtonFormField<String>(
-                value: selectedSymbol,
-                decoration:
-                    const InputDecoration(labelText: 'Select Symbol/Commodity'),
-                items: tradingSymbols
-                    .map((item) => DropdownMenuItem(
-                          value: item['symbol'],
-                          child: Text(item['name'] ?? ''),
-                        ))
-                    .toList(),
-                onChanged: (value) {
-                  selectedSymbol = value ?? 'EURUSD';
-                },
-              ),
-              const SizedBox(height: AppSpacing.md),
-              TextField(
-                controller: quantityController,
-                decoration: const InputDecoration(labelText: 'Quantity'),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: AppSpacing.md),
-              TextField(
-                controller: entryPriceController,
-                decoration: const InputDecoration(labelText: 'Entry Price'),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: AppSpacing.md),
-              TextField(
-                controller: takeProfitController,
-                decoration:
-                    const InputDecoration(labelText: 'Take Profit (Optional)'),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: AppSpacing.md),
-              TextField(
-                controller: stopLossController,
-                decoration:
-                    const InputDecoration(labelText: 'Stop Loss (Optional)'),
-                keyboardType: TextInputType.number,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              _submitOpenTrade(
-                context,
-                selectedSymbol,
-                selectedType,
-                double.tryParse(quantityController.text) ?? 0,
-                double.tryParse(entryPriceController.text) ?? 0,
-                double.tryParse(takeProfitController.text),
-                double.tryParse(stopLossController.text),
-              );
-            },
-            child: const Text('Open Trade'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _submitOpenTrade(
-    BuildContext context,
-    String symbol,
-    String type,
-    double quantity,
-    double entryPrice,
-    double? takeProfit,
-    double? stopLoss,
-  ) async {
-    final tradingService = context.read<TradingService>();
-
-    final success = await tradingService.openTrade(
-      symbol,
-      type == 'buy' ? TradeType.buy : TradeType.sell,
-      quantity,
-      entryPrice,
-      takeProfit,
-      stopLoss,
-    );
-
-    if (mounted) {
-      Navigator.pop(context);
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Trade opened successfully')),
-        );
-      } else {
+void _handleQuickAction(
+  BuildContext context,
+  Trade trade,
+  String action,
+  TradingService tradingService,
+) async {
+  switch (action) {
+    case 'take_half':
+      final success = await tradingService.closeTrade(trade.id, null);
+      if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content:
-                  Text(tradingService.errorMessage ?? 'Error opening trade')),
+            content: Text(success ? 'Trade closed (take half)' : 'Failed to close trade'),
+            backgroundColor: success ? Colors.green : Colors.red,
+          ),
         );
       }
-    }
+      break;
+    case 'lock_profit':
+      final success = await tradingService.closeTrade(trade.id, null);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success ? 'Profit locked' : 'Failed to lock profit'),
+            backgroundColor: success ? Colors.cyan : Colors.red,
+          ),
+        );
+      }
+      break;
+    case 'close_peak':
+      final success = await tradingService.closeTrade(trade.id, null);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success ? 'Peak profit captured' : 'Failed to close peak'),
+            backgroundColor: success ? Colors.orange : Colors.red,
+          ),
+        );
+      }
+      break;
   }
+}
 
-  void _showTradeDetailsDialog(
-      BuildContext context, Trade trade, TradingService tradingService) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('${trade.symbol} Details'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildDetailRow('Symbol', trade.symbol),
-              _buildDetailRow(
-                  'Type', trade.type.toString().split('.').last.toUpperCase()),
-              _buildDetailRow(
-                  'Quantity', '${trade.quantity.toStringAsFixed(0)} units'),
-              _buildDetailRow(
-                  'Entry Price', trade.entryPrice.toStringAsFixed(4)),
-              _buildDetailRow(
-                'Current Price',
-                (trade.currentPrice ?? trade.entryPrice).toStringAsFixed(4),
-              ),
-              if (trade.takeProfit != null)
-                _buildDetailRow(
-                    'Take Profit', trade.takeProfit!.toStringAsFixed(4)),
-              if (trade.stopLoss != null)
-                _buildDetailRow(
-                    'Stop Loss', trade.stopLoss!.toStringAsFixed(4)),
-              _buildDetailRow(
-                'Status',
-                trade.status.toString().split('.').last.toUpperCase(),
-              ),
-              _buildDetailRow(
-                'Profit/Loss',
-                '${(trade.profit ?? 0) >= 0 ? '+' : ''}${(trade.profit ?? 0).toStringAsFixed(2)}',
-              ),
-              _buildDetailRow(
-                'Profit %',
-                '${(trade.profitPercentage ?? 0) >= 0 ? '+' : ''}${(trade.profitPercentage ?? 0).toStringAsFixed(2)}%',
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          if (trade.status == TradeStatus.open)
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _showClosePriceDialog(context, trade, tradingService);
-              },
-              child: const Text('Close Trade'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showClosePriceDialog(
-      BuildContext context, Trade trade, TradingService tradingService) {
-    final closingPriceController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Close Trade'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Symbol: ${trade.symbol}'),
-            const SizedBox(height: AppSpacing.md),
-            TextField(
-              controller: closingPriceController,
-              decoration: const InputDecoration(labelText: 'Closing Price'),
-              keyboardType: TextInputType.number,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final closingPrice =
-                  double.tryParse(closingPriceController.text) ?? 0;
-              final success =
-                  await tradingService.closeTrade(trade.id, closingPrice);
-
-              if (mounted) {
-                Navigator.pop(context);
-                if (success) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Trade closed successfully')),
-                  );
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                          tradingService.errorMessage ?? 'Error closing trade'),
-                    ),
-                  );
-                }
-              }
-            },
-            child: const Text('Close Trade'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDetailRow(String label, String value) => Padding(
+Widget _buildDetailRow(String label, String value) => Padding(
         padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,

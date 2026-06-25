@@ -239,7 +239,7 @@ class BotService extends ChangeNotifier {
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        _authPollingDisabled = false; // Reset on successful fetch
+        _authPollingDisabled = false;
         final data = jsonDecode(response.body);
         if (data['success'] == true) {
           final fetchedBots = List<Map<String, dynamic>>.from(data['bots'] ?? []);
@@ -248,9 +248,16 @@ class BotService extends ChangeNotifier {
             if (_consecutiveEmptyPayloads < 2) {
               debugPrint('Ignoring transient empty bot payload during refresh');
               _isLoading = false;
+              if (previousError != null || _errorMessage != null) {
+                notifyListeners();
+              }
               return;
             }
           } else {
+            _consecutiveEmptyPayloads = 0;
+          }
+
+          if (fetchedBots.isEmpty && previousBots.isEmpty) {
             _consecutiveEmptyPayloads = 0;
           }
 
@@ -261,15 +268,12 @@ class BotService extends ChangeNotifier {
           await _persistActiveBotsCache(prefs, _activeBots);
         } else {
           _errorMessage = data['error'] ?? 'Failed to fetch bots';
-          // Preserve previous bot data when the backend returns a logical error.
         }
       } else {
         _errorMessage = 'Backend returned status ${response.statusCode}';
-        // Don't wipe _activeBots - preserve previous data on error
       }
     } catch (e) {
       _errorMessage = 'Error fetching bots: $e';
-      // Don't wipe _activeBots - preserve previous data on error
       debugPrint('Bot fetch error: $e');
     }
 
@@ -288,11 +292,86 @@ class BotService extends ChangeNotifier {
     }
 
     for (var index = 0; index < first.length; index++) {
-      if (jsonEncode(first[index]) != jsonEncode(second[index])) {
+      final firstBot = first[index];
+      final secondBot = second[index];
+      final keysToCheck = firstBot.keys.toSet()..addAll(secondBot.keys);
+      bool foundDifference = false;
+      for (final key in keysToCheck) {
+        final val1 = firstBot[key];
+        final val2 = secondBot[key];
+        if (val1 is List && val2 is List) {
+          if (!_listsEqual(val1, val2)) {
+            foundDifference = true;
+            break;
+          }
+        } else if (val1 is Map && val2 is Map) {
+          if (!_mapsEqual(val1, val2)) {
+            foundDifference = true;
+            break;
+          }
+        } else if (jsonEncode(val1) != jsonEncode(val2)) {
+          foundDifference = true;
+          break;
+        }
+      }
+      if (foundDifference) {
         return false;
       }
     }
 
+    return true;
+  }
+
+  bool _listsEqual(List? first, List? second) {
+    if (identical(first, second)) {
+      return true;
+    }
+    if (first == null || second == null) {
+      return first == second;
+    }
+    if (first.length != second.length) {
+      return false;
+    }
+    for (var i = 0; i < first.length; i++) {
+      final a = first[i];
+      final b = second[i];
+      if (a is Map && b is Map) {
+        if (!_mapsEqual(a, b)) {
+          return false;
+        }
+      } else if (jsonEncode(a) != jsonEncode(b)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _mapsEqual(Map? first, Map? second) {
+    if (identical(first, second)) {
+      return true;
+    }
+    if (first == null || second == null) {
+      return first == second;
+    }
+    if (first.length != second.length) {
+      return false;
+    }
+    final allKeys = first.keys.toSet()..addAll(second.keys);
+    for (final key in allKeys) {
+      final val1 = first[key];
+      final val2 = second[key];
+      if (val1 is List && val2 is List) {
+        if (!_listsEqual(val1, val2)) {
+          return false;
+        }
+      } else if (val1 is Map && val2 is Map) {
+        if (!_mapsEqual(val1, val2)) {
+          return false;
+        }
+      } else if (jsonEncode(val1) != jsonEncode(val2)) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -315,7 +394,7 @@ class BotService extends ChangeNotifier {
       final prefs = await _getPrefs();
       final sessionToken = prefs.getString('auth_token');
       final userId = prefs.getString('user_id');
-        final tradingMode =
+      final tradingMode =
           (prefs.getString('trading_mode') ?? 'DEMO').trim().toUpperCase();
 
       debugPrint('🔐 DEBUG: CreateBot - Checking session...');

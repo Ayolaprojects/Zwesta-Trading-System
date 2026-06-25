@@ -4,11 +4,11 @@ import json
 conn = sqlite3.connect(r'zwesta_trading.db')
 cur = conn.cursor()
 
-# Check all tables
-cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-print('Tables:')
+# Check broker credentials
+cur.execute("SELECT credential_id, broker, account FROM broker_credentials")
+print('Broker credentials:')
 for row in cur.fetchall():
-    print(f'  {row[0]}')
+    print(f'  credential_id={row[0]}, broker={row[1]}, account={row[2]}')
 
 # Check the bot's runtime state
 cur.execute("SELECT bot_id, runtime_state, symbols FROM user_bots WHERE bot_id='bot_1782305458924'")
@@ -19,3 +19,5 @@ if row:
     if row[1]:
         data = json.loads(row[1])
         print(f'  open_positions: {json.dumps(data.get("open_positions", {}), indent=4)}')
+
+conn.close()

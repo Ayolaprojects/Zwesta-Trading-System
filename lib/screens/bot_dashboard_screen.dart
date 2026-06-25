@@ -2090,10 +2090,10 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   /// Create bot for specific broker - with quick create option for Binance
   void _createBotForBroker(BuildContext context, String brokerName) async {
     if (brokerName == 'Binance') {
-      // Show quick create dialog for Binance
       _showBinanceQuickCreateDialog(context);
+    } else if (brokerName == 'Exness') {
+      _showExnessQuickCreateDialog(context);
     } else {
-      // Standard bot creation flow
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -2234,7 +2234,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       
       // Show loading dialog
       showDialog(
-        context: this.context,
+        context: context,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF1A1A2E),
@@ -2266,20 +2266,38 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       ).timeout(const Duration(seconds: 15));
       
       if (!mounted) return;
-      Navigator.pop(this.context); // Close loading dialog
+      Navigator.pop(context); // Close loading dialog
       
       if (response.statusCode == 201 || response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final botId = data['botId'] ?? 'Bot';
         final pairs = (data['pairs'] as List?)?.join(', ') ?? 'N/A';
         
+        // Ensure bot is started after creation
+        bool botStarted = false;
+        try {
+          final startResponse = await http.post(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/start'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+            body: jsonEncode({'botId': botId}),
+          ).timeout(const Duration(seconds: 15));
+          
+          botStarted = startResponse.statusCode == 200;
+          debugPrint('Bot start response: ${startResponse.statusCode}');
+        } catch (startError) {
+          debugPrint('Bot start failed after quick-create: $startError');
+        }
+        
         // Immediate bot list refresh before showing success dialog
-        final botService = Provider.of<BotService>(this.context, listen: false);
+        final botService = Provider.of<BotService>(context, listen: false);
         await botService.fetchActiveBots(tradingMode: _tradingMode, force: true);
         
-// Show success dialog
+        // Show success dialog
         showDialog(
-          context: this.context,
+          context: context,
           builder: (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF1A1A2E),
             title: Row(
@@ -2299,7 +2317,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 const SizedBox(height: 8),
                 _infoRow('Pairs', pairs, Colors.white60),
                 const SizedBox(height: 8),
-                _infoRow('Status', '🟢 Running', const Color(0xFF69F0AE)),
+                _infoRow('Status', botStarted ? '🟢 Running' : '✅ Created', botStarted ? const Color(0xFF69F0AE) : const Color(0xFFF3BA2F)),
               ],
             ),
             actions: [
@@ -2307,13 +2325,234 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                 onPressed: () async {
                   Navigator.pop(ctx);
                   // Refresh bot list and await completion
-                  final botService = Provider.of<BotService>(this.context, listen: false);
+                  final botService = Provider.of<BotService>(context, listen: false);
                   await botService.fetchActiveBots(tradingMode: _tradingMode, force: true);
                   if (mounted) {
                     setState(() {});
                   }
                 },
                 child: Text('Done', style: GoogleFonts.poppins(color: const Color(0xFF00E5FF))),
+              ),
+            ],
+          ),
+        );
+      } else {
+        final error = jsonDecode(response.body)['error'] ?? 'Failed to create bot';
+        _showErrorSnackbar('❌ $error');
+      }
+    } catch (e) {
+      _showErrorSnackbar('❌ Error: $e');
+    }
+  }
+
+  /// Show quick create dialog for Exness with preset options
+  void _showExnessQuickCreateDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: Row(
+          children: [
+            const Text('🦁 ', style: TextStyle(fontSize: 24, color: Color(0xFF00E5FF))),
+            Text('Quick Exness Bot', style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w700)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Choose a trading preset to create your bot instantly:',
+              style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 20),
+            _exnessPresetOption(
+              dialogContext,
+              '🚀 Edge Pairs (5 pairs)',
+              'Best win rates: EURUSD, GBPUSD, USDJPY, XAUUSD, US500',
+              'edge_pairs',
+            ),
+            const SizedBox(height: 10),
+            _exnessPresetOption(
+              dialogContext,
+              '💱 Majors (5 pairs)',
+              'Low-medium risk: EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD',
+              'majors',
+            ),
+            const SizedBox(height: 10),
+            _exnessPresetOption(
+              dialogContext,
+              '🥇 Gold (1 pair)',
+              'Safe haven: XAUUSD only',
+              'gold',
+            ),
+            const SizedBox(height: 10),
+            _exnessPresetOption(
+              dialogContext,
+              '📊 Indices (2 pairs)',
+              'High volatility: US500, US30',
+              'indices',
+            ),
+            const SizedBox(height: 20),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const BotConfigurationRoute()),
+                );
+              },
+              child: Text(
+                'Custom Setup',
+                style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Individual Exness preset option button
+  Widget _exnessPresetOption(BuildContext context, String title, String description, String preset) => InkWell(
+      onTap: () => _quickCreateExnessBot(context, preset),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontWeight: FontWeight.w600, fontSize: 12)),
+            const SizedBox(height: 4),
+            Text(description, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 11)),
+          ],
+        ),
+      ),
+    );
+
+  /// Quick create Exness bot with preset
+  void _quickCreateExnessBot(BuildContext context, String preset) async {
+    Navigator.pop(context); // Close dialog
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sessionToken = prefs.getString('auth_token');
+
+      if (sessionToken == null || sessionToken.isEmpty) {
+        _showErrorSnackbar('⚠️ Session expired. Please login again.');
+        return;
+      }
+
+      final brokerService = Provider.of<BrokerCredentialsService>(context, listen: false);
+      final credential = brokerService.activeCredential;
+
+      if (credential == null) {
+        _showErrorSnackbar('⚠️ Please setup Exness broker integration first');
+        return;
+      }
+
+      if (credential.broker.toLowerCase() != 'exness') {
+        _showErrorSnackbar('⚠️ This quick create only works with Exness broker');
+        return;
+      }
+
+      if (credential.credentialId.isEmpty) {
+        _showErrorSnackbar('⚠️ Invalid Exness credential');
+        return;
+      }
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white60)),
+              ),
+              const SizedBox(width: 16),
+              Text('Creating quick bot...', style: GoogleFonts.poppins(color: Colors.white70)),
+            ],
+          ),
+        ),
+      );
+
+      final response = await http.post(
+        Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/quick-create-exness'),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Token': sessionToken,
+        },
+        body: jsonEncode({
+          'credentialId': credential.credentialId,
+          'preset': preset,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (!mounted) return;
+      Navigator.pop(context); // Close loading dialog
+
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final botId = data['botId'] ?? 'Bot';
+        final pairs = (data['pairs'] as List?)?.join(', ') ?? 'N/A';
+
+        bool botStarted = false;
+        try {
+          final startResponse = await http.post(
+            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/start'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+            body: jsonEncode({'botId': botId}),
+          ).timeout(const Duration(seconds: 15));
+
+          botStarted = startResponse.statusCode == 200;
+          debugPrint('Bot start response: ${startResponse.statusCode}');
+        } catch (startError) {
+          debugPrint('Bot start failed after quick-create: $startError');
+        }
+
+        final botService = Provider.of<BotService>(context, listen: false);
+        await botService.fetchActiveBots(tradingMode: _tradingMode, force: true);
+
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A2E),
+            title: Row(
+              children: [
+                const Text('✅', style: TextStyle(fontSize: 24)),
+                const SizedBox(width: 8),
+                Expanded(child: Text('Bot Created', style: GoogleFonts.poppins(color: const Color(0xFF69F0AE), fontWeight: FontWeight.w700))),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _infoRow('Bot ID', botId, Colors.white),
+                const SizedBox(height: 8),
+                _infoRow('Broker', 'Exness', Colors.white),
+                const SizedBox(height: 8),
+                _infoRow('Strategy', 'Trend Following', Colors.white),
+                const SizedBox(height: 8),
+                _infoRow('Pairs', pairs, Colors.white60),
+                const SizedBox(height: 8),
+                _infoRow('Status', botStarted ? '🟢 Running' : '✅ Created', botStarted ? const Color(0xFF69F0AE) : const Color(0xFFF3BA2F)),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('OK', style: GoogleFonts.poppins(color: const Color(0xFF00E5FF))),
               ),
             ],
           ),

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -8,35 +9,52 @@ import '../models/user.dart';
 import '../utils/environment_config.dart';
 
 class AuthService extends ChangeNotifier {
-
-  AuthService() {
-    _token = null;
-    _currentUser = null;
-    _initializePreferences();
-  }
-    // Clear error message and notify listeners
-    void clearError() {
-      _errorMessage = null;
-      _successMessage = null;
-      notifyListeners();
-    }
   late SharedPreferences _prefs;
+  bool _prefsInitialized = false;
   
+  Future<void> _waitForPreferences() async {
+    // Wait for initialization to complete with a timeout
+    int attempts = 0;
+    while (!_prefsInitialized && attempts < 50) { // 50 * 50ms = 2.5 seconds max wait
+      await Future.delayed(const Duration(milliseconds: 50));
+      attempts++;
+    }
+    if (!_prefsInitialized) {
+      debugPrint('AuthService: SharedPreferences initialization timed out');
+    }
+  }
+   
   User? _currentUser;
   String? _token;
   bool _isLoading = false;
   String? _errorMessage;
   String? _successMessage;
+  
+  AuthService() {
+    _token = null;
+    _currentUser = null;
+    _initializePreferences();
+  }
+   
+  // Clear error message and notify listeners
+  void clearError() {
+    _errorMessage = null;
+    _successMessage = null;
+    notifyListeners();
+  }
 
   Future<void> _initializePreferences() async {
     try {
       _prefs = await SharedPreferences.getInstance();
-      _loadFromStorage();
-      notifyListeners();
     } catch (e) {
       debugPrint('SharedPreferences initialization error: $e');
+      _prefsInitialized = true; // Mark as done even on error to prevent infinite wait
       notifyListeners();
+      return;
     }
+    _prefsInitialized = true;
+    _loadFromStorage();
+    notifyListeners();
   }
 
   User? get currentUser => _currentUser;
@@ -74,6 +92,18 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Ensure preferences are initialized before use
+      if (!_prefsInitialized) {
+        await _waitForPreferences();
+        // If still not initialized after wait, we have a problem
+        if (!_prefsInitialized) {
+          _errorMessage = 'Login Error: App initialization failed. Please restart the app.';
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
+      }
+      
       if (username.isEmpty || password.isEmpty) {
         throw Exception('Username and password are required');
       }
@@ -82,7 +112,7 @@ class AuthService extends ChangeNotifier {
         Uri.parse('${EnvironmentConfig.apiUrl}/api/user/login'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'email': username, 'password': password}),
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -121,7 +151,13 @@ class AuthService extends ChangeNotifier {
         throw Exception(data['error'] ?? 'Login failed with code ${response.statusCode}');
       }
     } catch (e) {
-      _errorMessage = 'Login Error: ${e.toString()}';
+      if (e is SocketException) {
+        _errorMessage = 'Login Error: Cannot connect to server. Check your internet connection and ensure the backend is running at ${EnvironmentConfig.apiUrl}';
+      } else if (e is http.ClientException) {
+        _errorMessage = 'Login Error: Network error - ${e.message}';
+      } else {
+        _errorMessage = 'Login Error: ${e.toString()}';
+      }
       _isLoading = false;
       notifyListeners();
       return false;
@@ -134,13 +170,18 @@ class AuthService extends ChangeNotifier {
     _errorMessage = null;
     notifyListeners();
     try {
+      // Ensure preferences are initialized
+      if (!_prefsInitialized) {
+        await _waitForPreferences();
+      }
+      
       final response = await http.post(
         Uri.parse('${EnvironmentConfig.apiUrl}/api/user/verify-2fa'),
         headers: {
           'Content-Type': 'application/json',
         },
         body: jsonEncode({'temp_token': tempToken, 'code': code}),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success'] == true) {
@@ -167,7 +208,13 @@ class AuthService extends ChangeNotifier {
         throw Exception(data['error'] ?? '2FA failed with code ${response.statusCode}');
       }
     } catch (e) {
-      _errorMessage = '2FA Error: ${e.toString()}';
+      if (e is SocketException) {
+        _errorMessage = '2FA Error: Cannot connect to server. Check your internet connection.';
+      } else if (e is http.ClientException) {
+        _errorMessage = '2FA Error: Network error - ${e.message}';
+      } else {
+        _errorMessage = '2FA Error: ${e.toString()}';
+      }
       _isLoading = false;
       notifyListeners();
       return false;
@@ -182,7 +229,7 @@ class AuthService extends ChangeNotifier {
           'Content-Type': 'application/json',
         },
         body: jsonEncode({'temp_token': tempToken}),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
     } catch (_) {}
   }
 
@@ -194,6 +241,11 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Ensure preferences are initialized
+      if (!_prefsInitialized) {
+        await _waitForPreferences();
+      }
+      
       if (username.isEmpty || email.isEmpty || password.isEmpty) {
         throw Exception('All fields are required');
       }
@@ -212,7 +264,7 @@ class AuthService extends ChangeNotifier {
         Uri.parse('${EnvironmentConfig.apiUrl}/api/user/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final data = jsonDecode(response.body);
@@ -248,7 +300,13 @@ class AuthService extends ChangeNotifier {
         throw Exception(data['error'] ?? 'Registration failed');
       }
     } catch (e) {
-      _errorMessage = 'Registration Error: ${e.toString()}';
+      if (e is SocketException) {
+        _errorMessage = 'Registration Error: Cannot connect to server. Check your internet connection and ensure the backend is running at ${EnvironmentConfig.apiUrl}';
+      } else if (e is http.ClientException) {
+        _errorMessage = 'Registration Error: Network error - ${e.message}';
+      } else {
+        _errorMessage = 'Registration Error: ${e.toString()}';
+      }
       _isLoading = false;
       notifyListeners();
       return false;
@@ -259,13 +317,15 @@ class AuthService extends ChangeNotifier {
   Future<void> logout() async {
     _token = null;
     _currentUser = null;
-    await _prefs.remove('auth_token');
-    await _prefs.remove('current_user');
-    await _prefs.remove('user_id');
-    await _prefs.remove('mt5_account');
-    await _prefs.remove('mt5_server');
-    await _prefs.remove('active_bots');
-    await _prefs.remove('last_bot_sync');
+    if (_prefsInitialized) {
+      await _prefs.remove('auth_token');
+      await _prefs.remove('current_user');
+      await _prefs.remove('user_id');
+      await _prefs.remove('mt5_account');
+      await _prefs.remove('mt5_server');
+      await _prefs.remove('active_bots');
+      await _prefs.remove('last_bot_sync');
+    }
     debugPrint('✅ Session cleared');
     notifyListeners();
   }
@@ -277,6 +337,11 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Ensure preferences are initialized
+      if (!_prefsInitialized) {
+        await _waitForPreferences();
+      }
+      
       if (_currentUser == null || _token == null) throw Exception('User not logged in');
 
       final response = await http.put(
@@ -311,7 +376,13 @@ class AuthService extends ChangeNotifier {
         throw Exception(data['error'] ?? 'Profile update failed');
       }
     } catch (e) {
-      _errorMessage = e.toString();
+      if (e is SocketException) {
+        _errorMessage = 'Profile Error: Cannot connect to server. Check your internet connection.';
+      } else if (e is http.ClientException) {
+        _errorMessage = 'Profile Error: Network error - ${e.message}';
+      } else {
+        _errorMessage = e.toString();
+      }
       _isLoading = false;
       notifyListeners();
       return false;
@@ -325,6 +396,11 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Ensure preferences are initialized
+      if (!_prefsInitialized) {
+        await _waitForPreferences();
+      }
+      
       if (_token == null) throw Exception('User not logged in');
       if (oldPassword.isEmpty || newPassword.isEmpty) {
         throw Exception('Both passwords are required');
@@ -343,7 +419,7 @@ class AuthService extends ChangeNotifier {
           'old_password': oldPassword,
           'new_password': newPassword,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       final data = jsonDecode(response.body);
 
@@ -355,7 +431,13 @@ class AuthService extends ChangeNotifier {
         throw Exception(data['error'] ?? 'Password change failed');
       }
     } catch (e) {
-      _errorMessage = e.toString();
+      if (e is SocketException) {
+        _errorMessage = 'Password Error: Cannot connect to server. Check your internet connection.';
+      } else if (e is http.ClientException) {
+        _errorMessage = 'Password Error: Network error - ${e.message}';
+      } else {
+        _errorMessage = 'Password Error: ${e.toString()}';
+      }
       _isLoading = false;
       notifyListeners();
       return false;

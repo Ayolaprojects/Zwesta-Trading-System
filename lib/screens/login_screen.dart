@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -28,6 +29,7 @@ class _LoginScreenState extends State<LoginScreen> {
   late TextEditingController _firstNameController;
   late TextEditingController _lastNameController;
   late TextEditingController _referralCodeController;
+  bool _rememberMe = false;
 
   @override
   void initState() {
@@ -200,6 +202,14 @@ class _LoginScreenState extends State<LoginScreen> {
                 ],
               ),
             ),
+          ),
+        ),
+        bottomSheet: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'v1.0.0',
+            style: GoogleFonts.poppins(color: Colors.white30, fontSize: 11),
+            textAlign: TextAlign.center,
           ),
         ),
       );
@@ -647,6 +657,25 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ),
+            ),
+          ),
+
+        // Remember me checkbox
+        if (_isLogin)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Row(
+              children: [
+                Checkbox(
+                  value: _rememberMe,
+                  onChanged: (v) => setState(() => _rememberMe = v ?? false),
+                  fillColor: MaterialStateProperty.resolveWith((s) => Colors.white),
+                ),
+                Text(
+                  'Remember me',
+                  style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13),
+                ),
+              ],
             ),
           ),
       ],

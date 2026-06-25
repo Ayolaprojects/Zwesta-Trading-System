@@ -28,6 +28,8 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   late Map<String, dynamic> _botData;
   List<Map<String, dynamic>> _fallbackTradeHistory = [];
   DateTime? _lastFallbackTradeRefreshAt;
+  DateTime? _lastRefreshAt;
+  bool _isRefreshing = false;
 
   // Withdrawal analytics state
   Map<String, dynamic>? _withdrawalAnalytics;
@@ -50,53 +52,14 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
 
     _refreshAnalytics();
     _loadWithdrawalAnalytics();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (mounted) {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (mounted && !_isRefreshing) {
         _refreshAnalytics();
       }
     });
 
     if (_isIG) {
       _loadIGData();
-    }
-  }
-
-  Future<void> _loadTradeHistoryFallback() async {
-    final now = DateTime.now();
-    if (_lastFallbackTradeRefreshAt != null && now.difference(_lastFallbackTradeRefreshAt!) < const Duration(seconds: 8)) {
-      return;
-    }
-    _lastFallbackTradeRefreshAt = now;
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final sessionToken = prefs.getString('auth_token');
-      final botId = _botData['botId'];
-      if (sessionToken == null || sessionToken.isEmpty || botId == null) {
-        return;
-      }
-
-      final response = await http.get(
-        Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/$botId/trades-detailed?limit=30'),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-Token': sessionToken,
-        },
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final trades = (data['trades'] as List? ?? [])
-            .map((entry) => Map<String, dynamic>.from(entry as Map))
-            .toList();
-        if (mounted) {
-          setState(() {
-            _fallbackTradeHistory = trades;
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint('Error loading fallback trade history: $e');
     }
   }
 
@@ -170,11 +133,13 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   }
 
   Future<void> _refreshAnalytics() async {
-    // Fetch fresh bot data from backend API
+    if (_isRefreshing || !mounted) return;
+    _isRefreshing = true;
+
     try {
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token');
-      final botId = _botData['botId'];
+      final currentBotId = _botData['botId'];
 
       if (sessionToken == null || sessionToken.isEmpty) {
         debugPrint('Skipping analytics refresh: missing session token');
@@ -182,12 +147,11 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
         return;
       }
 
-      if (botId == null || botId.toString().isEmpty) {
+      if (currentBotId == null || currentBotId.toString().isEmpty) {
         return;
       }
 
-      final url =
-          '${EnvironmentConfig.apiUrl}/api/bot/$botId/analytics-snapshot';
+      final url = '${EnvironmentConfig.apiUrl}/api/bot/$currentBotId/analytics-snapshot';
 
       final response = await http.get(
         Uri.parse(url),
@@ -202,10 +166,15 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
         if (data['success'] == true) {
           final bot = data['bot'];
           if (bot is Map<String, dynamic> && mounted) {
+            final newBotId = bot['botId'];
+            if (newBotId != currentBotId) {
+              _fallbackTradeHistory = [];
+            }
             setState(() {
               _botData = bot;
+              _lastRefreshAt = DateTime.now();
             });
-            await _loadTradeHistoryFallback();
+            _loadTradeHistoryFallback();
           }
         }
       } else if (response.statusCode == 401 || response.statusCode == 403) {
@@ -214,6 +183,48 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
       }
     } catch (e) {
       debugPrint('Error refreshing analytics: $e');
+    } finally {
+      _isRefreshing = false;
+    }
+  }
+
+  Future<void> _loadTradeHistoryFallback() async {
+    if (!mounted) return;
+    final now = DateTime.now();
+    if (_lastFallbackTradeRefreshAt != null && now.difference(_lastFallbackTradeRefreshAt!) < const Duration(seconds: 8)) {
+      return;
+    }
+    _lastFallbackTradeRefreshAt = now;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sessionToken = prefs.getString('auth_token');
+      final botId = _botData['botId'];
+      if (sessionToken == null || sessionToken.isEmpty || botId == null) {
+        return;
+      }
+
+      final response = await http.get(
+        Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/$botId/trades-detailed?limit=30'),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Token': sessionToken,
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final trades = (data['trades'] as List? ?? [])
+            .map((entry) => Map<String, dynamic>.from(entry as Map))
+            .toList();
+        if (mounted) {
+          setState(() {
+            _fallbackTradeHistory = trades;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading fallback trade history: $e');
     }
   }
 
@@ -221,6 +232,16 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
   void dispose() {
     _refreshTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final now = DateTime.now();
+    final lastRefresh = _lastRefreshAt;
+    if (lastRefresh == null || now.difference(lastRefresh) > const Duration(seconds: 3)) {
+      _refreshAnalytics();
+    }
   }
 
   double _toDouble(dynamic value, [double fallback = 0]) {
@@ -251,7 +272,16 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
       final millis = timeRaw > 1e12 ? timeRaw.toInt() : timeRaw.toInt() * 1000;
       return DateTime.fromMillisecondsSinceEpoch(millis);
     }
-    return DateTime.tryParse(timeRaw.toString());
+    final rawStr = timeRaw.toString().trim();
+    if (rawStr.isEmpty) {
+      return null;
+    }
+    final parsedNum = num.tryParse(rawStr);
+    if (parsedNum != null) {
+      final millis = parsedNum > 1e12 ? parsedNum.toInt() : parsedNum.toInt() * 1000;
+      return DateTime.fromMillisecondsSinceEpoch(millis);
+    }
+    return DateTime.tryParse(rawStr);
   }
 
   int _tradeTimestampMillis(Map<String, dynamic> trade) {
@@ -303,6 +333,8 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
       'type',
       'status',
       'profit',
+      'pnl',
+      'profitLoss',
       'entryPrice',
       'exitPrice',
       'currentPrice',
@@ -314,6 +346,14 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
       final incomingIsFilled = incomingValue != null && incomingValue.toString().trim().isNotEmpty;
       if (currentIsEmpty && incomingIsFilled) {
         merged[key] = incomingValue;
+      } else if (!currentIsEmpty && incomingIsFilled) {
+        final currentTs = _tradeTimestampMillis(current);
+        final incomingTs = _tradeTimestampMillis(incoming);
+        if (incomingTs == 0 || currentTs >= incomingTs) {
+          merged[key] = currentValue;
+        } else {
+          merged[key] = incomingValue;
+        }
       }
     }
 

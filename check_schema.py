@@ -1,21 +1,18 @@
 import sqlite3
-import uuid
-from datetime import datetime, timedelta
 
-conn = sqlite3.connect('zwesta_trading.db')
-cursor = conn.cursor()
+conn = sqlite3.connect(r'zwesta_trading.db')
+cur = conn.cursor()
 
-# Get table info
-cursor.execute("PRAGMA table_info(users)")
-columns = cursor.fetchall()
-print('Users table columns:')
-for col in columns:
-    print(f'  {col[1]} ({col[2]})')
+# Check bot_credentials schema
+cur.execute("PRAGMA table_info(bot_credentials)")
+print('bot_credentials schema:')
+for row in cur.fetchall():
+    print(f'  {row}')
 
-cursor.execute("PRAGMA table_info(sessions)")
-columns = cursor.fetchall()
-print('\nSessions table columns:')
-for col in columns:
-    print(f'  {col[1]} ({col[2]})')
+# Check all credentials
+cur.execute("SELECT * FROM bot_credentials")
+print('\nbot_credentials data:')
+for row in cur.fetchall():
+    print(f'  {row}')
 
 conn.close()

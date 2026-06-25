@@ -81,6 +81,7 @@ class TradeCard extends StatelessWidget {
   final double profit;
   final double profitPercentage;
   final Function? onTap;
+  final Function(String)? onQuickAction;
   final DateTime? openedAt;
   final DateTime? closedAt;
   /// Optional currency prefix for profit display (e.g. 'R', '$', 'USDT ').
@@ -171,8 +172,35 @@ class TradeCard extends StatelessWidget {
                       ),
                     ],
                   ),
-                ],
+],
               ),
+              // Quick profit-taking buttons for open profitable trades
+              if (profit > 0 && onQuickAction != null) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    if (profitPercentage < 10)
+                      _QuickActionButton(
+                        label: 'Take 50%',
+                        color: const Color(0xFF00C853),
+                        onTap: () => onQuickAction?.call('take_half'),
+                      ),
+                    if (profitPercentage >= 10 && profitPercentage < 25)
+                      _QuickActionButton(
+                        label: 'Lock Profit',
+                        color: const Color(0xFF00E5FF),
+                        onTap: () => onQuickAction?.call('lock_profit'),
+                      ),
+                    if (profitPercentage >= 25)
+                      _QuickActionButton(
+                        label: 'Close Peak',
+                        color: const Color(0xFFFFA726),
+                        onTap: () => onQuickAction?.call('close_peak'),
+                      ),
+                  ],
+                ),
+              ],
               // Display timestamps
               if (openedAt != null || closedAt != null) ...[
                 const SizedBox(height: AppSpacing.sm),
@@ -351,13 +379,48 @@ class SuccessBanner extends StatelessWidget {
                 ),
               ],
             ),
+),
+             ),
+             IconButton(
+               icon: const Icon(Icons.close),
+               onPressed: onDismiss,
+               color: AppColors.successColor,
+             ),
+           ],
+         ),
+       ),
+     );
+}
+
+class _QuickActionButton extends StatelessWidget {
+  const _QuickActionButton({
+    required this.label,
+    required this.color,
+    required this.onTap,
+    Key? key,
+  }) : super(key: key);
+  final String label;
+  final Color color;
+  final Function() onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
-          IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: onDismiss,
-            color: AppColors.successColor,
-          ),
-        ],
-      ),
-    );
+        ),
+      );
 }

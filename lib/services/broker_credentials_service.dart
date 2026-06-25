@@ -9,7 +9,7 @@ import '../utils/environment_config.dart';
 String? _defaultMt5TerminalPath(String broker, {required bool isLive}) {
   final normalizedBroker = broker.trim().toLowerCase();
   if (normalizedBroker == 'exness') {
-    return isLive ? r'C:\MT5\Exness-Live' : r'C:\MT5\Exness-Demo';
+    return r'C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe';
   }
   return null;
 }

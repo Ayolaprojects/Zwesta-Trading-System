@@ -249,22 +249,23 @@ class WorkerPoolManager:
             conn = get_db_connection()
             cursor = conn.cursor()
             now = datetime.now().isoformat()
+            placeholder = '%s' if using_postgres() else '?'
 
             # Insert command into queue
-            cursor.execute('''
+            cursor.execute(f'''
                 INSERT INTO worker_bot_queue
                 (bot_id, user_id, worker_id, command, status, bot_config, credentials, created_at)
-                VALUES (?, ?, ?, 'start', 'pending', ?, ?, ?)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, 'start', 'pending', {placeholder}, {placeholder}, {placeholder})
             ''', (bot_id, user_id, worker_id,
                   json.dumps(bot_config) if bot_config else None,
                   json.dumps(credentials) if credentials else None,
                   now))
 
             # Create or update assignment
-            cursor.execute('''
+            cursor.execute(f'''
                 INSERT OR REPLACE INTO worker_bot_assignments
                 (bot_id, worker_id, account_number, broker_name, assigned_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
             ''', (bot_id, worker_id, str(account_number), broker_name, now))
 
             conn.commit()
@@ -286,10 +287,11 @@ class WorkerPoolManager:
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
+            placeholder = '%s' if using_postgres() else '?'
 
             # Find which worker has this bot
-            cursor.execute('''
-                SELECT worker_id FROM worker_bot_assignments WHERE bot_id = ?
+            cursor.execute(f'''
+                SELECT worker_id FROM worker_bot_assignments WHERE bot_id = {placeholder}
             ''', (bot_id,))
             row = cursor.fetchone()
             if not row:
@@ -298,16 +300,17 @@ class WorkerPoolManager:
                 return False
 
             worker_id = row['worker_id']
+            now = datetime.now().isoformat()
 
             # Queue stop command
-            cursor.execute('''
+            cursor.execute(f'''
                 INSERT INTO worker_bot_queue
                 (bot_id, user_id, worker_id, command, status, created_at)
-                VALUES (?, '', ?, 'stop', 'pending', ?)
-            ''', (bot_id, worker_id, datetime.now().isoformat()))
+                VALUES ({placeholder}, '', {placeholder}, 'stop', 'pending', {placeholder})
+            ''', (bot_id, worker_id, now))
 
             # Remove assignment
-            cursor.execute('DELETE FROM worker_bot_assignments WHERE bot_id = ?', (bot_id,))
+            cursor.execute(f'DELETE FROM worker_bot_assignments WHERE bot_id = {placeholder}', (bot_id,))
 
             conn.commit()
             conn.close()
