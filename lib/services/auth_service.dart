@@ -8,20 +8,32 @@ import '../models/user.dart';
 import '../utils/environment_config.dart';
 
 class AuthService extends ChangeNotifier {
+  bool _initialized = false;
 
   AuthService() {
     _token = null;
     _currentUser = null;
-    _initializePreferences();
+    _initAsync();
   }
-    // Clear error message and notify listeners
-    void clearError() {
-      _errorMessage = null;
-      _successMessage = null;
-      notifyListeners();
+
+  Future<void> _initAsync() async {
+    await _initializePreferences();
+  }
+
+  Future<void> ensureInitialized() async {
+    if (!_initialized) {
+      await _initializePreferences();
     }
-  late SharedPreferences _prefs;
-  
+  }
+
+  void clearError() {
+    _errorMessage = null;
+    _successMessage = null;
+    notifyListeners();
+  }
+
+  SharedPreferences? _prefs;
+ 
   User? _currentUser;
   String? _token;
   bool _isLoading = false;
@@ -32,9 +44,11 @@ class AuthService extends ChangeNotifier {
     try {
       _prefs = await SharedPreferences.getInstance();
       _loadFromStorage();
+      _initialized = true;
       notifyListeners();
     } catch (e) {
       debugPrint('SharedPreferences initialization error: $e');
+      _initialized = true;
       notifyListeners();
     }
   }
@@ -47,9 +61,10 @@ class AuthService extends ChangeNotifier {
   bool get isAuthenticated => _token != null && _currentUser != null;
 
   void _loadFromStorage() {
+    if (_prefs == null) return;
     try {
-      final tokenJson = _prefs.getString('auth_token');
-      final userJson = _prefs.getString('current_user');
+      final tokenJson = _prefs!.getString('auth_token');
+      final userJson = _prefs!.getString('current_user');
       
       if (tokenJson != null && userJson != null) {
         _token = tokenJson;
@@ -68,6 +83,7 @@ class AuthService extends ChangeNotifier {
   String? get pending2faToken => _pending2faToken;
 
   Future<bool> login(String username, String password) async {
+    await ensureInitialized();
     _isLoading = true;
     _errorMessage = null;
     _pending2faToken = null;
@@ -189,6 +205,7 @@ class AuthService extends ChangeNotifier {
   // Register function
   Future<bool> register(String username, String email, String password, 
       String firstName, String lastName, {String referralCode = ''}) async {
+    await ensureInitialized();
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
