@@ -510,7 +510,7 @@ POSTGRES_SCHEMA_SQL = [
         profit DOUBLE PRECISION DEFAULT 0,
         commission DOUBLE PRECISION DEFAULT 0,
         swap DOUBLE PRECISION DEFAULT 0,
-        ticket BIGINT,
+        ticket TEXT,
         time_open TEXT,
         time_close TEXT,
         status TEXT DEFAULT 'open',
@@ -622,6 +622,50 @@ POSTGRES_SCHEMA_SQL = [
 ]
 
 
+MIGRATIONS = [
+    '''
+    ALTER TABLE trades ALTER COLUMN ticket TYPE TEXT;
+    ''',
+]
+
+
+def run_migrations(database_url: Optional[str] = None) -> None:
+    engine = get_sqlalchemy_engine(database_url)
+    if engine is not None:
+        with engine.begin() as connection:
+            for statement in MIGRATIONS:
+                try:
+                    connection.exec_driver_sql(statement)
+                    print(f"Applied migration: {statement.strip()[:50]}...")
+                except Exception as e:
+                    print(f"Migration skipped (may already be applied): {e}")
+        return
+
+    resolved_database_url = (database_url or get_database_url()).strip()
+    if not resolved_database_url:
+        print("No DATABASE_URL configured, skipping migrations")
+        return
+
+    try:
+        import psycopg2
+    except ImportError:
+        print("psycopg2 not available, skipping migrations")
+        return
+
+    conn = psycopg2.connect(resolved_database_url)
+    try:
+        cursor = conn.cursor()
+        for statement in MIGRATIONS:
+            try:
+                cursor.execute(statement)
+                print(f"Applied migration: {statement.strip()[:50]}...")
+            except Exception as e:
+                print(f"Migration skipped (may already be applied): {e}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def create_postgres_schema(sql_statements: Iterable[str] = POSTGRES_SCHEMA_SQL, database_url: Optional[str] = None) -> None:
     engine = get_sqlalchemy_engine(database_url)
     if engine is not None:
@@ -653,4 +697,5 @@ def create_postgres_schema(sql_statements: Iterable[str] = POSTGRES_SCHEMA_SQL, 
 
 if __name__ == '__main__':
     create_postgres_schema()
-    print('PostgreSQL schema created successfully.')
+    run_migrations()
+    print('PostgreSQL schema and migrations completed successfully.')

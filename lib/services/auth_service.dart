@@ -8,22 +8,41 @@ import '../models/user.dart';
 import '../utils/environment_config.dart';
 
 class AuthService extends ChangeNotifier {
-  bool _initialized = false;
+  SharedPreferences? _prefs;
+  bool _isInitialized = false;
 
   AuthService() {
     _token = null;
     _currentUser = null;
-    _initAsync();
   }
 
-  Future<void> _initAsync() async {
-    await _initializePreferences();
+  Future<void> init() async {
+    if (_isInitialized) return;
+    try {
+      _prefs = await SharedPreferences.getInstance();
+      _loadFromStorage();
+      _isInitialized = true;
+    } catch (e) {
+      debugPrint('AuthService.init error: $e');
+    }
+    notifyListeners();
   }
 
   Future<void> ensureInitialized() async {
-    if (!_initialized) {
-      await _initializePreferences();
+    if (!_isInitialized) {
+      await init();
     }
+  }
+
+  Future<void> _saveCredentials() async {
+    // Ensure we have prefs before saving
+    if (_prefs == null) {
+      _prefs = await SharedPreferences.getInstance();
+      if (_prefs == null) return;
+    }
+    await _prefs!.setString('auth_token', _token!);
+    await _prefs!.setString('user_id', _currentUser?.id ?? '');
+    await _prefs!.setString('current_user', jsonEncode(_currentUser!.toJson()));
   }
 
   void clearError() {
@@ -32,26 +51,11 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
   }
 
-  SharedPreferences? _prefs;
- 
   User? _currentUser;
   String? _token;
   bool _isLoading = false;
   String? _errorMessage;
   String? _successMessage;
-
-  Future<void> _initializePreferences() async {
-    try {
-      _prefs = await SharedPreferences.getInstance();
-      _loadFromStorage();
-      _initialized = true;
-      notifyListeners();
-    } catch (e) {
-      debugPrint('SharedPreferences initialization error: $e');
-      _initialized = true;
-      notifyListeners();
-    }
-  }
 
   User? get currentUser => _currentUser;
   String? get token => _token;
@@ -75,7 +79,6 @@ class AuthService extends ChangeNotifier {
       _token = null;
       _currentUser = null;
     }
-    notifyListeners();
   }
 
   // Pending 2FA temp token (set during login when 2FA required)
@@ -122,10 +125,7 @@ class AuthService extends ChangeNotifier {
             accountType: 'Premium',
           );
 
-          await _prefs.setString('auth_token', _token!);
-          await _prefs.setString('user_id', data['user_id'] ?? '');
-          await _prefs.setString('current_user', jsonEncode(_currentUser!.toJson()));
-
+          await _saveCredentials();
           _isLoading = false;
           notifyListeners();
           return true;
@@ -169,9 +169,7 @@ class AuthService extends ChangeNotifier {
             lastName: data['name']?.split(' ').length > 1 ? data['name'].split(' ')[1] : 'User',
             accountType: 'Premium',
           );
-          await _prefs.setString('auth_token', _token!);
-          await _prefs.setString('user_id', data['user_id'] ?? '');
-          await _prefs.setString('current_user', jsonEncode(_currentUser!.toJson()));
+          await _saveCredentials();
           _isLoading = false;
           notifyListeners();
           return true;
@@ -250,16 +248,12 @@ class AuthService extends ChangeNotifier {
         );
 
         final referralCode = data['referral_code'] ?? '';
-        await _prefs.setString('referral_code', referralCode);
-        await _prefs.setString('user_id', _currentUser!.id);
-        await _prefs.setString('auth_token', _token!);
-        await _prefs.setString('current_user', jsonEncode(_currentUser!.toJson()));
-
-        _isLoading = false;
-        _errorMessage = null;
-        _successMessage = 'Registration successful! Your referral code: $referralCode';
-        notifyListeners();
-        return true;
+        await _saveCredentials();
+          _isLoading = false;
+          _errorMessage = null;
+          _successMessage = 'Registration successful! Your referral code: $referralCode';
+          notifyListeners();
+          return true;
       } else {
         final data = jsonDecode(response.body);
         throw Exception(data['error'] ?? 'Registration failed');
@@ -272,17 +266,29 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // Logout function
+// Logout function
   Future<void> logout() async {
     _token = null;
     _currentUser = null;
-    await _prefs.remove('auth_token');
-    await _prefs.remove('current_user');
-    await _prefs.remove('user_id');
-    await _prefs.remove('mt5_account');
-    await _prefs.remove('mt5_server');
-    await _prefs.remove('active_bots');
-    await _prefs.remove('last_bot_sync');
+    if (_prefs != null) {
+      await _prefs!.remove('auth_token');
+      await _prefs!.remove('current_user');
+      await _prefs!.remove('user_id');
+      await _prefs!.remove('mt5_account');
+      await _prefs!.remove('mt5_server');
+      await _prefs!.remove('active_bots');
+      await _prefs!.remove('last_bot_sync');
+    }
+    debugPrint('✅ Session cleared');
+    notifyListeners();
+  }
+
+  // Clear error message
+  void clearErrorMessage() {
+    _errorMessage = null;
+    notifyListeners();
+  }
+}
     debugPrint('✅ Session cleared');
     notifyListeners();
   }
@@ -320,7 +326,7 @@ class AuthService extends ChangeNotifier {
           profileImage: _currentUser!.profileImage,
           accountType: _currentUser!.accountType,
         );
-        await _prefs.setString('current_user', jsonEncode(_currentUser!.toJson()));
+        await _prefs!.setString('current_user', jsonEncode(_currentUser!.toJson()));
         _isLoading = false;
         notifyListeners();
         return true;

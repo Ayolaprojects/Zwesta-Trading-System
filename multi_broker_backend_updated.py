@@ -154,7 +154,7 @@ from rest_price_feed import RestPriceFeed, get_price_feed
 from trade_router import TradeRouter, init_trade_router, get_trade_router, ExecutionMode
 from mt5_socket_bridge import SocketBridgeManager, MT5SocketBridge, init_socket_bridges
 from runtime_infrastructure import build_sqlite_connection as _orig_build_sqlite_connection, get_database_path, get_database_url, get_runtime_infrastructure_summary, using_postgres
-from postgres_schema import create_postgres_schema
+from postgres_schema import create_postgres_schema, run_migrations
 from credential_crypto import (
     encrypt_secret,
     decrypt_secret,
@@ -5183,6 +5183,8 @@ def init_database():
     if using_postgres():
         create_postgres_schema(database_url=get_database_url())
         logger.info('PostgreSQL schema initialized')
+        run_migrations(database_url=get_database_url())
+        logger.info('PostgreSQL migrations applied')
         return
 
     conn = build_sqlite_connection(timeout=30.0)
@@ -5928,7 +5930,7 @@ def init_database():
             profit REAL DEFAULT 0,
             commission REAL DEFAULT 0,
             swap REAL DEFAULT 0,
-            ticket INTEGER,
+            ticket TEXT,
             time_open TEXT,
             time_close TEXT,
             status TEXT DEFAULT 'open',
@@ -24997,6 +24999,16 @@ def get_scanner_status(bot_id):
             return jsonify({'success': False, 'error': f'Bot {bot_id} not found'}), 404
         
         bot = active_bots[bot_id]
+        return jsonify({
+            'success': True,
+            'bot_id': bot_id,
+            'is_scanning': bot.get('is_scanning', False),
+            'last_scan': bot.get('last_scan', ''),
+            'pairs_monitored': len(bot.get('symbols', [])),
+        })
+    except Exception as e:
+        logger.error(f"Error getting scanner status: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/system/strategy-validation', methods=['POST'])
@@ -28166,26 +28178,26 @@ def should_trade_today(bot_config, symbol):
 # Track equity trend so each bot knows whether its account is growing.
 # Persisted via PERSISTED_BOT_STATE_FIELDS so they survive restarts.
 
-SYMBOL_PERF_LOOKBACK = 12          # consider last N closed trades per symbol
-SYMBOL_PERF_MIN_SAMPLES = 4        # need this many before judging
-SYMBOL_PERF_BLACKLIST_LOSS = -5.0  # cumulative PnL <= this -> blacklist
-SYMBOL_PERF_BLACKLIST_WINRATE = 0.30
-SYMBOL_PERF_DEMOTE_WINRATE = 0.45
-SYMBOL_PERF_FAVOR_WINRATE = 0.60
-SYMBOL_PERF_FAVOR_PROFIT = 1.0
-SYMBOL_PERF_FAVOR_MULT = 1.5
-SYMBOL_PERF_DEMOTE_MULT = 0.5
-SYMBOL_PERF_BLACKLIST_COOLDOWN_MIN = 240   # after blacklist, retry only every 4h
+SYMBOL_PERF_LOOKBACK = 12
+SYMBOL_PERF_MIN_SAMPLES = 3
+SYMBOL_PERF_BLACKLIST_LOSS = -10.0
+SYMBOL_PERF_BLACKLIST_WINRATE = 0.25
+SYMBOL_PERF_DEMOTE_WINRATE = 0.35
+SYMBOL_PERF_FAVOR_WINRATE = 0.65
+SYMBOL_PERF_FAVOR_PROFIT = 2.0
+SYMBOL_PERF_FAVOR_MULT = 1.8
+SYMBOL_PERF_DEMOTE_MULT = 0.6
+SYMBOL_PERF_BLACKLIST_COOLDOWN_MIN = 120
 
-SESSION_PERF_LOOKBACK = 36
-SESSION_PERF_MIN_SAMPLES = 4
-SESSION_PERF_BLOCK_MIN_SAMPLES = 6
-SESSION_PERF_BLOCK_MIN_PNL = -1.0
-SESSION_PERF_BLOCK_WINRATE = 0.34
-SESSION_PERF_DEMOTE_WINRATE = 0.45
-SESSION_PERF_DEMOTE_MULT = 0.7
-SESSION_PERF_STRONG_OVERRIDE_SCORE = 8.6
-SESSION_PERF_STRONG_OVERRIDE_SIGNAL = 78.0
+SESSION_PERF_LOOKBACK = 24
+SESSION_PERF_MIN_SAMPLES = 3
+SESSION_PERF_BLOCK_MIN_SAMPLES = 4
+SESSION_PERF_BLOCK_MIN_PNL = -0.5
+SESSION_PERF_BLOCK_WINRATE = 0.30
+SESSION_PERF_DEMOTE_WINRATE = 0.35
+SESSION_PERF_DEMOTE_MULT = 0.8
+SESSION_PERF_STRONG_OVERRIDE_SCORE = 7.5
+SESSION_PERF_STRONG_OVERRIDE_SIGNAL = 70.0
 
 EQUITY_TREND_HISTORY_MAX = 20
 EQUITY_TREND_GROWTH_THRESHOLD = 0.0025  # 0.25% move to avoid noise-driven trend flips
@@ -28572,7 +28584,7 @@ def _update_post_close_risk_state(
             and _is_exness_forex_symbol(closed_symbol_base)
             and realized_profit <= 2.0
         ):
-            scratch_cooldown_minutes = 12.0
+            scratch_cooldown_minutes = 5.0
             _set_symbol_reentry_cooldown(
                 bot_config,
                 closed_symbol,
@@ -28594,30 +28606,30 @@ def _update_post_close_risk_state(
     loss_streak_hard_pause_minutes = LOSS_STREAK_HARD_PAUSE_MINUTES
     loss_streak_symbol_cooldown_minutes = LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES
     if broker_name == 'Exness':
-        loss_streak_pause_after = min(loss_streak_pause_after, 3)
-        loss_streak_pause_minutes = max(loss_streak_pause_minutes, 15)
-        loss_streak_hard_pause_after = min(loss_streak_hard_pause_after, 5)
-        loss_streak_hard_pause_minutes = max(loss_streak_hard_pause_minutes, 60)
-        loss_streak_symbol_cooldown_minutes = max(loss_streak_symbol_cooldown_minutes, 15)
+        loss_streak_pause_after = min(loss_streak_pause_after, 5)
+        loss_streak_pause_minutes = min(loss_streak_pause_minutes, 10)
+        loss_streak_hard_pause_after = min(loss_streak_hard_pause_after, 8)
+        loss_streak_hard_pause_minutes = min(loss_streak_hard_pause_minutes, 30)
+        loss_streak_symbol_cooldown_minutes = min(loss_streak_symbol_cooldown_minutes, 8)
 
     post_loss_symbol_cooldown_minutes = 0.0
     post_loss_reason = None
     if closed_symbol_base == 'XAGUSD':
-        post_loss_symbol_cooldown_minutes = 30.0
+        post_loss_symbol_cooldown_minutes = 15.0
         post_loss_reason = 'XAGUSD_POST_LOSS_COOLDOWN'
     elif broker_name == 'Binance' and closed_symbol_base in {'BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD'}:
-        post_loss_symbol_cooldown_minutes = 20.0
+        post_loss_symbol_cooldown_minutes = 10.0
         post_loss_reason = 'BINANCE_MAJOR_CRYPTO_POST_LOSS_COOLDOWN'
     elif broker_name == 'Exness' and closed_symbol_base in {'BTCUSD', 'ETHUSD', 'SOLUSD'}:
-        post_loss_symbol_cooldown_minutes = 12.0
+        post_loss_symbol_cooldown_minutes = 5.0
         post_loss_reason = 'MAJOR_CRYPTO_POST_LOSS_COOLDOWN'
     elif broker_name == 'Exness' and _is_exness_forex_symbol(closed_symbol_base):
-        post_loss_symbol_cooldown_minutes = 15.0
+        post_loss_symbol_cooldown_minutes = 8.0
         post_loss_reason = 'EXNESS_FOREX_POST_LOSS_COOLDOWN'
     elif broker_name == 'Exness' and closed_symbol_base in {
         'XAUUSD', 'XAGUSD', 'US500', 'US30', 'USTEC', 'USOIL', 'UKOIL', 'TSLA', 'AUDUSD', 'NZDUSD',
     }:
-        post_loss_symbol_cooldown_minutes = 30.0
+        post_loss_symbol_cooldown_minutes = 15.0
         post_loss_reason = 'FAST_MARKET_POST_LOSS_COOLDOWN'
 
     if post_loss_symbol_cooldown_minutes > 0 and closed_symbol:
@@ -31932,11 +31944,11 @@ UNIVERSAL_ADAPTATION_RECENT_TRADE_WINDOW = 8
 UNIVERSAL_ADAPTATION_COOLDOWN_MINUTES = 30
 UNIVERSAL_ADAPTATION_SUCCESS_WIN_RATE = 60.0
 UNIVERSAL_ADAPTATION_STRUGGLE_WIN_RATE = 45.0
-LOSS_STREAK_PAUSE_AFTER = 3
-LOSS_STREAK_PAUSE_MINUTES = 15
-LOSS_STREAK_HARD_PAUSE_AFTER = 5
-LOSS_STREAK_HARD_PAUSE_MINUTES = 45
-LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES = 10
+LOSS_STREAK_PAUSE_AFTER = 5
+LOSS_STREAK_PAUSE_MINUTES = 10
+LOSS_STREAK_HARD_PAUSE_AFTER = 8
+LOSS_STREAK_HARD_PAUSE_MINUTES = 30
+LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES = 5
 DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE = 8
 MAX_ASSISTED_SYMBOLS_PER_CYCLE = 40
 MIN_RISK_REWARD_RATIO = 0.5
@@ -33122,15 +33134,17 @@ def _default_setup_score_for_broker_profile(
 
     if normalized_broker == 'Binance':
         if normalized_mode == 'live':
-            return 5.5 if normalized_management_mode == 'manual' else 6.0
-        return 5.5 if normalized_management_mode == 'manual' else 6.5
+            return 4.5 if normalized_management_mode == 'manual' else 5.0
+        return 5.0 if normalized_management_mode == 'manual' else 5.5
 
-    if normalized_broker == 'Exness' and normalized_mode == 'live':
-        if normalized_profile in {'advanced', 'fast_growth'}:
-            return 5.0 if normalized_management_mode == 'manual' else 5.5
-        return 5.5 if normalized_management_mode == 'manual' else 6.0
+    if normalized_broker == 'Exness':
+        if normalized_mode == 'live':
+            if normalized_profile in {'advanced', 'fast_growth'}:
+                return 4.0 if normalized_management_mode == 'manual' else 4.5
+            return 4.5 if normalized_management_mode == 'manual' else 5.0
+        return 4.5 if normalized_management_mode == 'manual' else 5.0
 
-    return 7.0
+    return 5.5
 
 SUPPORTED_DISPLAY_CURRENCIES = {'USD', 'ZAR', 'GBP'}
 SMALL_LIVE_ACCOUNT_THRESHOLDS = {
@@ -33170,7 +33184,7 @@ SMALL_LIVE_ACCOUNT_BALANCE_TIERS = {
 SMALL_LIVE_ACCOUNT_SAFE_BASE_SYMBOLS = {
     'AUDUSD', 'GBPUSD', 'USDJPY'
 }
-SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS = {'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD'}
+SMALL_LIVE_ACCOUNT_OPTIONAL_CRYPTO_BASE_SYMBOLS = {'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD', 'ADAUSD', 'TRXUSD', 'XLMUSD', 'MATICUSD', 'LINKUSD', 'UNIUSD', 'AAVEUSD', 'APTUSD', 'INJUSD', 'SUIUSD', 'FTMUSD'}
 SMALL_LIVE_ACCOUNT_CRYPTO_MIN_BALANCES = {
     'USD': 25.0,
     'ZAR': 300.0,
@@ -43229,6 +43243,13 @@ def quick_create_bot():
                     'XRPUSDT',   # Consistent (5.6%)
                     'BNBUSDT',   # Exchange beta (5.3%)
                     'LTCUSDT',   # Lower beta (4.8%)
+                ],
+                'micro_account': [
+                    'XRPUSDT',   # Low-priced, high momentum
+                    'ADAUSDT',   # Cardano
+                    'DOGEUSDT',  # Meme coin
+                    'TRXUSDT',   # Tron
+                    'XLMUSDT',   # Stellar
                 ],
                 'balanced': [
                     'BTCUSDT', 'ETHUSDT', 'LINKUSDT', 'ADAUSDT', 'DOGEUSDT', 'MATICUSDT'

@@ -685,6 +685,8 @@ class _LoginScreenState extends State<LoginScreen> {
     final authService = Provider.of<AuthService>(context, listen: false);
     
     if (_isLogin) {
+      // Ensure auth service is initialized before login
+      await authService.ensureInitialized();
       final success = await authService.login(
         _usernameController.text.trim(),
         _passwordController.text,
