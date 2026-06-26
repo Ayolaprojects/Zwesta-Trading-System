@@ -28180,14 +28180,14 @@ def should_trade_today(bot_config, symbol):
 
 SYMBOL_PERF_LOOKBACK = 12
 SYMBOL_PERF_MIN_SAMPLES = 3
-SYMBOL_PERF_BLACKLIST_LOSS = -10.0
-SYMBOL_PERF_BLACKLIST_WINRATE = 0.25
-SYMBOL_PERF_DEMOTE_WINRATE = 0.35
+SYMBOL_PERF_BLACKLIST_LOSS = -20.0
+SYMBOL_PERF_BLACKLIST_WINRATE = 0.20
+SYMBOL_PERF_DEMOTE_WINRATE = 0.30
 SYMBOL_PERF_FAVOR_WINRATE = 0.65
 SYMBOL_PERF_FAVOR_PROFIT = 2.0
 SYMBOL_PERF_FAVOR_MULT = 1.8
 SYMBOL_PERF_DEMOTE_MULT = 0.6
-SYMBOL_PERF_BLACKLIST_COOLDOWN_MIN = 120
+SYMBOL_PERF_BLACKLIST_COOLDOWN_MIN = 60
 
 SESSION_PERF_LOOKBACK = 24
 SESSION_PERF_MIN_SAMPLES = 3
@@ -33134,17 +33134,17 @@ def _default_setup_score_for_broker_profile(
 
     if normalized_broker == 'Binance':
         if normalized_mode == 'live':
-            return 4.5 if normalized_management_mode == 'manual' else 5.0
-        return 5.0 if normalized_management_mode == 'manual' else 5.5
+            return 3.5 if normalized_management_mode == 'manual' else 4.0
+        return 4.0 if normalized_management_mode == 'manual' else 4.5
 
     if normalized_broker == 'Exness':
         if normalized_mode == 'live':
             if normalized_profile in {'advanced', 'fast_growth'}:
-                return 4.0 if normalized_management_mode == 'manual' else 4.5
-            return 4.5 if normalized_management_mode == 'manual' else 5.0
-        return 4.5 if normalized_management_mode == 'manual' else 5.0
+                return 3.0 if normalized_management_mode == 'manual' else 3.5
+            return 3.5 if normalized_management_mode == 'manual' else 4.0
+        return 3.5 if normalized_management_mode == 'manual' else 4.0
 
-    return 5.5
+    return 4.5
 
 SUPPORTED_DISPLAY_CURRENCIES = {'USD', 'ZAR', 'GBP'}
 SMALL_LIVE_ACCOUNT_THRESHOLDS = {
