@@ -28,23 +28,10 @@ val sdkDir =
         ?: System.getenv("ANDROID_SDK_ROOT")
         ?: System.getenv("ANDROID_HOME")
 
-val preferredNdkVersions = listOf(
-    "25.1.8937393",
-    "26.3.11579264",
-    "27.0.12077973",
-)
-
-val resolvedNdkVersion =
-    sdkDir?.let { configuredSdkDir ->
-        preferredNdkVersions.firstOrNull { version ->
-            File(configuredSdkDir, "ndk/$version/source.properties").exists()
-        }
-    } ?: preferredNdkVersions.first()
-
 android {
     namespace = "com.example.zwesta_trading"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = resolvedNdkVersion
+    ndkVersion = "25.1.8937393"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -58,8 +45,6 @@ android {
 
     defaultConfig {
         applicationId = "com.zwesta.trading"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
