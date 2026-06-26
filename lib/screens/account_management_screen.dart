@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../services/auth_service.dart';
+import '../services/auth_service.dart' hide debugPrint;
 import '../services/trading_service.dart';
 import '../utils/constants.dart';
 import '../utils/environment_config.dart';

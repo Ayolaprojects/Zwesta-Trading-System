@@ -249,11 +249,11 @@ class AuthService extends ChangeNotifier {
 
         final referralCode = data['referral_code'] ?? '';
         await _saveCredentials();
-          _isLoading = false;
-          _errorMessage = null;
-          _successMessage = 'Registration successful! Your referral code: $referralCode';
-          notifyListeners();
-          return true;
+        _isLoading = false;
+        _errorMessage = null;
+        _successMessage = 'Registration successful! Your referral code: $referralCode';
+        notifyListeners();
+        return true;
       } else {
         final data = jsonDecode(response.body);
         throw Exception(data['error'] ?? 'Registration failed');
@@ -266,7 +266,6 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-// Logout function
   Future<void> logout() async {
     _token = null;
     _currentUser = null;
@@ -279,21 +278,9 @@ class AuthService extends ChangeNotifier {
       await _prefs!.remove('active_bots');
       await _prefs!.remove('last_bot_sync');
     }
-    debugPrint('✅ Session cleared');
     notifyListeners();
   }
 
-  // Clear error message
-  void clearErrorMessage() {
-    _errorMessage = null;
-    notifyListeners();
-  }
-}
-    debugPrint('✅ Session cleared');
-    notifyListeners();
-  }
-
-  // Update user profile
   Future<bool> updateProfile(String firstName, String lastName, String email) async {
     _isLoading = true;
     _errorMessage = null;
@@ -341,7 +328,6 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // Change password
   Future<bool> changePassword(String oldPassword, String newPassword) async {
     _isLoading = true;
     _errorMessage = null;
@@ -383,11 +369,5 @@ class AuthService extends ChangeNotifier {
       notifyListeners();
       return false;
     }
-  }
-
-  // Clear error message
-  void clearErrorMessage() {
-    _errorMessage = null;
-    notifyListeners();
   }
 }
