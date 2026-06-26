@@ -1114,6 +1114,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final accountModeLabel = isDemoBot ? 'DEMO' : 'LIVE';
     final symbolStr = symbols is List ? symbols.join(', ') : symbols.toString();
     final runtime = bot['runtimeFormatted'] ?? '--';
+    final createdAt = bot['createdAt'] ?? '';
+    final isNewBot = createdAt.isNotEmpty && DateTime.tryParse(createdAt) != null && DateTime.now().difference(DateTime.tryParse(createdAt)!).inHours < 24;
     final pauseReason = (bot['pauseReason'] ?? '').toString().trim();
     final lastNoTradeReason = (bot['lastNoTradeReason'] ?? '').toString().trim();
     final lastNoTradeAtText = (bot['lastNoTradeAt'] ?? '').toString().trim();
@@ -1324,6 +1326,28 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                   ),
                 ),
               ),
+              if (isNewBot) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFFFFEB3B), Color(0xFFFFC107)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    'NEW',
+                    style: GoogleFonts.poppins(
+                      color: const Color(0xFF0A0E21),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 2),
@@ -1379,7 +1403,17 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               Text(_formatAmount(currencyProvider, todaysProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: todaysProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w600, fontSize: 12)),
               const Spacer(),
               Text('Session P/L ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
-              Text(_formatAmount(currencyProvider, currentProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: currentProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w700, fontSize: 12)),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    currentProfit >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                    color: currentProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                    size: 14,
+                  ),
+                  Text(_formatAmount(currencyProvider, currentProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: currentProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w700, fontSize: 12)),
+                ],
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -2128,6 +2162,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '🚀 Top Edge (6 pairs)',
               'Best win rates: BTC, ETH, SOL, XRP, BNB, LTC',
               'top_edge',
+              Icons.trending_up,
             ),
             const SizedBox(height: 10),
             _binancePresetOption(
@@ -2135,6 +2170,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '💎 Micro Account (< \$20)',
               'Auto-selected cheap pairs: XRP, ADA, DOGE, TRX, XLM',
               'micro_account',
+              Icons.account_balance_wallet,
             ),
             const SizedBox(height: 10),
             _binancePresetOption(
@@ -2142,6 +2178,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '⚖️  Balanced (6 pairs)',
               'Low-medium risk: BTC, ETH, LINK, ADA, DOGE, MATIC',
               'balanced',
+              Icons.balance,
             ),
             const SizedBox(height: 10),
             _binancePresetOption(
@@ -2149,6 +2186,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '🔶 DeFi & L2 (6 pairs)',
               'High volatility: UNI, AAVE, APT, INJ, SUI, FTM',
               'defi',
+              Icons.hexagon,
             ),
             const SizedBox(height: 10),
             _binancePresetOption(
@@ -2156,6 +2194,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '📈 Large Cap (6 pairs)',
               'Stable focus: BTC, ETH, BNB, SOL, ADA, XRP',
               'large_cap_only',
+              Icons.bar_chart,
             ),
             const SizedBox(height: 20),
             TextButton(
@@ -2203,6 +2242,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '🚀 Edge Pairs (5 pairs)',
               'Best win rates: EURUSD, GBPUSD, USDJPY, XAUUSD, US500',
               'edge_pairs',
+              Icons.trending_up,
             ),
             const SizedBox(height: 10),
             _exnessPresetOption(
@@ -2210,6 +2250,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '💱 Majors (5 pairs)',
               'Low-medium risk: EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD',
               'majors',
+              Icons.bar_chart,
             ),
             const SizedBox(height: 10),
             _exnessPresetOption(
@@ -2217,6 +2258,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '🥇 Gold (1 pair)',
               'Safe haven: XAUUSD only',
               'gold',
+              Icons.attach_money,
             ),
             const SizedBox(height: 10),
             _exnessPresetOption(
@@ -2224,6 +2266,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
               '📊 Indices (2 pairs)',
               'High volatility: US500, US30',
               'indices',
+              Icons.show_chart,
             ),
             const SizedBox(height: 20),
             TextButton(
@@ -2246,7 +2289,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   }
 
   /// Individual Exness preset option button
-  Widget _exnessPresetOption(BuildContext context, String title, String description, String preset) => InkWell(
+  Widget _exnessPresetOption(BuildContext context, String title, String description, String preset, IconData icon) => InkWell(
       onTap: () => _quickCreateExnessBot(context, preset),
       child: Container(
         padding: const EdgeInsets.all(12),
@@ -2255,12 +2298,29 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.3)),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           children: [
-            Text(title, style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontWeight: FontWeight.w600, fontSize: 12)),
-            const SizedBox(height: 4),
-            Text(description, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 11)),
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color(0xFF00E5FF).withOpacity(0.15),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.4)),
+              ),
+              child: Icon(icon, color: const Color(0xFF00E5FF), size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontWeight: FontWeight.w600, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Text(description, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 11)),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -2406,7 +2466,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
   }
 
   /// Individual Binance preset option button
-  Widget _binancePresetOption(BuildContext context, String title, String description, String preset) => InkWell(
+  Widget _binancePresetOption(BuildContext context, String title, String description, String preset, IconData icon) => InkWell(
       onTap: () => _quickCreateBinanceBot(context, preset),
       child: Container(
         padding: const EdgeInsets.all(12),
@@ -2415,12 +2475,29 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: const Color(0xFFF3BA2F).withOpacity(0.3)),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           children: [
-            Text(title, style: GoogleFonts.poppins(color: const Color(0xFFF3BA2F), fontWeight: FontWeight.w600, fontSize: 12)),
-            const SizedBox(height: 4),
-            Text(description, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 11)),
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF3BA2F).withOpacity(0.15),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFF3BA2F).withOpacity(0.4)),
+              ),
+              child: Icon(icon, color: const Color(0xFFF3BA2F), size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Text(description, style: GoogleFonts.poppins(color: Colors.white60, fontSize: 11)),
+                ],
+              ),
+            ),
           ],
         ),
       ),
