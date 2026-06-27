@@ -5,11 +5,12 @@ enum Environment { development, staging, production }
 class EnvironmentConfig {
   // All environments point to the local backend by default.
   // Override via API_URL dart-define or setApiUrl() at runtime.
-  // NOTE: For Android emulator, use 10.0.2.2 to reach host machine.
-  // For physical devices, use the host machine's LAN IP.
-  static const String _devApiUrl = 'http://10.0.2.2:9000';
-  static const String _stagingApiUrl = 'http://10.0.2.2:9000';
-  static const String _prodApiUrl = 'http://10.0.2.2:9000';
+  // IMPORTANT: Replace YOUR_HOST_IP with your machine's LAN IP (e.g., 192.168.1.100)
+  // For Android emulator: use 10.0.2.2
+  // For physical devices: use your host machine's LAN IP
+  static const String _devApiUrl = 'http://YOUR_HOST_IP:9000';
+  static const String _stagingApiUrl = 'http://YOUR_HOST_IP:9000';
+  static const String _prodApiUrl = 'http://YOUR_HOST_IP:9000';
   static const int _localApiPort = 9000;
   static const bool _defaultUseLocalWebApi = false;
 
