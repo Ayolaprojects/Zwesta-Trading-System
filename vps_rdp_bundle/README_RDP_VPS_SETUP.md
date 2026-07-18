@@ -70,6 +70,13 @@ cd C:\zwesta-app
 .\vps_rdp_bundle\03_start_backend.ps1 -AppPath "C:\zwesta-app" -Port 9000
 ```
 
+Notes:
+- `03_start_backend.ps1` now runs a lightweight supervisor loop. If Python exits/crashes, it auto-restarts after a short delay.
+- Supervisor lifecycle log: `C:\zwesta-app\logs\backend_supervisor.log`
+- Backend stdout/stderr logs:
+  - `C:\zwesta-app\logs\backend_stdout.log`
+  - `C:\zwesta-app\logs\backend_stderr.log`
+
 ## 5) Open firewall port (if needed)
 ```powershell
 .\vps_rdp_bundle\05_open_firewall_port.ps1 -Port 9000 -RuleName "Zwesta Backend API"
@@ -80,6 +87,9 @@ cd C:\zwesta-app
 .\vps_rdp_bundle\04_register_startup_task.ps1 -AppPath "C:\zwesta-app" -TaskName "ZwestaBackend" -Port 9000
 Start-ScheduledTask -TaskName "ZwestaBackend"
 ```
+
+Task behavior:
+- Startup task is configured with no execution time limit so it is not force-stopped after 12 hours.
 
 ## 7) Stop backend manually
 ```powershell
