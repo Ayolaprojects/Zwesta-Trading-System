@@ -1,4 +1,5 @@
 name: Generate VPS App Package
+# Trigger marker: build invocation
 
 on:
   workflow_dispatch:
