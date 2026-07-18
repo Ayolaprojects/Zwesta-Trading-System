@@ -5,6 +5,9 @@ REM ============================================================================
 
 cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
+set ZWESTA_SKIP_PYTHON_REEXEC=1
+set MT5_STARTUP_WARMUP=0
+if not defined PORT set PORT=9000
 
 set "PYTHON_EXE=%~dp0venv\Scripts\python.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
@@ -26,11 +29,7 @@ echo ===========================================================================
 echo.
 
 echo [Step 1] Verifying PostgreSQL connection...
-"%PYTHON_EXE%" -c "import os, urllib.parse, psycopg2; db=''; p='.env';\
-lines=open(p,'r',encoding='utf-8',errors='ignore').read().splitlines() if os.path.exists(p) else [];\
-db=next((ln.split('=',1)[1].strip().strip('\\\"').strip("'" ) for ln in lines if ln.startswith('DATABASE_URL=')), '');\
-db=db or ('postgresql://%s:%s@%s:%s/%s' % (os.getenv('POSTGRES_USER','zwesta_admin'), urllib.parse.quote(os.getenv('POSTGRES_PASSWORD','')), os.getenv('POSTGRES_HOST','127.0.0.1'), os.getenv('POSTGRES_PORT','5432'), os.getenv('POSTGRES_DB','zwesta_trading')));\
-psycopg2.connect(db); print('OK PostgreSQL connected')" 2>&1
+"%PYTHON_EXE%" -c "import os, urllib.parse, psycopg2, dotenv; dotenv.load_dotenv('.env', override=True); db=os.getenv('DATABASE_URL','').strip(); db=db or ('postgresql://' + os.getenv('POSTGRES_USER','zwesta_admin') + ':' + urllib.parse.quote(os.getenv('POSTGRES_PASSWORD','')) + '@' + os.getenv('POSTGRES_HOST','127.0.0.1') + ':' + os.getenv('POSTGRES_PORT','5432') + '/' + os.getenv('POSTGRES_DB','zwesta_trading')); psycopg2.connect(db); print('OK PostgreSQL connected')" 2>&1
 if errorlevel 1 (
     echo ERROR: PostgreSQL connection failed. Please ensure PostgreSQL is running.
     echo         Check .env values: POSTGRES_HOST/PORT/DB/USER/PASSWORD or DATABASE_URL.
