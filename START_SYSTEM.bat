@@ -48,14 +48,24 @@ if "%ERRORLEVEL%"=="0" (
     echo Backend already running
 ) else (
     start "Zwesta PostgreSQL Backend (Port 9000)" /B "%PYTHON_EXE%" "multi_broker_backend_updated.py"
-    timeout /t 5 /nobreak >NUL
 )
 
 REM Step 3: Verify backend health
 echo [Step 3] Verifying backend health...
-curl -s http://localhost:9000/api/health >NUL 2>&1
-if errorlevel 1 (
-    echo ERROR: Backend not responding on port 9000
+set /a HEALTH_OK=0
+for /L %%I in (1,1,60) do (
+    "%PYTHON_EXE%" -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9000/api/health', timeout=3); sys.exit(0)" >NUL 2>&1
+    if not errorlevel 1 (
+        set /a HEALTH_OK=1
+        goto :health_ready
+    )
+    timeout /t 1 /nobreak >NUL
+)
+
+:health_ready
+if "%HEALTH_OK%"=="0" (
+    echo ERROR: Backend not responding on port 9000 after 60 seconds
+    echo        Check backend logs above for startup errors.
     pause
     exit /b 1
 )
