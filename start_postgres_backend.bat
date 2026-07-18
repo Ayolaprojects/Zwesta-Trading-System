@@ -6,6 +6,19 @@ REM ============================================================================
 cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
 
+set "PYTHON_EXE=%~dp0venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
+
+if /I "%PYTHON_EXE%"=="python" (
+    where python >NUL 2>&1
+    if errorlevel 1 (
+        echo ERROR: Python not found on PATH. Install Python or create venv at venv\Scripts\python.exe
+        pause
+        exit /b 1
+    )
+)
+
 echo.
 echo ================================================================================
 echo   Zwesta Trading System - PostgreSQL Backend + Flutter App
@@ -13,17 +26,22 @@ echo ===========================================================================
 echo.
 
 echo [Step 1] Verifying PostgreSQL connection...
-"C:\zwesta-trader\.venv\Scripts\python.exe" -c "import psycopg2; psycopg2.connect('postgresql://zwesta_admin:Zwesta%%40Trading2026%%21@localhost:5432/zwesta_trading'); print('OK PostgreSQL connected')" 2>&1
+"%PYTHON_EXE%" -c "import os, urllib.parse, psycopg2; db=''; p='.env';\
+lines=open(p,'r',encoding='utf-8',errors='ignore').read().splitlines() if os.path.exists(p) else [];\
+db=next((ln.split('=',1)[1].strip().strip('\\\"').strip("'" ) for ln in lines if ln.startswith('DATABASE_URL=')), '');\
+db=db or ('postgresql://%s:%s@%s:%s/%s' % (os.getenv('POSTGRES_USER','zwesta_admin'), urllib.parse.quote(os.getenv('POSTGRES_PASSWORD','')), os.getenv('POSTGRES_HOST','127.0.0.1'), os.getenv('POSTGRES_PORT','5432'), os.getenv('POSTGRES_DB','zwesta_trading')));\
+psycopg2.connect(db); print('OK PostgreSQL connected')" 2>&1
 if errorlevel 1 (
     echo ERROR: PostgreSQL connection failed. Please ensure PostgreSQL is running.
-    echo         The database 'zwesta_trading' must exist with user 'zwesta_admin'.
-    echo Run: createdb -U postgres zwesta_trading
+    echo         Check .env values: POSTGRES_HOST/PORT/DB/USER/PASSWORD or DATABASE_URL.
+    echo         If database is missing, create it with psql:
+    echo         psql -U postgres -h 127.0.0.1 -p 5432 -c "CREATE DATABASE zwesta_trading;"
     pause
     exit /b 1
 )
 
 echo [Step 2] Starting backend with PostgreSQL mode...
-"C:\zwesta-trader\.venv\Scripts\python.exe" "multi_broker_backend_updated.py"
+"%PYTHON_EXE%" "multi_broker_backend_updated.py"
 if errorlevel 1 (
     echo ERROR: Backend failed to start
     pause
