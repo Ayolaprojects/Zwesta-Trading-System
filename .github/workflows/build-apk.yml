@@ -123,9 +123,25 @@ jobs:
             --verbose 2>&1 | tee build_output.log
           exit_code=${PIPESTATUS[0]}
           if [ $exit_code -ne 0 ]; then
-            tail -100 build_output.log
+            echo "========== Build tail (last 200 lines) =========="
+            tail -200 build_output.log || true
+            echo "========== Key failure lines =========="
+            grep -nE "FAILURE: Build failed with an exception|\* What went wrong|A problem occurred|Execution failed for task|Caused by:" build_output.log || true
             exit $exit_code
           fi
+
+      - name: Upload build logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_number }}
+          path: |
+            flutter_analyze.log
+            build_output.log
+            android/gradle.properties
+            android/build/reports/**
+          if-no-files-found: warn
+          retention-days: 30
 
       # ── Artifact & Release ────────────────────────────────────────────────
       - name: Get commit info
