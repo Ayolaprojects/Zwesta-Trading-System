@@ -1,0 +1,73 @@
+name: Generate VPS App Package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'multi_broker_backend_updated.py'
+      - 'START_SYSTEM.bat'
+      - 'start_postgres_backend.bat'
+      - 'requirements-production.txt'
+      - 'vps_rdp_bundle/**'
+      - '.github/workflows/generate-vps-package.yml'
+
+jobs:
+  package:
+    name: Build VPS package artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build package folder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE"
+          PKG_DIR="$ROOT/vps_app_package"
+
+          rm -rf "$PKG_DIR"
+          mkdir -p "$PKG_DIR"
+
+          cp "$ROOT/multi_broker_backend_updated.py" "$PKG_DIR/"
+          cp "$ROOT/START_SYSTEM.bat" "$PKG_DIR/"
+          cp "$ROOT/start_postgres_backend.bat" "$PKG_DIR/"
+          cp "$ROOT/requirements-production.txt" "$PKG_DIR/"
+          cp -r "$ROOT/vps_rdp_bundle" "$PKG_DIR/"
+
+          # Include repo .env when present. Otherwise provide env template as fallback.
+          if [[ -f "$ROOT/.env" ]]; then
+            cp "$ROOT/.env" "$PKG_DIR/.env"
+          elif [[ -f "$ROOT/vps_rdp_bundle/env.vps.template" ]]; then
+            cp "$ROOT/vps_rdp_bundle/env.vps.template" "$PKG_DIR/.env"
+          fi
+
+          {
+            echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "Commit: $GITHUB_SHA"
+            echo "Files:"
+            cd "$PKG_DIR"
+            find . -type f | sort
+          } > "$PKG_DIR/PACKAGE_MANIFEST.txt"
+
+      - name: Create zip archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -f vps_app_package.zip
+          zip -r vps_app_package.zip vps_app_package > /dev/null
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vps_app_package
+          path: |
+            vps_app_package.zip
+            vps_app_package/PACKAGE_MANIFEST.txt
+          if-no-files-found: error
+          retention-days: 14
