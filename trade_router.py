@@ -235,8 +235,17 @@ class TradeRouter:
             acct = self._accounts.get(cache_key)
 
         if not acct:
-            return {'success': False, 'comment': 'No execution context',
-                    'mode': 'none', 'retcode': -1}
+            acct = self.get_or_create_execution(
+                broker=broker,
+                account_number=account_number,
+                password=kwargs.get('password'),
+                server=kwargs.get('server'),
+                is_live=bool(kwargs.get('is_live', False)),
+                user_id=user_id,
+            )
+            if not acct:
+                return {'success': False, 'comment': 'No execution context',
+                        'mode': 'none', 'retcode': -1}
 
         try:
             if acct.mode == ExecutionMode.SOCKET:
@@ -263,6 +272,11 @@ class TradeRouter:
                 result = {'success': False, 'comment': f'Unknown mode {acct.mode}',
                           'retcode': -1}
 
+            if not isinstance(result, dict):
+                result = {'success': bool(result), 'comment': 'Execution result was not a dict'}
+            result.setdefault('success', False)
+            result.setdefault('comment', '')
+            result.setdefault('retcode', 0 if result.get('success') else -1)
             result['mode'] = acct.mode
             acct.trade_count += 1
             acct.last_trade_time = time.time()

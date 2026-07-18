@@ -9,17 +9,94 @@ import json
 import time
 from datetime import datetime
 
-# Configuration
-BACKEND_URL = "http://localhost:9000"  # Your backend server
-SESSION_TOKEN = "debug_token_49b6b05ad32648759f26f6ac37eebcef"  # Update with your session token
-
-# Use environment variables for Binance API credentials. Do NOT hardcode secrets here.
 import os
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+
+# Configuration
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:9000")
+TARGET_USER_ID = os.getenv("TEST_USER_ID", "8e74db37-fd1e-4c57-87c4-ad3b64012ecf")
+
+
+def _load_dotenv_if_available():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv('.env', override=True)
+    except Exception:
+        pass
+
+
+def _get_latest_active_session_token(user_id: str):
+    """Return a recent active session token for user_id from Postgres."""
+    try:
+        import psycopg2
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        if not database_url:
+            return None
+
+        conn = psycopg2.connect(database_url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT token
+            FROM user_sessions
+            WHERE user_id = %s
+                            AND is_active = TRUE
+              AND (expires_at IS NULL OR expires_at > NOW()::text)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"⚠️ Could not load active session token from Postgres: {e}")
+        return None
+
+
+def _get_latest_binance_credentials(user_id: str):
+    """Load the newest active Binance credentials for the user from Postgres."""
+    try:
+        import psycopg2
+        from credential_crypto import decrypt_secret
+
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        if not database_url:
+            return None
+
+        conn = psycopg2.connect(database_url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT api_key, password, is_live, server
+            FROM broker_credentials
+            WHERE user_id = %s
+              AND LOWER(broker_name) = 'binance'
+                            AND is_active = TRUE
+            ORDER BY COALESCE(updated_at, created_at, '') DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+
+        api_key = decrypt_secret(row[0]) if row[0] else ''
+        api_secret = decrypt_secret(row[1]) if row[1] else ''
+        return {
+            'api_key': api_key,
+            'api_secret': api_secret,
+            'is_live': bool(row[2]),
+            'market': str(row[3] or 'spot').strip().lower() or 'spot',
+        }
+    except Exception as e:
+        print(f"⚠️ Could not load Binance credentials from Postgres: {e}")
+        return None
 
 # ==================== STEP 1: TEST BINANCE CONNECTION ====================
-def test_binance_connection(api_key: str, api_secret: str, is_live: bool = False):
+def test_binance_connection(session_token: str, api_key: str, api_secret: str, is_live: bool = False, market: str = "spot"):
     """Test Binance API connection and retrieve account info"""
     
     print("\n" + "="*70)
@@ -28,7 +105,7 @@ def test_binance_connection(api_key: str, api_secret: str, is_live: bool = False
     
     headers = {
         "Content-Type": "application/json",
-        "X-Session-Token": SESSION_TOKEN
+        "X-Session-Token": session_token
     }
     
     payload = {
@@ -36,13 +113,13 @@ def test_binance_connection(api_key: str, api_secret: str, is_live: bool = False
         "api_key": api_key,
         "api_secret": api_secret,
         "is_live": is_live,
-        "market": "spot"  # "spot" or "futures"
+        "market": market  # "spot" or "futures"
     }
     
     print(f"\n📨 Sending connection test request...")
     print(f"   Broker: Binance")
     print(f"   Mode: {'LIVE' if is_live else 'DEMO/TESTNET'}")
-    print(f"   Market: spot")
+    print(f"   Market: {market}")
     
     try:
         response = requests.post(
@@ -80,7 +157,7 @@ def test_binance_connection(api_key: str, api_secret: str, is_live: bool = False
 
 
 # ==================== STEP 2: CREATE DEMO TRADING BOT ====================
-def create_demo_bot(credential_id: str, symbols: list = None, strategy: str = "Momentum Trading"):
+def create_demo_bot(session_token: str, credential_id: str, symbols: list = None, strategy: str = "Momentum Trading"):
     """Create a demo trading bot using the verified Binance credential"""
     
     if not credential_id:
@@ -96,7 +173,7 @@ def create_demo_bot(credential_id: str, symbols: list = None, strategy: str = "M
     
     headers = {
         "Content-Type": "application/json",
-        "X-Session-Token": SESSION_TOKEN
+        "X-Session-Token": session_token
     }
     
     payload = {
@@ -159,7 +236,7 @@ def create_demo_bot(credential_id: str, symbols: list = None, strategy: str = "M
 
 
 # ==================== STEP 3: CHECK BOT STATUS ====================
-def get_bot_status(bot_id: str):
+def get_bot_status(session_token: str, bot_id: str):
     """Get current status and performance of a bot"""
     
     if not bot_id:
@@ -171,20 +248,26 @@ def get_bot_status(bot_id: str):
     
     headers = {
         "Content-Type": "application/json",
-        "X-Session-Token": SESSION_TOKEN
+        "X-Session-Token": session_token
     }
     
     try:
         response = requests.get(
-            f"{BACKEND_URL}/api/bot/{bot_id}/status",
+            f"{BACKEND_URL}/api/bot/status",
             headers=headers,
+            params={"bot_id": bot_id},
             timeout=10
         )
         
         if response.status_code == 200:
             result = response.json()
-            print("\n✅ BOT STATUS:\n")
-            print(json.dumps(result, indent=2))
+            bots = result.get('bots', []) if isinstance(result, dict) else []
+            bot = bots[0] if bots else None
+            if bot:
+                print("\n✅ BOT STATUS:\n")
+                print(json.dumps(bot, indent=2))
+            else:
+                print("\n⚠️ Bot status endpoint returned no matching bot yet")
         else:
             print(f"\n⚠️ Status endpoint returned {response.status_code}")
             
@@ -202,13 +285,26 @@ def main():
     print(f"⏰ Started at: {datetime.now().isoformat()}")
     print(f"🌐 Backend: {BACKEND_URL}")
     
+    _load_dotenv_if_available()
+
     # Check if backend is running
     try:
-        response = requests.get(f"{BACKEND_URL}/health", timeout=5)
+        response = requests.get(f"{BACKEND_URL}/api/health", timeout=5)
         print(f"✅ Backend is running")
     except:
         print(f"\n❌ ERROR: Backend not running at {BACKEND_URL}")
         print("   Make sure your backend server is running on port 9000")
+        return
+
+    session_token = _get_latest_active_session_token(TARGET_USER_ID)
+    if not session_token:
+        print("\n❌ No active session token found for test user.")
+        print("   Please login once in the app/backend, then rerun this script.")
+        return
+
+    cred = _get_latest_binance_credentials(TARGET_USER_ID)
+    if not cred or not cred.get('api_key') or not cred.get('api_secret'):
+        print("\n❌ Could not load active Binance credentials for test user.")
         return
     
     # STEP 1: Test connection
@@ -216,9 +312,11 @@ def main():
     time.sleep(2)
     
     credential_id, balance = test_binance_connection(
-        api_key=BINANCE_API_KEY,
-        api_secret=BINANCE_API_SECRET,
-        is_live=False  # Demo mode
+        session_token=session_token,
+        api_key=cred['api_key'],
+        api_secret=cred['api_secret'],
+        is_live=bool(cred.get('is_live', False)),
+        market=cred.get('market', 'spot')
     )
     
     if not credential_id:
@@ -230,6 +328,7 @@ def main():
     time.sleep(3)
     
     bot_id = create_demo_bot(
+        session_token=session_token,
         credential_id=credential_id,
         symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
         strategy="Momentum Trading"
@@ -243,7 +342,7 @@ def main():
     print("\n⏳ Waiting 5 seconds for bot to start trading...")
     time.sleep(5)
     
-    get_bot_status(bot_id)
+    get_bot_status(session_token, bot_id)
     
     # SUMMARY
     print("\n" + "="*70)
@@ -260,9 +359,9 @@ def main():
     print(f"   2. Monitor daily P&L on the Fleet page")
     print(f"   3. Edit risk settings if needed (risk per trade, daily loss limit)")
     print(f"\n🔗 API Endpoints:")
-    print(f"   - Get bot status: GET /api/bot/{bot_id}/status")
+    print(f"   - Get bot status: GET /api/bot/status?bot_id={bot_id}")
     print(f"   - Stop bot: POST /api/bot/{bot_id}/stop")
-    print(f"   - Get trades: GET /api/bot/{bot_id}/trades")
+    print(f"   - Get trades: GET /api/bot/trades?bot_id={bot_id}")
     print(f"\n⏰ Completed at: {datetime.now().isoformat()}\n")
 
 
