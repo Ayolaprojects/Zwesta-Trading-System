@@ -12496,6 +12496,7 @@ def transfer_funds_api():
 # Legacy endpoints removed: /api/legacy/ig/*
 
 
+@app.route('/health', methods=['GET'])
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check"""
