@@ -59,6 +59,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   final List<String> brokers = [
     'Exness',      // ✅ Primary MT5 path with crypto support
     'Binance',     // ✅ Primary crypto spot trading path
+    'Luno',        // ✅ REST API crypto spot trading path
     'FXCM',        // ✅ REST API forex/CFD trading
     'PXBT',        // ✅ Prime XBT crypto trading
   ];
@@ -103,6 +104,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   }
 
   bool get _isBinanceBroker => _selectedBroker.toLowerCase() == 'binance';
+    bool get _isLunoBroker => _selectedBroker.toLowerCase() == 'luno';
   bool get _isFxcmBroker =>
       _selectedBroker.toLowerCase() == 'fxcm' ||
       _selectedBroker.toLowerCase() == 'fxm';
@@ -110,7 +112,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
   bool get _isPxbtBroker =>
       _selectedBroker.toLowerCase() == 'pxbt' ||
       _selectedBroker.toLowerCase() == 'prime xbt';
-  bool get _isMt5Broker => !_isBinanceBroker && !_isFxcmBroker;
+    bool get _isMt5Broker => !_isBinanceBroker && !_isLunoBroker && !_isFxcmBroker;
 
   String _normalizeBrokerDisplayName(String broker) {
     final raw = broker.trim();
@@ -119,6 +121,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     if (lower == 'fxm') return 'FXCM';
     if (lower == 'prime xbt' || lower == 'pxbt') return 'PXBT';
     if (lower == 'binance') return 'Binance';
+    if (lower == 'luno') return 'Luno';
     if (lower == 'exness') return 'Exness';
     return raw;
   }
@@ -258,6 +261,12 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       await prefs.setString(_modePrefKey('binance_market', _isLiveMode, userId: userId), _serverController.text);
       return;
     }
+    if (_isLunoBroker) {
+      await prefs.setString(_modePrefKey('luno_api_key', _isLiveMode, userId: userId), _apiKeyController.text);
+      await prefs.setString(_modePrefKey('luno_api_secret', _isLiveMode, userId: userId), _passwordController.text);
+      await prefs.setString(_modePrefKey('luno_base_url', _isLiveMode, userId: userId), _serverController.text);
+      return;
+    }
 
     await prefs.setString(_modePrefKey('mt5_account', _isLiveMode, userId: userId), _accountController.text);
     await prefs.setString(_modePrefKey('mt5_password', _isLiveMode, userId: userId), _passwordController.text);
@@ -278,6 +287,11 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
       await prefs.setString(_userScopedPrefKey('broker_api_key', userId), _apiKeyController.text);
       await prefs.setString(_userScopedPrefKey('binance_api_secret', userId), _passwordController.text);
       await prefs.setString(_userScopedPrefKey('binance_market', userId), _serverController.text);
+      await prefs.remove(_userScopedPrefKey('account_number', userId));
+    } else if (_isLunoBroker) {
+      await prefs.setString(_userScopedPrefKey('luno_api_key', userId), _apiKeyController.text);
+      await prefs.setString(_userScopedPrefKey('luno_api_secret', userId), _passwordController.text);
+      await prefs.setString(_userScopedPrefKey('luno_base_url', userId), _serverController.text);
       await prefs.remove(_userScopedPrefKey('account_number', userId));
     } else if (_isFxcmBroker) {
       await prefs.setString(_userScopedPrefKey('fxcm_account_number', userId), _accountController.text);
@@ -311,6 +325,26 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         _serverController.text = (modeMarket != null && modeMarket.isNotEmpty)
             ? modeMarket
             : (fallbackMarket.isNotEmpty ? fallbackMarket : computedServer);
+        _isConnected = false;
+        _activeAccount = null;
+      });
+      return;
+    }
+
+    if (_isLunoBroker) {
+      final modeApiKey = prefs.getString(_modePrefKey('luno_api_key', _isLiveMode, userId: userId));
+      final modeApiSecret = prefs.getString(_modePrefKey('luno_api_secret', _isLiveMode, userId: userId));
+      final modeBaseUrl = prefs.getString(_modePrefKey('luno_base_url', _isLiveMode, userId: userId));
+      final fallbackBaseUrl = _scopedString(prefs, 'luno_base_url', userId: userId) ?? '';
+      final computedServer = _defaultServerForSelectedBroker(isLiveOverride: _isLiveMode);
+
+      setState(() {
+        _accountController.clear();
+        _apiKeyController.text = modeApiKey ?? (_scopedString(prefs, 'luno_api_key', userId: userId) ?? '');
+        _passwordController.text = modeApiSecret ?? (_scopedString(prefs, 'luno_api_secret', userId: userId) ?? '');
+        _serverController.text = (modeBaseUrl != null && modeBaseUrl.isNotEmpty)
+            ? modeBaseUrl
+            : (fallbackBaseUrl.isNotEmpty ? fallbackBaseUrl : computedServer);
         _isConnected = false;
         _activeAccount = null;
       });
@@ -362,6 +396,9 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         fallbackServer: fallbackServer,
       );
     }
+    if (_isLunoBroker) {
+      return fallbackServer ?? brokerServers[_selectedBroker] ?? 'https://api.luno.com';
+    }
     if (_isFxcmBroker) {
       return isLive ? 'real' : 'demo';
     }
@@ -384,32 +421,43 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     );
     final savedMode = _scopedBool(prefs, 'is_live_mode', userId: userId) ?? false;
     final isBinanceSavedBroker = normalizedSavedBroker.toLowerCase() == 'binance';
+    final isLunoSavedBroker = normalizedSavedBroker.toLowerCase() == 'luno';
     final isFxcmSavedBroker = normalizedSavedBroker.toLowerCase() == 'fxcm';
     final modeAccount = isFxcmSavedBroker
       ? prefs.getString(_modePrefKey('fxcm_account', savedMode, userId: userId))
       : (isBinanceSavedBroker
           ? prefs.getString(_modePrefKey('binance_account', savedMode, userId: userId))
-          : prefs.getString(_modePrefKey('mt5_account', savedMode, userId: userId)));
+        : (isLunoSavedBroker
+          ? prefs.getString(_modePrefKey('luno_account', savedMode, userId: userId))
+          : prefs.getString(_modePrefKey('mt5_account', savedMode, userId: userId))));
     final modePassword = isFxcmSavedBroker
       ? prefs.getString(_modePrefKey('fxcm_password', savedMode, userId: userId))
       : (isBinanceSavedBroker
           ? prefs.getString(_modePrefKey('binance_api_secret', savedMode, userId: userId))
-          : prefs.getString(_modePrefKey('mt5_password', savedMode, userId: userId)));
+        : (isLunoSavedBroker
+          ? prefs.getString(_modePrefKey('luno_api_secret', savedMode, userId: userId))
+          : prefs.getString(_modePrefKey('mt5_password', savedMode, userId: userId))));
     final modeServer = isFxcmSavedBroker
       ? prefs.getString(_modePrefKey('fxcm_server', savedMode, userId: userId))
       : (isBinanceSavedBroker
           ? prefs.getString(_modePrefKey('binance_market', savedMode, userId: userId))
-          : prefs.getString(_modePrefKey('mt5_server', savedMode, userId: userId)));
+        : (isLunoSavedBroker
+          ? prefs.getString(_modePrefKey('luno_base_url', savedMode, userId: userId))
+          : prefs.getString(_modePrefKey('mt5_server', savedMode, userId: userId))));
     final savedAccount = isBinanceSavedBroker
       ? ''
       : (modeAccount ?? (isFxcmSavedBroker
           ? (_scopedString(prefs, 'fxcm_account_number', userId: userId) ?? '')
-          : (_scopedString(prefs, 'account_number', userId: userId) ?? _scopedString(prefs, 'mt5_account', userId: userId) ?? '')));
+        : (isLunoSavedBroker
+          ? ''
+          : (_scopedString(prefs, 'account_number', userId: userId) ?? _scopedString(prefs, 'mt5_account', userId: userId) ?? ''))));
     final savedServer = modeServer ?? (isFxcmSavedBroker
       ? (_scopedString(prefs, 'fxcm_server', userId: userId) ?? '')
       : (isBinanceSavedBroker
           ? (_scopedString(prefs, 'binance_market', userId: userId) ?? '')
-          : (_scopedString(prefs, 'mt5_server', userId: userId) ?? '')));
+        : (isLunoSavedBroker
+          ? (_scopedString(prefs, 'luno_base_url', userId: userId) ?? '')
+          : (_scopedString(prefs, 'mt5_server', userId: userId) ?? ''))));
     setState(() {
       _selectedBroker = normalizedSavedBroker;
       _isLiveMode = savedMode;  // Load saved mode
@@ -420,8 +468,12 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         ? (_scopedString(prefs, 'fxcm_password', userId: userId) ?? '')
         : (isBinanceSavedBroker
             ? (_scopedString(prefs, 'binance_api_secret', userId: userId) ?? '')
-            : (_scopedString(prefs, 'mt5_password', userId: userId) ?? '')));
-      _apiKeyController.text = _scopedString(prefs, 'broker_api_key', userId: userId) ?? '';
+            : (isLunoSavedBroker
+                ? (_scopedString(prefs, 'luno_api_secret', userId: userId) ?? '')
+                : (_scopedString(prefs, 'mt5_password', userId: userId) ?? ''))));
+      _apiKeyController.text = isLunoSavedBroker
+          ? (_scopedString(prefs, 'luno_api_key', userId: userId) ?? '')
+          : (_scopedString(prefs, 'broker_api_key', userId: userId) ?? '');
       _usernameController.text = _scopedString(prefs, 'broker_username', userId: userId) ?? '';
       _isConnected = _scopedBool(prefs, 'broker_connected', userId: userId) ?? false;
       _accountBalance = _scopedDouble(prefs, 'account_balance', userId: userId) ?? 0;
@@ -474,7 +526,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
     final effectiveAccountNumber = _effectiveAccountNumber();
     final missingMt5 = _isMt5Broker && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
-    final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
+    final missingBinance = (_isBinanceBroker || _isLunoBroker) && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
     final missingFxcm = _isFxcmBroker && (!hasFxcmUsernamePassword && !hasFxcmToken);
@@ -490,10 +542,17 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
     final userId = prefs.getString('user_id') ?? '';
     final mt5TerminalPath = _preferredMt5TerminalPath();
     await prefs.setString(_userScopedPrefKey('broker', userId), _selectedBroker);
-    await prefs.setString(_userScopedPrefKey('mt5_account', userId), _accountController.text);
-    await prefs.setString(_userScopedPrefKey('mt5_password', userId), _passwordController.text);
-    await prefs.setString(_userScopedPrefKey('mt5_server', userId), _serverController.text);
-    await prefs.setString(_userScopedPrefKey('broker_api_key', userId), _apiKeyController.text);
+    if (_isLunoBroker) {
+      await prefs.setString(_userScopedPrefKey('luno_api_key', userId), _apiKeyController.text);
+      await prefs.setString(_userScopedPrefKey('luno_api_secret', userId), _passwordController.text);
+      await prefs.setString(_userScopedPrefKey('luno_base_url', userId), _serverController.text);
+      await prefs.remove(_userScopedPrefKey('account_number', userId));
+    } else {
+      await prefs.setString(_userScopedPrefKey('mt5_account', userId), _accountController.text);
+      await prefs.setString(_userScopedPrefKey('mt5_password', userId), _passwordController.text);
+      await prefs.setString(_userScopedPrefKey('mt5_server', userId), _serverController.text);
+      await prefs.setString(_userScopedPrefKey('broker_api_key', userId), _apiKeyController.text);
+    }
     await prefs.setString(_userScopedPrefKey('broker_username', userId), _usernameController.text);
     if (mt5TerminalPath != null) {
       await prefs.setString(_userScopedPrefKey('mt5_terminal_path', userId), mt5TerminalPath);
@@ -521,8 +580,8 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         password: _passwordController.text,
         server: _serverController.text,
         isLive: _isLiveMode,
-        apiKey: _apiKeyController.text.isNotEmpty ? _apiKeyController.text : null,
-        apiSecret: _passwordController.text.isNotEmpty ? _passwordController.text : null,
+        apiKey: (_isBinanceBroker || _isLunoBroker) && _apiKeyController.text.isNotEmpty ? _apiKeyController.text : null,
+        apiSecret: (_isBinanceBroker || _isLunoBroker) && _passwordController.text.isNotEmpty ? _passwordController.text : null,
         username: _usernameController.text.isNotEmpty ? _usernameController.text : null,
         mt5TerminalPath: mt5TerminalPath,
       );
@@ -660,7 +719,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
 
     final effectiveAccountNumber = _effectiveAccountNumber();
     final missingMt5 = (_isMt5Broker || _isExnessBroker) && (_accountController.text.isEmpty || _passwordController.text.isEmpty);
-    final missingBinance = _isBinanceBroker && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
+    final missingBinance = (_isBinanceBroker || _isLunoBroker) && (_apiKeyController.text.isEmpty || _passwordController.text.isEmpty);
     final hasFxcmUsernamePassword = _usernameController.text.isNotEmpty && _passwordController.text.isNotEmpty;
     final hasFxcmToken = _apiKeyController.text.isNotEmpty;
     final missingFxcm = _isFxcmBroker && (!hasFxcmUsernamePassword && !hasFxcmToken);
@@ -701,10 +760,10 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
         accountNumber: effectiveAccountNumber,
         password: _passwordController.text,
         server: _serverController.text,
-        apiKey: (_isBinanceBroker || _isFxcmBroker)
+        apiKey: (_isBinanceBroker || _isLunoBroker || _isFxcmBroker)
             ? (_apiKeyController.text.isEmpty ? null : _apiKeyController.text)
             : null,
-        apiSecret: _isBinanceBroker ? _passwordController.text : null,
+        apiSecret: (_isBinanceBroker || _isLunoBroker) ? _passwordController.text : null,
         username: _usernameController.text.isEmpty ? null : _usernameController.text,
         accountId: effectiveAccountNumber,
         market: _isBinanceBroker ? _serverController.text : null,
@@ -802,6 +861,8 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
           await prefs.setString(_userScopedPrefKey('broker_name', userId), _selectedBroker);
           if (_isFxcmBroker) {
             await prefs.setString(_userScopedPrefKey('fxcm_account_number', userId), account.accountNumber);
+          } else if (_isLunoBroker) {
+            await prefs.remove(_userScopedPrefKey('account_number', userId));
           } else {
             await prefs.setString(_userScopedPrefKey('account_number', userId), account.accountNumber);
             await prefs.setString(_userScopedPrefKey('mt5_account', userId), account.accountNumber);
@@ -1107,19 +1168,23 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
             const SizedBox(height: 20),
           Text(
             _isBinanceBroker
-                ? 'Binance API Connection'
+              ? 'Binance API Connection'
+              : _isLunoBroker
+                ? 'Luno API Connection'
                 : _isFxcmBroker
-                    ? 'FXCM Connection'
-                    : 'MT5 Broker Connection',
+                  ? 'FXCM Connection'
+                  : 'MT5 Broker Connection',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
           Text(
             _isBinanceBroker
-                ? 'Connect your funded Binance account for crypto bot trading'
+              ? 'Connect your funded Binance account for crypto bot trading'
+              : _isLunoBroker
+                ? 'Connect your Luno account for crypto spot trading'
                 : _isFxcmBroker
-                    ? 'Connect your FXCM Trading Station account for dashboards and account analytics'
-                    : 'Connect your MetaTrader 5 account for automated trading',
+                  ? 'Connect your FXCM Trading Station account for dashboards and account analytics'
+                  : 'Connect your MetaTrader 5 account for automated trading',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 24),
@@ -1139,7 +1204,7 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   if (newValue != null) {
                     setState(() {
                       _selectedBroker = _sanitizeSelectedBroker(newValue);
-                      if (_isBinanceBroker) {
+                      if (_isBinanceBroker || _isLunoBroker) {
                         _accountController.clear();
                         _usernameController.clear();
                       }
@@ -1394,6 +1459,45 @@ class _BrokerIntegrationScreenState extends State<BrokerIntegrationScreen> {
                   },
                   items: const [
                     DropdownMenuItem(value: 'spot', child: Text('Spot')),
+                if (_isLunoBroker) ...[
+                  Text('Luno API Key', style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _apiKeyController,
+                    decoration: const InputDecoration(
+                      labelText: 'Luno API Key',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.vpn_key),
+                      hintText: 'Paste your Luno API key',
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text('Luno API Secret', style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _passwordController,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Luno API Secret',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.lock),
+                      hintText: 'Paste your Luno API secret',
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text('Base URL', style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _serverController,
+                    decoration: const InputDecoration(
+                      labelText: 'Luno Base URL',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.language),
+                      hintText: 'https://api.luno.com',
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
                     DropdownMenuItem(value: 'futures', child: Text('Futures')),
                   ],
                 ),

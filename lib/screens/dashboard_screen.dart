@@ -308,6 +308,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return Icons.currency_exchange;
       case 'binance':
         return Icons.diamond;
+      case 'luno':
+        return Icons.currency_bitcoin;
       case 'ig':
         return Icons.bar_chart;
       case 'pxbt':
@@ -325,6 +327,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return const Color(0xFF7C4DFF);
       case 'binance':
         return const Color(0xFFF0B90B);
+      case 'luno':
+        return const Color(0xFF03A9F4);
       case 'ig':
         return const Color(0xFFFF5252);
       case 'pxbt':
@@ -2573,7 +2577,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _buildFeatureItem(
             icon: Icons.business_center,
             title: 'Multi-Broker Integration',
-            description: 'Connect and trade across Binance, FXCM, and Exness simultaneously',
+            description: 'Connect and trade across Binance, Luno, FXCM, and Exness simultaneously',
             color: const Color(0xFF7C4DFF),
           ),
           const SizedBox(height: 12),
@@ -2880,6 +2884,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   icon: '₿',
                   label: 'Binance',
                   color: const Color(0xFFF3BA2F),
+                  subtitle: 'Crypto spot',
+                ),
+                const SizedBox(width: 8),
+                _brokerBadge(
+                  icon: 'L',
+                  label: 'Luno',
+                  color: const Color(0xFF03A9F4),
                   subtitle: 'Crypto spot',
                 ),
                 const SizedBox(width: 8),

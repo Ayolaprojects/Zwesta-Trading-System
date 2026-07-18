@@ -150,19 +150,20 @@ class BrokerConnectionService {
         return {
           'success': false,
           'connected': false,
-          'message': 'IG Markets is not integrated in the current backend setup. Supported direct brokers are Exness, Binance, and FXCM.',
+          'message': 'IG Markets is not integrated in the current backend setup. Supported direct brokers are Exness, Binance, Luno, and FXCM.',
           'errorCode': 'UNSUPPORTED_BROKER',
         };
       }
       final Map<String, dynamic> payload;
 
       // IG Markets integration removed
-      if (normalizedBroker == 'binance') {
+      if (normalizedBroker == 'binance' || normalizedBroker == 'luno') {
         payload = {
-          'broker': 'Binance',
+          'broker': normalizedBroker == 'luno' ? 'Luno' : 'Binance',
           'api_key': apiKey,
           'api_secret': apiSecret ?? password,
-          'market': market ?? server,
+          'market': normalizedBroker == 'binance' ? (market ?? server) : null,
+          'server': normalizedBroker == 'luno' ? server : null,
           'account_number': accountNumber,
           'is_live': isLive,
         };

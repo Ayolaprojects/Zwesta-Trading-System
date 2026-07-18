@@ -113,7 +113,7 @@ class BrokerCredentialsService extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
 
-  static const List<String> _brokerPriority = ['exness', 'binance', 'fxcm'];
+  static const List<String> _brokerPriority = ['exness', 'binance', 'luno', 'fxcm'];
 
   List<BrokerCredential> _rankCredentials(Iterable<BrokerCredential> credentials) {
     final ranked = credentials.toList();
@@ -306,8 +306,8 @@ class BrokerCredentialsService extends ChangeNotifier {
         'server': server,
         'is_live': isLive,
       };
-      if (apiKey != null) body['api_key'] = apiKey;
-      if (apiSecret != null) body['api_secret'] = apiSecret;
+        if (apiKey != null) body['api_key'] = apiKey;
+        if (apiSecret != null) body['api_secret'] = apiSecret;
       if (username != null) body['username'] = username;
       final resolvedMt5TerminalPath =
           mt5TerminalPath?.trim().isNotEmpty == true

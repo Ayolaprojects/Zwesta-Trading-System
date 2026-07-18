@@ -84,6 +84,15 @@ class BrokerRegistryService extends ChangeNotifier {
         description: 'Primary crypto exchange for spot and futures trading',
       ),
       BrokerConfig(
+        id: 'luno',
+        name: 'Luno',
+        displayName: 'Luno',
+        logo: 'L',
+        accountTypes: ['DEMO', 'LIVE'],
+        isActive: true,
+        description: 'REST-based crypto spot broker for client trading accounts',
+      ),
+      BrokerConfig(
         id: 'pepperstone',
         name: 'Pepperstone',
         displayName: 'Pepperstone Global',
