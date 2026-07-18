@@ -2405,6 +2405,14 @@ def _normalize_exness_account_number(account_number: Any) -> str:
 EXNESS_ACCOUNT_SERVER_MAP = _parse_env_key_value_map(os.getenv('EXNESS_ACCOUNT_SERVER_MAP', ''))
 EXNESS_ACCOUNT_PATH_MAP = _parse_env_key_value_map(os.getenv('EXNESS_ACCOUNT_PATH_MAP', ''))
 EXNESS_SERVER_PATH_MAP = _parse_env_key_value_map(os.getenv('EXNESS_SERVER_PATH_MAP', ''))
+EXNESS_LIVE_SLOT_PATTERN = str(
+    os.getenv('EXNESS_LIVE_SLOT_PATTERN', r'C:\Program Files\MetaTrader 5 EXNESS\Live{n}\terminal64.exe')
+).strip()
+try:
+    EXNESS_LIVE_SLOT_COUNT = int(str(os.getenv('EXNESS_LIVE_SLOT_COUNT', '20') or '20').strip())
+except Exception:
+    EXNESS_LIVE_SLOT_COUNT = 20
+EXNESS_LIVE_SLOT_COUNT = max(1, min(200, EXNESS_LIVE_SLOT_COUNT))
 
 
 def _resolve_exness_server(account_number: Any = None, is_live: bool = False, server: str = None) -> str:
@@ -2511,6 +2519,128 @@ def _resolve_exness_terminal_path(
             fallback_candidate = normalized_candidate
 
     return fallback_candidate
+
+
+def _exness_live_slot_candidates() -> List[str]:
+    candidates: List[str] = []
+    pattern = str(EXNESS_LIVE_SLOT_PATTERN or '').strip()
+    if not pattern:
+        return candidates
+
+    for slot in range(1, EXNESS_LIVE_SLOT_COUNT + 1):
+        try:
+            candidate = pattern.replace('{n}', str(slot)).replace('{slot}', str(slot))
+            candidate = os.path.expandvars(candidate)
+            normalized = _normalize_exness_path_candidate(candidate)
+            if normalized:
+                candidates.append(normalized)
+        except Exception:
+            continue
+    return candidates
+
+
+def _claim_exness_live_slot_path(
+    user_id: str,
+    account_number: Any,
+    configured_path: Optional[str] = None,
+    server: Optional[str] = None,
+) -> Optional[str]:
+    """Pick a non-occupied Exness LIVE terminal path and persist by credential path.
+
+    Priority:
+    1) explicit configured path
+    2) account/server map overrides
+    3) first unoccupied Live{n} slot path from EXNESS_LIVE_SLOT_PATTERN
+    4) existing default Exness resolver fallback
+    """
+    explicit = _normalize_exness_path_candidate(configured_path or '')
+    if explicit:
+        return resolve_mt5_terminal_executable_path(explicit) or explicit
+
+    normalized_account = _normalize_exness_account_number(account_number)
+    # Keep an existing assignment stable for this exact user/account.
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT mt5_terminal_path
+            FROM broker_credentials
+            WHERE user_id = ?
+              AND broker_name = 'Exness'
+              AND account_number = ?
+              AND is_live = 1
+            ORDER BY COALESCE(updated_at, created_at, '') DESC
+            LIMIT 1
+            ''',
+            (str(user_id or '').strip(), normalized_account),
+        )
+        existing_row = cursor.fetchone()
+        conn.close()
+        if existing_row:
+            existing_path = existing_row[0] if isinstance(existing_row, (tuple, list)) else existing_row.get('mt5_terminal_path')
+            normalized_existing = normalize_mt5_terminal_path_input(existing_path)
+            if normalized_existing:
+                return resolve_mt5_terminal_executable_path(normalized_existing) or normalized_existing
+    except Exception as exc:
+        logger.warning(f"Could not load existing Exness live slot assignment: {exc}")
+
+    preferred = _resolve_exness_terminal_path(
+        configured_path=None,
+        is_live=True,
+        server=server,
+        account_number=account_number,
+    )
+
+    slot_candidates = _exness_live_slot_candidates()
+    if not slot_candidates:
+        return resolve_mt5_terminal_executable_path(preferred) or preferred
+
+    occupied: Set[str] = set()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT mt5_terminal_path
+            FROM broker_credentials
+            WHERE broker_name = 'Exness'
+              AND is_active = 1
+              AND is_live = 1
+              AND user_id != ?
+            ''',
+            (str(user_id or '').strip(),)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        for row in rows:
+            value = row[0] if isinstance(row, (tuple, list)) else row.get('mt5_terminal_path')
+            normalized = normalize_mt5_terminal_path_input(value)
+            resolved = resolve_mt5_terminal_executable_path(normalized)
+            final = os.path.normcase(os.path.normpath(resolved or normalized or ''))
+            if final:
+                occupied.add(final)
+    except Exception as exc:
+        logger.warning(f"Could not inspect occupied Exness live slots: {exc}")
+
+    fallback_existing: Optional[str] = None
+    for candidate in slot_candidates:
+        resolved = resolve_mt5_terminal_executable_path(candidate)
+        final_candidate = resolved or candidate
+        final_key = os.path.normcase(os.path.normpath(final_candidate)) if final_candidate else ''
+        if not final_key:
+            continue
+        # Prefer existing executable paths; allow non-existing as last fallback.
+        if resolved and os.path.isfile(resolved) and final_key not in occupied:
+            return resolved
+        if fallback_existing is None and final_key not in occupied:
+            fallback_existing = final_candidate
+
+    if fallback_existing:
+        return fallback_existing
+
+    # All slots appear occupied; fall back to default live path behavior.
+    return resolve_mt5_terminal_executable_path(preferred) or preferred
 
 
 def get_exness_mt5_config(is_live: Optional[bool] = None, server: str = None, account_number: Any = None) -> Dict:
@@ -30372,6 +30502,21 @@ def save_broker_credentials():
                 }), 400
             if not server:
                 server = normalize_mt5_server_name('Exness', is_live, server, account_number)
+            if is_live:
+                mt5_terminal_path = _claim_exness_live_slot_path(
+                    user_id=user_id,
+                    account_number=account_number,
+                    configured_path=mt5_terminal_path,
+                    server=server,
+                )
+            elif not mt5_terminal_path:
+                mt5_terminal_path = find_mt5_terminal_path(
+                    'Exness',
+                    configured_path=None,
+                    is_live=False,
+                    server=server,
+                    account_number=account_number,
+                )
         else:
             return jsonify({
                 'success': False,
@@ -31148,12 +31293,21 @@ def test_broker_connection():
                     logger.warning(f'Could not check Exness user cap: {_cap_err}')
 
                 if not mt5_terminal_path:
-                    mt5_terminal_path = find_mt5_terminal_path(
-                        broker,
-                        is_live=is_live,
-                        server=server,
-                        account_number=account,
-                    )
+                    if is_live:
+                        mt5_terminal_path = _claim_exness_live_slot_path(
+                            user_id=user_id,
+                            account_number=account,
+                            configured_path=None,
+                            server=server,
+                        )
+                    else:
+                        mt5_terminal_path = find_mt5_terminal_path(
+                            broker,
+                            configured_path=None,
+                            is_live=False,
+                            server=server,
+                            account_number=account,
+                        )
 
             defer_exness_verification = broker.lower() == 'exness'
             actual_balance = 10000.00  # Default fallback
