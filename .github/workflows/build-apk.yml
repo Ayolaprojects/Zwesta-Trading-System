@@ -31,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEFAULT_API_URL: http://192.168.0.137:9000
+      CI: true
+      FLUTTER_SUPPRESS_ANALYTICS: true
 
     steps:
       - name: Checkout code
@@ -64,6 +66,10 @@ jobs:
         with:
           flutter-version: '3.32.5'
           channel: 'stable'
+
+      - name: Disable Flutter analytics in CI
+        run: |
+          flutter config --no-analytics || true
 
       # ── Release signing ───────────────────────────────────────────────────
       # Add these secrets in GitHub repo → Settings → Secrets → Actions:
@@ -120,6 +126,7 @@ jobs:
             --dart-define=API_KEY="$PROD_KEY" \
             --build-number=${{ github.run_number }} \
             --no-obfuscate \
+            --suppress-analytics \
             --verbose 2>&1 | tee build_output.log
           exit_code=${PIPESTATUS[0]}
           if [ $exit_code -ne 0 ]; then
@@ -127,6 +134,15 @@ jobs:
             tail -200 build_output.log || true
             echo "========== Key failure lines =========="
             grep -nE "FAILURE: Build failed with an exception|\* What went wrong|A problem occurred|Execution failed for task|Caused by:" build_output.log || true
+            echo "========== Failure context around '* What went wrong' =========="
+            line=$(grep -n "\* What went wrong" build_output.log | head -n1 | cut -d: -f1 || true)
+            if [ -n "$line" ]; then
+              start=$((line-40)); if [ "$start" -lt 1 ]; then start=1; fi
+              end=$((line+120))
+              sed -n "${start},${end}p" build_output.log || true
+            fi
+            echo "========== Flutter/Dart explicit errors =========="
+            grep -nE "Target kernel_snapshot|Error: |Unhandled exception|Failed to compile|Gradle task .* failed|Exception:" build_output.log | tail -200 || true
             exit $exit_code
           fi
 
