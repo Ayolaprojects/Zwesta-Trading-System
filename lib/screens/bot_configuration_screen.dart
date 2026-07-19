@@ -2265,6 +2265,14 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
         return;
       }
     }
+
+    // Fallback: keep the flow usable by selecting the best available
+    // credential and syncing trading mode to that credential.
+    if (_brokerService.credentials.isNotEmpty) {
+      final fallback = _brokerService.credentials.first;
+      _brokerService.setActiveCredential(fallback);
+      await _persistTradingMode(fallback.isLive ? 'LIVE' : 'DEMO');
+    }
   }
 
   String _buildClonedBotId(String sourceBotId) {

@@ -245,6 +245,9 @@ class BrokerCredentialsService extends ChangeNotifier {
             preferredTradingMode: preferredTradingMode,
             preferredCredentialId: currentActiveCredentialId ?? persistedActiveCredentialId,
           );
+          // If saved trading mode points to a mode with no credentials,
+          // keep bot setup usable by falling back to the highest-ranked credential.
+          _activeCredential ??= _preferredCredential(activeCredentials.isNotEmpty ? activeCredentials : _credentials);
         }
 
         print('✅ Loaded ${_credentials.length} broker credentials');
@@ -503,6 +506,7 @@ class BrokerCredentialsService extends ChangeNotifier {
         } else {
           _activeCredential = _preferredCredential(_credentials);
         }
+        _activeCredential ??= _preferredCredential(_credentials);
       }
     } catch (e) {
       print('⚠️ Error loading saved credentials: $e');
