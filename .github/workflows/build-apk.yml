@@ -1,5 +1,5 @@
 name: Build & Release APK
-# Trigger marker: manual APK build request
+# Trigger marker: force APK run 2026-07-19
 
 on:
   push:
