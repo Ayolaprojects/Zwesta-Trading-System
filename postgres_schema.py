@@ -626,6 +626,42 @@ MIGRATIONS = [
     '''
     ALTER TABLE trades ALTER COLUMN ticket TYPE TEXT;
     ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS label TEXT;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS api_key TEXT;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS username TEXT;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS cached_balance DOUBLE PRECISION DEFAULT 0;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS cached_equity DOUBLE PRECISION DEFAULT 0;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS cached_margin_free DOUBLE PRECISION DEFAULT 0;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS last_update TEXT;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS cached_margin DOUBLE PRECISION DEFAULT 0;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS cached_margin_level DOUBLE PRECISION DEFAULT 0;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS cached_profit DOUBLE PRECISION DEFAULT 0;
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS account_currency TEXT DEFAULT 'USD';
+    ''',
+    '''
+    ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS mt5_terminal_path TEXT;
+    ''',
 ]
 
 
