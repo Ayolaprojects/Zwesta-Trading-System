@@ -517,7 +517,8 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           final matchesFilter = _filterStatus == 'all' ||
               (_filterStatus == 'active' && isEnabled) ||
               (_filterStatus == 'inactive' && !isEnabled);
-          return matchesSearch && matchesFilter;
+          final matchesMode = _isLiveBot(bot) == (_tradingMode.toUpperCase() == 'LIVE');
+          return matchesSearch && matchesFilter && matchesMode;
         }).toList();
 
         // Top 5 newest bots (by creation time or just last 5)
