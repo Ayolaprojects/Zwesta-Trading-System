@@ -1088,7 +1088,6 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final openPositions = (bot['openPositionsPreview'] as List?) ?? (bot['openPositions'] as List?) ?? [];
     final floatingProfit = double.tryParse(bot['floatingProfit']?.toString() ?? '0') ??
       openPositions.fold<double>(0, (sum, position) => sum + (double.tryParse(position['profit']?.toString() ?? '0') ?? 0));
-    final visibleTradeCount = totalTrades > 0 ? totalTrades : openPositionsCount;
     final currentProfit = sessionProfit;
     final promotionStatus = (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
     final isPromotionEligible = isDemoBot && (bot['promotionEligible'] == true || promotionStatus == 'ready');
@@ -1103,6 +1102,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
       double.tryParse(bot['totalInvestment']?.toString() ?? '0') ??
       0;
     final openPositionsCount = int.tryParse(bot['openPositionsCount']?.toString() ?? '${openPositions.length}') ?? openPositions.length;
+    final visibleTradeCount = totalTrades > 0 ? totalTrades : openPositionsCount;
     final symbols = bot['symbol'] ?? bot['symbols'] ?? 'N/A';
     final strategy = bot['strategy'] ?? 'Auto';
     final brokerType = bot['broker_type'] ?? bot['broker'] ?? 'MT5';
