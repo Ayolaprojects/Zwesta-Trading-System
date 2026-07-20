@@ -2427,19 +2427,7 @@ def _resolve_exness_server(account_number: Any = None, is_live: bool = False, se
         'socket_bridge',
     }
     if provided_server and provided_server.lower() not in invalid_mt5_aliases:
-        provided_lower = provided_server.lower()
-        demo_like = any(token in provided_lower for token in ['demo', 'trial'])
-        live_like = any(token in provided_lower for token in ['live', 'real'])
-        if is_live and demo_like:
-            logger.warning(
-                f"[DUAL MT5] Exness live credential received demo server '{provided_server}' for account {account_number}; resolving to live server instead"
-            )
-        elif (not is_live) and live_like:
-            logger.warning(
-                f"[DUAL MT5] Exness demo credential received live server '{provided_server}' for account {account_number}; resolving to demo server instead"
-            )
-        else:
-            return provided_server
+        return provided_server
 
     normalized_account = _normalize_exness_account_number(account_number)
     mapped_server = EXNESS_ACCOUNT_SERVER_MAP.get(normalized_account, '').strip()
@@ -3310,19 +3298,11 @@ def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = Non
         'socket-bridge',
         'socket_bridge',
     }
-
-    if normalized == 'Exness':
-        if provided_server and provided_server.lower() not in invalid_mt5_aliases:
-            provided_lower = provided_server.lower()
-            if is_live and any(token in provided_lower for token in ['demo', 'trial']):
-                provided_server = ''
-            elif (not is_live) and any(token in provided_lower for token in ['live', 'real']):
-                provided_server = ''
-            else:
-                return provided_server
-        return _resolve_exness_server(account_number, is_live, server)
     if provided_server and provided_server.lower() not in invalid_mt5_aliases:
         return provided_server
+
+    if normalized == 'Exness':
+        return _resolve_exness_server(account_number, is_live, server)
     return 'MetaTrader 5'
 
 
@@ -43765,21 +43745,11 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             tracked = tracked_positions.pop(closed_ticket, {})
                                             tracked_profit = round(_safe_float(tracked.get('profit'), 0.0), 2)
                                             closed_trade_payload = None
-                                            # Only positions adopted via untracked-position discovery are
-                                            # genuinely external. Positions the bot itself opened and is
-                                            # polling here almost always closed via the bot's own TP/SL —
-                                            # defaulting them to EXTERNAL_MANUAL_CLOSE wrongly zeroed out
-                                            # totalTrades/winRate on fast-polling bots (e.g. Binance futures
-                                            # scalping) even though profit kept accruing.
-                                            _poll_close_is_external = bool(tracked.get('discovered'))
 
                                             for trade in bot_config.get('tradeHistory', []):
                                                 if str(trade.get('ticket')) == str(closed_ticket):
                                                     trade['status'] = 'closed'
-                                                    trade['closeReason'] = trade.get(
-                                                        'closeReason',
-                                                        'EXTERNAL_MANUAL_CLOSE' if _poll_close_is_external else 'TP_SL_OR_MANUAL',
-                                                    )
+                                                    trade['closeReason'] = trade.get('closeReason', 'EXTERNAL_MANUAL_CLOSE')
                                                     realized_profit = tracked_profit
                                                     trade_commission = 0.0
                                                     trade_swap = 0.0
@@ -43810,7 +43780,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                     trade['exitPrice'] = exit_price
                                                     trade['currentPrice'] = exit_price
                                                     trade['isWinning'] = realized_profit > 0
-                                                    trade['countsTowardPerformance'] = not _poll_close_is_external
+                                                    trade['countsTowardPerformance'] = False
                                                     closed_trade_payload = dict(trade)
                                                     break
 
@@ -43834,15 +43804,12 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                     'botId': bot_id,
                                                     'cycle': tracked.get('cycle', 0),
                                                     'strategy': tracked.get('strategy', ''),
-                                                    'closeReason': tracked.get(
-                                                        'closeReason',
-                                                        'EXTERNAL_MANUAL_CLOSE' if _poll_close_is_external else 'TP_SL_OR_MANUAL',
-                                                    ),
+                                                    'closeReason': tracked.get('closeReason', 'EXTERNAL_MANUAL_CLOSE'),
                                                     'peakProfit': round(_safe_float(tracked.get('peakProfit'), 0.0), 2),
                                                     'lockedProfitFloor': round(_safe_float(tracked.get('lockedProfitFloor'), 0.0), 2),
                                                     'breakEvenFloor': round(_safe_float(tracked.get('breakEvenFloor'), 0.0), 2),
                                                     'isWinning': tracked_profit > 0,
-                                                    'countsTowardPerformance': not _poll_close_is_external,
+                                                    'countsTowardPerformance': False,
                                                     'source': f"REAL_{str(broker_type).upper().replace(' ', '_')}",
                                                     'broker': tracked.get('broker', broker_type),
                                                 }
@@ -44768,7 +44735,7 @@ def quick_create_exness_bot():
             # Conservative defaults for live Exness accounts.
             management_profile = 'small_account' if bool(is_live) else 'balanced'
             management_mode = 'assisted'
-            signal_threshold = 66 if bool(is_live) else 55
+            signal_threshold = 72 if bool(is_live) else 60
             allowed_volatility = ['Very Low', 'Low'] if bool(is_live) else ['Low', 'Medium']
             max_open_positions = 2 if bool(is_live) else 3
             max_positions_per_symbol = 1

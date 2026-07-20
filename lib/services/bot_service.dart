@@ -220,9 +220,9 @@ class BotService extends ChangeNotifier {
         return;
       }
 
-      // Use mode=ALL so bots of any mode (LIVE/DEMO/Binance live) are always
-      // returned, regardless of the locally stored trading_mode preference.
-      var url = '$_apiUrl/api/bot/summary?mode=ALL';
+      final modeParam = mode.trim().toUpperCase();
+      final summaryMode = modeParam == 'LIVE' || modeParam == 'DEMO' ? modeParam : 'ALL';
+      var url = '$_apiUrl/api/bot/summary?mode=$summaryMode';
       if (includeHistory) {
         url += '&include_history=true';
       }

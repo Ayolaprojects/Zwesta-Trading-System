@@ -696,7 +696,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final prefs = await SharedPreferences.getInstance();
+    final previousMode = (prefs.getString('trading_mode') ?? 'DEMO').toUpperCase();
+    final sessionToken = prefs.getString('auth_token');
+    final userId = prefs.getString('user_id');
+
     await prefs.setString('dashboard_balance_mode', normalizedMode);
+    await prefs.setString('trading_mode', normalizedMode.toUpperCase());
     if (!mounted) {
       return;
     }
@@ -704,7 +709,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _balanceMode = normalizedMode;
     });
+
+    try {
+      if (sessionToken == null || sessionToken.isEmpty || userId == null || userId.isEmpty) {
+        throw Exception('Not authenticated');
+      }
+
+      final response = await http.post(
+        Uri.parse('${EnvironmentConfig.apiUrl}/api/user/switch-mode'),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Token': sessionToken,
+          'X-User-ID': userId,
+        },
+        body: jsonEncode({'mode': normalizedMode.toUpperCase()}),
+      ).timeout(const Duration(seconds: 8));
+
+      if (response.statusCode != 200) {
+        throw Exception('Mode switch failed with HTTP ${response.statusCode}');
+      }
+    } catch (e) {
+      await prefs.setString('dashboard_balance_mode', previousMode == 'LIVE' ? 'live' : 'demo');
+      await prefs.setString('trading_mode', previousMode);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _balanceMode = previousMode == 'LIVE' ? 'live' : 'demo';
+      });
+      rethrow;
+    }
+
+    final botService = context.read<BotService>();
+    botService.startPolling(tradingMode: normalizedMode.toUpperCase());
+    await botService.fetchActiveBots(tradingMode: normalizedMode.toUpperCase(), force: true);
     await _fetchBrokerBalances();
+    await _fetchRealBots();
   }
 
   Future<Map<String, dynamic>?> _loadLocalBrokerSnapshot() async {
@@ -982,7 +1022,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         throw Exception('Session token missing. Please login again.');
       }
 
-      var url = '${EnvironmentConfig.apiUrl}/api/bot/summary?mode=ALL&include_history=true';
+      final modeParam = _balanceMode == 'all' ? 'ALL' : _balanceMode.toUpperCase();
+      var url = '${EnvironmentConfig.apiUrl}/api/bot/summary?mode=$modeParam&include_history=true';
       if (userId != null && userId.isNotEmpty) {
         url += '&user_id=$userId';
       }
