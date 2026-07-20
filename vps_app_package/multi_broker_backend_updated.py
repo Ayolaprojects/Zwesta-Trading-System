@@ -36677,6 +36677,24 @@ def _is_guarded_small_live_account(bot_config: Dict[str, Any], multiplier: float
     return balance_basis > 0 and balance_basis <= (threshold * multiplier)
 
 
+def _is_bot_profitability_proven(bot_config: Dict[str, Any], min_trades: int = 10, min_win_rate: float = 45.0) -> bool:
+    """Gate for scaling trade volume above the fixed base lot.
+
+    Requires a minimum sample of closed trades, a non-negative overall
+    win rate, and positive cumulative profit before any pyramid/positive-symbol/
+    leverage multiplier is allowed to push volume above the fixed base lot size.
+    """
+    if not isinstance(bot_config, dict):
+        return False
+    total_trades = int(_safe_float(bot_config.get('totalTrades'), 0.0))
+    if total_trades < max(1, min_trades):
+        return False
+    winning_trades = int(_safe_float(bot_config.get('winningTrades'), 0.0))
+    win_rate = (winning_trades / total_trades) * 100.0 if total_trades > 0 else 0.0
+    total_profit = _safe_float(bot_config.get('totalProfit'), 0.0)
+    return total_profit > 0 and win_rate >= min_win_rate
+
+
 LIVE_CAPITAL_SAFETY_BANDS = [
     {
         'name': 'sovereign_guard',
@@ -41630,23 +41648,23 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         # Volatile instruments need much wider SL to survive noise
                                         _sym_u = symbol.upper()
                                         if any(c in _sym_u for c in ['XAU', 'XAG']):
-                                            _min_sl_pip = max(15 * _pip, 5.0)    # Gold: $5 hard floor
-                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                            _min_sl_pip = max(22 * _pip, 7.0)    # Gold: $7 hard floor (widened)
+                                            _sl_spread_mult, _tp_spread_mult = 26, 42
                                         elif any(c in _sym_u for c in ['USOIL', 'UKOIL', 'WTI', 'BRENT']):
-                                            _min_sl_pip = max(15 * _pip, 0.50)   # Oil: $0.50 hard floor
-                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                            _min_sl_pip = max(22 * _pip, 0.75)   # Oil: $0.75 hard floor (widened)
+                                            _sl_spread_mult, _tp_spread_mult = 26, 42
                                         elif any(c in _sym_u for c in ['US500', 'US30', 'USTEC', 'SPX', 'NAS', 'GER']):
-                                            _min_sl_pip = max(15 * _pip, 7.0)    # Indices: 7-point hard floor
-                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                            _min_sl_pip = max(22 * _pip, 10.0)    # Indices: 10-point hard floor (widened)
+                                            _sl_spread_mult, _tp_spread_mult = 26, 42
                                         elif any(c in _sym_u for c in ['GBP', 'JPY']):
-                                            _min_sl_pip = 12 * _pip
-                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                            _min_sl_pip = 17 * _pip
+                                            _sl_spread_mult, _tp_spread_mult = 11, 18
                                         elif any(c in _sym_u for c in ['BTC', 'ETH']):
                                             _min_sl_pip = 0
-                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                            _sl_spread_mult, _tp_spread_mult = 11, 18
                                         else:
-                                            _min_sl_pip = 8 * _pip
-                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                            _min_sl_pip = 12 * _pip
+                                            _sl_spread_mult, _tp_spread_mult = 11, 18
                                         _sl_dist = max(_sl_dist, _spread * _sl_spread_mult, _min_sl_pip)
                                         _tp_dist = max(_tp_dist, _spread * _tp_spread_mult)
                                         _digits = 5 if _pip < 0.01 else 2
@@ -41676,23 +41694,23 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         # Volatile instruments need much wider SL to survive noise
                                         _sym_u = symbol.upper()
                                         if any(c in _sym_u for c in ['XAU', 'XAG']):
-                                            _min_sl_pip = max(15 * _pip, 5.0)    # Gold: $5 hard floor
-                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                            _min_sl_pip = max(22 * _pip, 7.0)    # Gold: $7 hard floor (widened)
+                                            _sl_spread_mult, _tp_spread_mult = 26, 42
                                         elif any(c in _sym_u for c in ['USOIL', 'UKOIL', 'WTI', 'BRENT']):
-                                            _min_sl_pip = max(15 * _pip, 0.50)   # Oil: $0.50 hard floor
-                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                            _min_sl_pip = max(22 * _pip, 0.75)   # Oil: $0.75 hard floor (widened)
+                                            _sl_spread_mult, _tp_spread_mult = 26, 42
                                         elif any(c in _sym_u for c in ['US500', 'US30', 'USTEC', 'SPX', 'NAS', 'GER']):
-                                            _min_sl_pip = max(15 * _pip, 7.0)    # Indices: 7-point hard floor
-                                            _sl_spread_mult, _tp_spread_mult = 20, 35
+                                            _min_sl_pip = max(22 * _pip, 10.0)    # Indices: 10-point hard floor (widened)
+                                            _sl_spread_mult, _tp_spread_mult = 26, 42
                                         elif any(c in _sym_u for c in ['GBP', 'JPY']):
-                                            _min_sl_pip = 12 * _pip
-                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                            _min_sl_pip = 17 * _pip
+                                            _sl_spread_mult, _tp_spread_mult = 11, 18
                                         elif any(c in _sym_u for c in ['BTC', 'ETH']):
                                             _min_sl_pip = 0
-                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                            _sl_spread_mult, _tp_spread_mult = 11, 18
                                         else:
-                                            _min_sl_pip = 8 * _pip
-                                            _sl_spread_mult, _tp_spread_mult = 8, 14
+                                            _min_sl_pip = 12 * _pip
+                                            _sl_spread_mult, _tp_spread_mult = 11, 18
                                         _sl_dist = max(_sl_dist, _spread * _sl_spread_mult, _min_sl_pip)
                                         _tp_dist = max(_tp_dist, _spread * _tp_spread_mult)
                                         if order_type == 'BUY':
@@ -41714,16 +41732,16 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                         _sym_fb = mt5_conn.mt5.symbol_info(symbol)
                                         _point_fb = _sym_fb.point if _sym_fb else 0.00001
                                         _digits_fb = _sym_fb.digits if _sym_fb else 5
-                                        # Fallback SL: 10 real pips, TP: 25 real pips
+                                        # Fallback SL: 15 real pips, TP: 35 real pips (widened to avoid noise stop-outs)
                                         # Use pip (not point) so fallback is also noise-resistant
                                         _pip_fb = _point_fb * 10 if _digits_fb >= 5 else _point_fb
                                         if order_type == 'BUY':
-                                            sl_price = sl_price or round(_price_fb - 10 * _pip_fb, _digits_fb)
-                                            tp_price = tp_price or round(_price_fb + 25 * _pip_fb, _digits_fb)
+                                            sl_price = sl_price or round(_price_fb - 15 * _pip_fb, _digits_fb)
+                                            tp_price = tp_price or round(_price_fb + 35 * _pip_fb, _digits_fb)
                                         else:
-                                            sl_price = sl_price or round(_price_fb + 10 * _pip_fb, _digits_fb)
-                                            tp_price = tp_price or round(_price_fb - 25 * _pip_fb, _digits_fb)
-                                        logger.info(f"📐 Bot {bot_id}: Fallback SL={sl_price}, TP={tp_price} (10/25 real pips)")
+                                            sl_price = sl_price or round(_price_fb + 15 * _pip_fb, _digits_fb)
+                                            tp_price = tp_price or round(_price_fb - 35 * _pip_fb, _digits_fb)
+                                        logger.info(f"📐 Bot {bot_id}: Fallback SL={sl_price}, TP={tp_price} (15/35 real pips)")
                                 except Exception as fb_e:
                                     logger.warning(f"Bot {bot_id}: Fallback SL/TP calculation also failed: {fb_e}")
 
@@ -41771,6 +41789,18 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                     )
                                     adjusted_volume = final_symbol_cap
 
+                                # Keep lot size fixed at the base entry volume (0.01 by default)
+                                # until this bot has a proven track record. Overrides any
+                                # pyramid/positive-symbol/leverage multiplier scaling applied above.
+                                if not _is_bot_profitability_proven(bot_config):
+                                    _base_fixed_volume = max(0.0, _safe_float(bot_config.get('fixedTradeVolume'), 0.0)) or 0.01
+                                    if adjusted_volume > _base_fixed_volume:
+                                        logger.info(
+                                            f"🔒 Bot {bot_id}: Profitability not yet proven — holding {symbol} volume at "
+                                            f"{_base_fixed_volume:.2f} lots instead of {adjusted_volume:.4f}"
+                                        )
+                                        adjusted_volume = _base_fixed_volume
+
                             _set_symbol_entry_lock(
                                 bot_config,
                                 symbol,
@@ -41799,9 +41829,9 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             logger.warning(f"⚠️ SYMBOL MISMATCH - Bot {bot_id}: Requested {symbol} but EXECUTED on {actual_symbol}")
                                             logger.warning(f"   This may result in unexpected profits/losses if symbols trade differently")
                                         logger.info(f"✅ Bot {bot_id}: Order placed successfully on {actual_symbol}")
-                                        recent_entry_lock_seconds = 90.0
+                                        recent_entry_lock_seconds = 180.0
                                         if normalized_broker == 'Exness' and _is_exness_forex_symbol(actual_symbol):
-                                            recent_entry_lock_seconds = 480.0
+                                            recent_entry_lock_seconds = 900.0
                                         _set_symbol_entry_lock(
                                             bot_config,
                                             actual_symbol,
