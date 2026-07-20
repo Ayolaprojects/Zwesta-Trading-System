@@ -7331,22 +7331,23 @@ class MT5Connection(BrokerConnection):
                             err_code = err[0] if isinstance(err, tuple) and len(err) > 0 else -1
                             err_msg = str(err).lower()
                             # Transient IPC errors (-10014 = future not completed, -10005/-10004 = IPC busy):
-                            # retry fast login once with a short wait before falling back to initialize().
+                            # wait longer and retry a couple of times before falling back to initialize().
                             if err_code in (-10014, -10005, -10004) or 'future not completed' in err_msg or 'ipc' in err_msg:
-                                logger.warning(f"  ⚠️ Transient IPC error during fast login ({err}) — waiting 2s and retrying once")
-                                time.sleep(2)
-                                login_ok = self.mt5.login(int(account), password=str(password), server=str(server))
-                                if login_ok:
-                                    time.sleep(1)
-                                    acct_check = self.mt5.account_info()
-                                    if acct_check and acct_check.login == int(account):
-                                        self.connected = True
-                                        logger.info(f"✅ Fast-switched (IPC retry) to MT5 account {account}")
-                                        with mt5_account_lock:
-                                            mt5_current_account = int(account)
-                                        self.get_account_info()
-                                        self._subscribe_symbols()
-                                        return True
+                                logger.warning(f"  ⚠️ Transient IPC error during fast login ({err}) — waiting 8s and retrying")
+                                for ipc_retry in range(2):
+                                    time.sleep(8 if ipc_retry == 0 else 4)
+                                    login_ok = self.mt5.login(int(account), password=str(password), server=str(server))
+                                    if login_ok:
+                                        time.sleep(1)
+                                        acct_check = self.mt5.account_info()
+                                        if acct_check and acct_check.login == int(account):
+                                            self.connected = True
+                                            logger.info(f"✅ Fast-switched (IPC retry) to MT5 account {account}")
+                                            with mt5_account_lock:
+                                                mt5_current_account = int(account)
+                                            self.get_account_info()
+                                            self._subscribe_symbols()
+                                            return True
                             logger.warning(f"  ⚠️ Fast mt5.login() failed: {err} — falling back to initialize()")
                             if is_manual_test and self._is_auth_error(err):
                                 self._set_last_error('Invalid Exness account number, password, or server.', 'AUTH_FAILED')
