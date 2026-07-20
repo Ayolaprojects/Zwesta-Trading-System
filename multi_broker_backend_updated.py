@@ -2427,7 +2427,19 @@ def _resolve_exness_server(account_number: Any = None, is_live: bool = False, se
         'socket_bridge',
     }
     if provided_server and provided_server.lower() not in invalid_mt5_aliases:
-        return provided_server
+        provided_lower = provided_server.lower()
+        demo_like = any(token in provided_lower for token in ['demo', 'trial'])
+        live_like = any(token in provided_lower for token in ['live', 'real'])
+        if is_live and demo_like:
+            logger.warning(
+                f"[DUAL MT5] Exness live credential received demo server '{provided_server}' for account {account_number}; resolving to live server instead"
+            )
+        elif (not is_live) and live_like:
+            logger.warning(
+                f"[DUAL MT5] Exness demo credential received live server '{provided_server}' for account {account_number}; resolving to demo server instead"
+            )
+        else:
+            return provided_server
 
     normalized_account = _normalize_exness_account_number(account_number)
     mapped_server = EXNESS_ACCOUNT_SERVER_MAP.get(normalized_account, '').strip()
@@ -3298,11 +3310,19 @@ def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = Non
         'socket-bridge',
         'socket_bridge',
     }
-    if provided_server and provided_server.lower() not in invalid_mt5_aliases:
-        return provided_server
 
     if normalized == 'Exness':
+        if provided_server and provided_server.lower() not in invalid_mt5_aliases:
+            provided_lower = provided_server.lower()
+            if is_live and any(token in provided_lower for token in ['demo', 'trial']):
+                provided_server = ''
+            elif (not is_live) and any(token in provided_lower for token in ['live', 'real']):
+                provided_server = ''
+            else:
+                return provided_server
         return _resolve_exness_server(account_number, is_live, server)
+    if provided_server and provided_server.lower() not in invalid_mt5_aliases:
+        return provided_server
     return 'MetaTrader 5'
 
 
@@ -44748,7 +44768,7 @@ def quick_create_exness_bot():
             # Conservative defaults for live Exness accounts.
             management_profile = 'small_account' if bool(is_live) else 'balanced'
             management_mode = 'assisted'
-            signal_threshold = 72 if bool(is_live) else 60
+            signal_threshold = 66 if bool(is_live) else 55
             allowed_volatility = ['Very Low', 'Low'] if bool(is_live) else ['Low', 'Medium']
             max_open_positions = 2 if bool(is_live) else 3
             max_positions_per_symbol = 1
