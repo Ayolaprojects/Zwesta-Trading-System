@@ -45,7 +45,9 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
 
   Future<void> _loadTradingMode() async {
     final prefs = await SharedPreferences.getInstance();
-    final mode = prefs.getString('trading_mode') ?? 'DEMO';
+    final storedMode = (prefs.getString('trading_mode') ?? '').trim().toUpperCase();
+    final fallbackMode = (prefs.getBool('is_live_mode') ?? false) ? 'LIVE' : 'DEMO';
+    final mode = storedMode == 'LIVE' || storedMode == 'DEMO' ? storedMode : fallbackMode;
     setState(() => _tradingMode = mode);
     // Re-fetch bots with the correct mode
     if (mounted) {

@@ -197,7 +197,10 @@ class BrokerCredentialsService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final sessionToken = prefs.getString('auth_token');
       final userId = prefs.getString('user_id');
-      final preferredTradingMode = prefs.getString('trading_mode');
+      final storedTradingMode = (prefs.getString('trading_mode') ?? '').trim().toUpperCase();
+      final preferredTradingMode = storedTradingMode == 'LIVE' || storedTradingMode == 'DEMO'
+          ? storedTradingMode
+          : null;
       final persistedActiveCredentialId = prefs.getString('active_credential_id');
       final currentActiveCredentialId = _activeCredential?.credentialId;
 

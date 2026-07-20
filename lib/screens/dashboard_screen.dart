@@ -696,12 +696,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    final previousMode = (prefs.getString('trading_mode') ?? 'DEMO').toUpperCase();
+    final storedTradingMode = (prefs.getString('trading_mode') ?? '').trim().toUpperCase();
+    final previousMode = storedTradingMode == 'LIVE' || storedTradingMode == 'DEMO'
+        ? storedTradingMode
+        : ((prefs.getBool('is_live_mode') ?? false) ? 'LIVE' : 'DEMO');
     final sessionToken = prefs.getString('auth_token');
     final userId = prefs.getString('user_id');
 
     await prefs.setString('dashboard_balance_mode', normalizedMode);
-    await prefs.setString('trading_mode', normalizedMode.toUpperCase());
     if (!mounted) {
       return;
     }
@@ -715,22 +717,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
         throw Exception('Not authenticated');
       }
 
-      final response = await http.post(
-        Uri.parse('${EnvironmentConfig.apiUrl}/api/user/switch-mode'),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-Token': sessionToken,
-          'X-User-ID': userId,
-        },
-        body: jsonEncode({'mode': normalizedMode.toUpperCase()}),
-      ).timeout(const Duration(seconds: 8));
+      final effectiveMode = normalizedMode == 'all' ? previousMode : normalizedMode.toUpperCase();
+      if (normalizedMode != 'all') {
+        final response = await http.post(
+          Uri.parse('${EnvironmentConfig.apiUrl}/api/user/switch-mode'),
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-Token': sessionToken,
+            'X-User-ID': userId,
+          },
+          body: jsonEncode({'mode': effectiveMode}),
+        ).timeout(const Duration(seconds: 8));
 
-      if (response.statusCode != 200) {
-        throw Exception('Mode switch failed with HTTP ${response.statusCode}');
+        if (response.statusCode != 200) {
+          throw Exception('Mode switch failed with HTTP ${response.statusCode}');
+        }
+        await prefs.setString('trading_mode', effectiveMode);
+        await prefs.setBool('is_live_mode', effectiveMode == 'LIVE');
       }
+
+      final botService = context.read<BotService>();
+      botService.startPolling(tradingMode: effectiveMode);
+      await botService.fetchActiveBots(tradingMode: effectiveMode, force: true);
+      await _fetchBrokerBalances();
+      await _fetchRealBots();
     } catch (e) {
       await prefs.setString('dashboard_balance_mode', previousMode == 'LIVE' ? 'live' : 'demo');
       await prefs.setString('trading_mode', previousMode);
+      await prefs.setBool('is_live_mode', previousMode == 'LIVE');
       if (!mounted) {
         return;
       }
@@ -739,12 +753,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
       rethrow;
     }
-
-    final botService = context.read<BotService>();
-    botService.startPolling(tradingMode: normalizedMode.toUpperCase());
-    await botService.fetchActiveBots(tradingMode: normalizedMode.toUpperCase(), force: true);
-    await _fetchBrokerBalances();
-    await _fetchRealBots();
   }
 
   Future<Map<String, dynamic>?> _loadLocalBrokerSnapshot() async {

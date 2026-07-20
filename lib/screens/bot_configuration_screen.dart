@@ -622,7 +622,11 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   Future<String> _currentTradingMode() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('trading_mode') ?? 'DEMO';
+    final storedMode = (prefs.getString('trading_mode') ?? '').trim().toUpperCase();
+    if (storedMode == 'LIVE' || storedMode == 'DEMO') {
+      return storedMode;
+    }
+    return (prefs.getBool('is_live_mode') ?? false) ? 'LIVE' : 'DEMO';
   }
 
   Future<void> _persistTradingMode(String mode) async {

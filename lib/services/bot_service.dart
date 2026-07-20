@@ -184,7 +184,9 @@ class BotService extends ChangeNotifier {
 
   Future<void> _fetchActiveBotsInternal({String? tradingMode, bool force = false, bool includeHistory = false}) async {
     final prefs = await _getPrefs();
-    final mode = tradingMode ?? prefs.getString('trading_mode') ?? 'DEMO';
+    final storedMode = (prefs.getString('trading_mode') ?? '').trim().toUpperCase();
+    final fallbackMode = (prefs.getBool('is_live_mode') ?? false) ? 'LIVE' : 'DEMO';
+    final mode = tradingMode ?? (storedMode == 'LIVE' || storedMode == 'DEMO' ? storedMode : fallbackMode);
     await _hydrateCachedActiveBotsIfNeeded(prefs);
     final now = DateTime.now();
     if (!force && _lastFetchAt != null && _lastTradingMode == mode && now.difference(_lastFetchAt!) < const Duration(seconds: 1)) {
