@@ -1088,6 +1088,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final openPositions = (bot['openPositionsPreview'] as List?) ?? (bot['openPositions'] as List?) ?? [];
     final floatingProfit = double.tryParse(bot['floatingProfit']?.toString() ?? '0') ??
       openPositions.fold<double>(0, (sum, position) => sum + (double.tryParse(position['profit']?.toString() ?? '0') ?? 0));
+    final visibleTradeCount = totalTrades > 0 ? totalTrades : openPositionsCount;
     final currentProfit = sessionProfit;
     final promotionStatus = (bot['promotionStatus'] ?? '').toString().trim().toLowerCase();
     final isPromotionEligible = isDemoBot && (bot['promotionEligible'] == true || promotionStatus == 'ready');
@@ -1420,7 +1421,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           const SizedBox(height: 10),
           Row(
             children: [
-              _botStat('Trades', '$totalTrades', const Color(0xFF00E5FF)),
+              _botStat('Trades', '$visibleTradeCount', const Color(0xFF00E5FF)),
               _botStat('Win Rate', '${winRate.toStringAsFixed(1)}%', const Color(0xFF69F0AE)),
               _botStat('All-time', _formatAmount(currencyProvider, allTimeProfit, currencyCode: displayCurrency), allTimeProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80)),
             ],
