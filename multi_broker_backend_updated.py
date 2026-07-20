@@ -43745,11 +43745,21 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                             tracked = tracked_positions.pop(closed_ticket, {})
                                             tracked_profit = round(_safe_float(tracked.get('profit'), 0.0), 2)
                                             closed_trade_payload = None
+                                            # Only positions adopted via untracked-position discovery are
+                                            # genuinely external. Positions the bot itself opened and is
+                                            # polling here almost always closed via the bot's own TP/SL —
+                                            # defaulting them to EXTERNAL_MANUAL_CLOSE wrongly zeroed out
+                                            # totalTrades/winRate on fast-polling bots (e.g. Binance futures
+                                            # scalping) even though profit kept accruing.
+                                            _poll_close_is_external = bool(tracked.get('discovered'))
 
                                             for trade in bot_config.get('tradeHistory', []):
                                                 if str(trade.get('ticket')) == str(closed_ticket):
                                                     trade['status'] = 'closed'
-                                                    trade['closeReason'] = trade.get('closeReason', 'EXTERNAL_MANUAL_CLOSE')
+                                                    trade['closeReason'] = trade.get(
+                                                        'closeReason',
+                                                        'EXTERNAL_MANUAL_CLOSE' if _poll_close_is_external else 'TP_SL_OR_MANUAL',
+                                                    )
                                                     realized_profit = tracked_profit
                                                     trade_commission = 0.0
                                                     trade_swap = 0.0
@@ -43780,7 +43790,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                     trade['exitPrice'] = exit_price
                                                     trade['currentPrice'] = exit_price
                                                     trade['isWinning'] = realized_profit > 0
-                                                    trade['countsTowardPerformance'] = False
+                                                    trade['countsTowardPerformance'] = not _poll_close_is_external
                                                     closed_trade_payload = dict(trade)
                                                     break
 
@@ -43804,12 +43814,15 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                                                     'botId': bot_id,
                                                     'cycle': tracked.get('cycle', 0),
                                                     'strategy': tracked.get('strategy', ''),
-                                                    'closeReason': tracked.get('closeReason', 'EXTERNAL_MANUAL_CLOSE'),
+                                                    'closeReason': tracked.get(
+                                                        'closeReason',
+                                                        'EXTERNAL_MANUAL_CLOSE' if _poll_close_is_external else 'TP_SL_OR_MANUAL',
+                                                    ),
                                                     'peakProfit': round(_safe_float(tracked.get('peakProfit'), 0.0), 2),
                                                     'lockedProfitFloor': round(_safe_float(tracked.get('lockedProfitFloor'), 0.0), 2),
                                                     'breakEvenFloor': round(_safe_float(tracked.get('breakEvenFloor'), 0.0), 2),
                                                     'isWinning': tracked_profit > 0,
-                                                    'countsTowardPerformance': False,
+                                                    'countsTowardPerformance': not _poll_close_is_external,
                                                     'source': f"REAL_{str(broker_type).upper().replace(' ', '_')}",
                                                     'broker': tracked.get('broker', broker_type),
                                                 }
