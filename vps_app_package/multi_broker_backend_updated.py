@@ -18908,92 +18908,92 @@ def _build_pair_param_overrides(symbol: str, pair_config: Optional[Dict[str, Any
 SYMBOL_PARAMETERS = {
     # FOREX PAIRS - High liquidity, tight spreads
     'EURUSD': {
-        'atr_multiplier': 1.2,
-        'stop_loss_pips': 8,
-        'take_profit_pips': 15,
+        'atr_multiplier': 1.4,
+        'stop_loss_pips': 11,
+        'take_profit_pips': 22,
         'max_slippage': 0.0005,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.15,
         'volatility_low': 0.02,
     },
     'GBPUSD': {
-        'atr_multiplier': 1.3,
-        'stop_loss_pips': 10,
-        'take_profit_pips': 20,
+        'atr_multiplier': 1.5,
+        'stop_loss_pips': 14,
+        'take_profit_pips': 28,
         'max_slippage': 0.0006,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.20,
         'volatility_low': 0.03,
     },
     'USDJPY': {
-        'atr_multiplier': 1.2,
-        'stop_loss_pips': 8,
-        'take_profit_pips': 16,
+        'atr_multiplier': 1.4,
+        'stop_loss_pips': 11,
+        'take_profit_pips': 22,
         'max_slippage': 0.0006,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.12,
         'volatility_low': 0.02,
     },
     'AUDUSD': {
-        'atr_multiplier': 1.2,
-        'stop_loss_pips': 9,
-        'take_profit_pips': 17,
+        'atr_multiplier': 1.4,
+        'stop_loss_pips': 12,
+        'take_profit_pips': 24,
         'max_slippage': 0.0005,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.18,
         'volatility_low': 0.03,
     },
     'USDCAD': {
-        'atr_multiplier': 1.2,
-        'stop_loss_pips': 9,
-        'take_profit_pips': 17,
+        'atr_multiplier': 1.4,
+        'stop_loss_pips': 12,
+        'take_profit_pips': 24,
         'max_slippage': 0.0005,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.15,
         'volatility_low': 0.02,
     },
     'USDCHF': {
-        'atr_multiplier': 1.2,
-        'stop_loss_pips': 8,
-        'take_profit_pips': 15,
+        'atr_multiplier': 1.4,
+        'stop_loss_pips': 11,
+        'take_profit_pips': 22,
         'max_slippage': 0.0005,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.14,
         'volatility_low': 0.02,
     },
     'NZDUSD': {
-        'atr_multiplier': 1.2,
-        'stop_loss_pips': 9,
-        'take_profit_pips': 17,
+        'atr_multiplier': 1.4,
+        'stop_loss_pips': 12,
+        'take_profit_pips': 24,
         'max_slippage': 0.0006,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.18,
         'volatility_low': 0.03,
     },
     'EURGBP': {
-        'atr_multiplier': 1.2,
-        'stop_loss_pips': 7,
-        'take_profit_pips': 14,
+        'atr_multiplier': 1.4,
+        'stop_loss_pips': 10,
+        'take_profit_pips': 20,
         'max_slippage': 0.0005,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.10,
         'volatility_low': 0.02,
     },
     'EURJPY': {
-        'atr_multiplier': 1.3,
-        'stop_loss_pips': 10,
-        'take_profit_pips': 20,
+        'atr_multiplier': 1.5,
+        'stop_loss_pips': 14,
+        'take_profit_pips': 28,
         'max_slippage': 0.0006,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.18,
         'volatility_low': 0.03,
     },
     'GBPJPY': {
-        'atr_multiplier': 1.5,
-        'stop_loss_pips': 14,
-        'take_profit_pips': 28,
+        'atr_multiplier': 1.7,
+        'stop_loss_pips': 19,
+        'take_profit_pips': 38,
         'max_slippage': 0.0008,
-        'min_signal_strength': 65,
+        'min_signal_strength': 72,  # raised from 65 to match gold's selectivity
         'volatility_high': 0.25,
         'volatility_low': 0.05,
     },
@@ -19018,20 +19018,20 @@ SYMBOL_PARAMETERS = {
     },
     # ENERGY
     'USOIL': {
-        'atr_multiplier': 1.6,
-        'stop_loss_pips': 50,   # 50 × point for oil SL floor
-        'take_profit_pips': 100,
+        'atr_multiplier': 1.7,
+        'stop_loss_pips': 65,   # widened oil SL floor to match gold/silver selectivity
+        'take_profit_pips': 130,
         'max_slippage': 0.001,
-        'min_signal_strength': 72,  # raised from 65
+        'min_signal_strength': 75,  # raised to match gold's selectivity
         'volatility_high': 2.0,
         'volatility_low': 0.5,
     },
     'UKOIL': {
-        'atr_multiplier': 1.6,
-        'stop_loss_pips': 50,
-        'take_profit_pips': 100,
+        'atr_multiplier': 1.7,
+        'stop_loss_pips': 65,
+        'take_profit_pips': 130,
         'max_slippage': 0.001,
-        'min_signal_strength': 72,
+        'min_signal_strength': 75,  # raised to match gold's selectivity
         'volatility_high': 2.0,
         'volatility_low': 0.5,
     },
