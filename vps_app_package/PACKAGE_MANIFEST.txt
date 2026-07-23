@@ -1,0 +1,19 @@
+Generated: 2026-07-20T22:57:38Z
+Commit: a8d0d414c0b89171b23eac7ba490130c492461d7
+Files:
+./.env
+./multi_broker_backend_updated.py
+./requirements-production.txt
+./start_postgres_backend.bat
+./START_SYSTEM.bat
+./vps_rdp_bundle/.env
+./vps_rdp_bundle/00_setup_all_vps.ps1
+./vps_rdp_bundle/01_install_dependencies.ps1
+./vps_rdp_bundle/01_install_postgresql.ps1
+./vps_rdp_bundle/02_prepare_env.ps1
+./vps_rdp_bundle/03_start_backend.ps1
+./vps_rdp_bundle/04_register_startup_task.ps1
+./vps_rdp_bundle/05_open_firewall_port.ps1
+./vps_rdp_bundle/06_stop_backend.ps1
+./vps_rdp_bundle/env.vps.template
+./vps_rdp_bundle/README_RDP_VPS_SETUP.md

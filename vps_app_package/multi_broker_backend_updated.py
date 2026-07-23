@@ -2427,7 +2427,19 @@ def _resolve_exness_server(account_number: Any = None, is_live: bool = False, se
         'socket_bridge',
     }
     if provided_server and provided_server.lower() not in invalid_mt5_aliases:
-        return provided_server
+        provided_lower = provided_server.lower()
+        demo_like = any(token in provided_lower for token in ['demo', 'trial'])
+        live_like = any(token in provided_lower for token in ['live', 'real'])
+        if is_live and demo_like:
+            logger.warning(
+                f"[DUAL MT5] Exness live credential received demo server '{provided_server}' for account {account_number}; resolving to live server instead"
+            )
+        elif (not is_live) and live_like:
+            logger.warning(
+                f"[DUAL MT5] Exness demo credential received live server '{provided_server}' for account {account_number}; resolving to demo server instead"
+            )
+        else:
+            return provided_server
 
     normalized_account = _normalize_exness_account_number(account_number)
     mapped_server = EXNESS_ACCOUNT_SERVER_MAP.get(normalized_account, '').strip()
@@ -3298,11 +3310,19 @@ def normalize_mt5_server_name(broker_name: str, is_live: bool, server: str = Non
         'socket-bridge',
         'socket_bridge',
     }
-    if provided_server and provided_server.lower() not in invalid_mt5_aliases:
-        return provided_server
 
     if normalized == 'Exness':
+        if provided_server and provided_server.lower() not in invalid_mt5_aliases:
+            provided_lower = provided_server.lower()
+            if is_live and any(token in provided_lower for token in ['demo', 'trial']):
+                provided_server = ''
+            elif (not is_live) and any(token in provided_lower for token in ['live', 'real']):
+                provided_server = ''
+            else:
+                return provided_server
         return _resolve_exness_server(account_number, is_live, server)
+    if provided_server and provided_server.lower() not in invalid_mt5_aliases:
+        return provided_server
     return 'MetaTrader 5'
 
 
@@ -28245,6 +28265,20 @@ def should_trade_today(bot_config, symbol):
         bot_config.get('brokerName') or bot_config.get('broker_type') or bot_config.get('broker') or ''
     )
     exness_runtime_risk = _resolve_exness_runtime_risk_profile(bot_config) if broker_name == 'Exness' else {}
+
+    # Opt-in hard manual trading-hours gate (see _is_within_manual_trading_hours).
+    # Unlike the adaptive session/hour guard below, this is a hard block with no
+    # signal-strength override, per explicit user risk feedback.
+    if current_signal_direction in {'BUY', 'SELL'}:
+        _manual_hours_ok, _manual_hours_reason = _is_within_manual_trading_hours(bot_config, now)
+        if not _manual_hours_ok:
+            return _record_trade_risk_block(
+                bot_config,
+                symbol,
+                f"manual trading-hours gate: {_manual_hours_reason}",
+                level='debug',
+            )
+
     session_perf = _evaluate_session_hour_performance(bot_config, now)
     active_session_perf = session_perf.get('activeSession') if isinstance(session_perf, dict) else {}
     active_hour_perf = session_perf.get('activeHour') if isinstance(session_perf, dict) else {}
@@ -29068,6 +29102,36 @@ def _classify_temporal_session(hour_value: int) -> str:
     return 'AFTER_HOURS'
 
 
+# Opt-in manual trading-hours allow-list. Per user risk feedback (2026-07-21):
+# biggest losses clustered at London Open + NY Open (roughly 10:00-17:00 SAST),
+# while wins clustered in quieter windows (06:00-09:00 and 18:00-23:00 SAST).
+# This is an explicit ADDITIONAL gate on top of the adaptive session/hour guard
+# above; it only activates when a bot opts in via bot_config['manualTradingHoursEnabled'],
+# so existing bots are unaffected unless a user (or support) turns it on.
+DEFAULT_MANUAL_TRADING_HOURS_WINDOWS_SAST: List[Tuple[int, int]] = [(6, 9), (18, 23)]
+
+
+def _is_within_manual_trading_hours(bot_config: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[bool, str]:
+    if not _coerce_bool(bot_config.get('manualTradingHoursEnabled', False), False):
+        return True, 'manual trading-hours window disabled'
+
+    now = now or datetime.now()
+    utc_offset_hours = _safe_float(bot_config.get('manualTradingHoursUtcOffsetHours'), 0.0)
+    sast_hour = int((now.hour + utc_offset_hours) % 24)
+
+    raw_windows = bot_config.get('manualTradingHoursWindows')
+    windows = raw_windows if isinstance(raw_windows, list) and raw_windows else DEFAULT_MANUAL_TRADING_HOURS_WINDOWS_SAST
+    for window in windows:
+        try:
+            start, end = int(window[0]), int(window[1])
+        except Exception:
+            continue
+        if start <= sast_hour < end:
+            return True, f"within allowed window {start:02d}:00-{end:02d}:00 SAST"
+
+    return False, f"outside allowed trading windows (current hour {sast_hour:02d}:00 SAST)"
+
+
 def _derive_temporal_performance_multiplier(samples: int, win_rate: float, net_pnl: float) -> Tuple[str, float]:
     losses = max(0, samples - int(round(win_rate * samples)))
     if samples < SESSION_PERF_MIN_SAMPLES:
@@ -29494,11 +29558,12 @@ def _update_post_close_risk_state(
     loss_streak_hard_pause_minutes = LOSS_STREAK_HARD_PAUSE_MINUTES
     loss_streak_symbol_cooldown_minutes = LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES
     if broker_name == 'Exness':
-        loss_streak_pause_after = min(loss_streak_pause_after, 5)
-        loss_streak_pause_minutes = min(loss_streak_pause_minutes, 10)
-        loss_streak_hard_pause_after = min(loss_streak_hard_pause_after, 8)
-        loss_streak_hard_pause_minutes = min(loss_streak_hard_pause_minutes, 30)
-        loss_streak_symbol_cooldown_minutes = min(loss_streak_symbol_cooldown_minutes, 8)
+        # Per user risk feedback (2026-07-21): 3 consecutive losses -> 1hr pause.
+        loss_streak_pause_after = min(loss_streak_pause_after, 3)
+        loss_streak_pause_minutes = max(loss_streak_pause_minutes, 60)
+        loss_streak_hard_pause_after = min(loss_streak_hard_pause_after, 5)
+        loss_streak_hard_pause_minutes = max(loss_streak_hard_pause_minutes, 120)
+        loss_streak_symbol_cooldown_minutes = max(loss_streak_symbol_cooldown_minutes, 60)
 
     post_loss_symbol_cooldown_minutes = 0.0
     post_loss_reason = None
@@ -32973,10 +33038,13 @@ UNIVERSAL_ADAPTATION_RECENT_TRADE_WINDOW = 8
 UNIVERSAL_ADAPTATION_COOLDOWN_MINUTES = 30
 UNIVERSAL_ADAPTATION_SUCCESS_WIN_RATE = 60.0
 UNIVERSAL_ADAPTATION_STRUGGLE_WIN_RATE = 45.0
-LOSS_STREAK_PAUSE_AFTER = 5
-LOSS_STREAK_PAUSE_MINUTES = 10
-LOSS_STREAK_HARD_PAUSE_AFTER = 8
-LOSS_STREAK_HARD_PAUSE_MINUTES = 30
+# Tightened per user risk feedback (2026-07-21): pause after 3 consecutive losses
+# for 1 hour instead of 5 losses for 10 minutes — repeated losses were barely
+# pausing entries before the next loss compounded the drawdown.
+LOSS_STREAK_PAUSE_AFTER = 3
+LOSS_STREAK_PAUSE_MINUTES = 60
+LOSS_STREAK_HARD_PAUSE_AFTER = 5
+LOSS_STREAK_HARD_PAUSE_MINUTES = 120
 LOSS_STREAK_SYMBOL_COOLDOWN_MINUTES = 5
 DEFAULT_ASSISTED_SYMBOLS_PER_CYCLE = 20
 MAX_ASSISTED_SYMBOLS_PER_CYCLE = 40
@@ -33006,8 +33074,11 @@ MIN_PEAK_PROFIT_LOCK_SHARE = 1.0 - (MAX_PEAK_PROFIT_RETRACE_PERCENT / 100.0)
 # ==================== HARD LOSS CAPS ====================
 # Per-trade monetary limit: force-close any position losing more than this amount
 # Defaults (USD / demo fallback)
-HARD_LOSS_PER_TRADE_LIMIT = 6.0          # USD hard cap per trade
-STALE_LOSS_THRESHOLD = -1.5             # Min USD loss before stale check kicks in
+# Tightened per user risk feedback (2026-07-21): "Never let a trade go past -$1.00.
+# Better 10 small losses than 1 big one." Previously 6.0/-1.5 let losses run far
+# past the winners, producing a poor win$:loss$ ratio despite a 59% win rate.
+HARD_LOSS_PER_TRADE_LIMIT = 1.0          # USD hard cap per trade
+STALE_LOSS_THRESHOLD = -0.80             # Min USD loss before stale check kicks in
 
 
 def get_min_risk_reward_ratio_for_broker(broker_name: str) -> float:
@@ -35976,6 +36047,41 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             )
         _catastrophic_loss_limit = max(_hard_loss_limit * 1.5, _hard_loss_limit + 1.0)
         _currency_label = str(bot_config.get('displayCurrency') or 'USD').upper()
+
+        # ── FLAT TAKE-PROFIT CEILING: bank meaningful profit before it round-trips ──
+        # Per user risk feedback (2026-07-21): "Take Profit: $1.20" — a simple dollar
+        # ceiling on top of the trailing peak-lock logic below, so profits are
+        # actually banked instead of being given back while price stalls above.
+        _flat_take_profit_usd = _safe_float(bot_config.get('flatTakeProfitUsd'), 1.20)
+        if (
+            not close_reason
+            and _flat_take_profit_usd > 0
+            and current_profit >= _flat_take_profit_usd
+            and not _recent_close_request(tracked)
+        ):
+            close_reason = 'FLAT_TAKE_PROFIT_TARGET'
+            logger.info(
+                f"[TP] Bot {bot_id}: position {ticket} hit flat take-profit ceiling "
+                f"({current_profit:.2f} {_currency_label} >= {_flat_take_profit_usd:.2f}) — banking profit"
+            )
+
+        # ── MIN PROFIT TARGET FLOOR: once meaningfully in profit, never give it back below the floor ──
+        # Per user risk feedback (2026-07-21): "Min Profit Target: $0.80".
+        _min_profit_target_usd = _safe_float(bot_config.get('minProfitTargetUsd'), 0.80)
+        if (
+            not close_reason
+            and _min_profit_target_usd > 0
+            and peak_profit >= _min_profit_target_usd
+            and current_profit < (_min_profit_target_usd * 0.9)
+            and not _recent_close_request(tracked)
+        ):
+            close_reason = 'MIN_PROFIT_TARGET_FLOOR'
+            logger.info(
+                f"[TP] Bot {bot_id}: position {ticket} retraced below min-profit floor "
+                f"(peak {peak_profit:.2f}, now {current_profit:.2f} {_currency_label} < "
+                f"{_min_profit_target_usd * 0.9:.2f}) — locking in profit"
+            )
+
         _locked_profit_floor = _safe_float(tracked.get('lockedProfitFloor'), 0.0)
         _profit_retrace_guard_armed = (
             bool(tracked.get('profitProtectionArmed'))
@@ -41763,6 +41869,7 @@ def continuous_bot_trading_loop(bot_id: str, user_id: str, bot_credentials: Dict
                             if (
                                 _mt5_mult_ctrl.get('enabled')
                                 and _mt5_mult_ctrl.get('multiplier', 1.0) != 1.0
+                                and bot_config.get('dynamicSizing', True)
                                 and not (normalized_broker == 'Exness' and configured_fixed_trade_volume > 0 and not pyramid_decision['allowed'])
                             ):
                                 _mt5_mult = float(_mt5_mult_ctrl['multiplier'])
@@ -44779,7 +44886,7 @@ def quick_create_exness_bot():
             # Conservative defaults for live Exness accounts.
             management_profile = 'small_account' if bool(is_live) else 'balanced'
             management_mode = 'assisted'
-            signal_threshold = 72 if bool(is_live) else 60
+            signal_threshold = 72 if bool(is_live) else 60  # aligned with gold's selectivity so the raised forex/commodity symbol floors aren't clamped down
             allowed_volatility = ['Very Low', 'Low'] if bool(is_live) else ['Low', 'Medium']
             max_open_positions = 2 if bool(is_live) else 3
             max_positions_per_symbol = 1
