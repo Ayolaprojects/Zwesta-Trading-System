@@ -22254,10 +22254,21 @@ def estimate_fixed_trade_volume(
     normalized_broker = canonicalize_broker_name(broker_name)
     normalized_market = str(market_name or 'spot').strip().lower()
     if normalized_broker == 'Binance' and current_price > 0:
+        # NOTE (2026-07-23 profit-erosion fix): quote_amount/trade_amount is sized by
+        # _resolve_adaptive_trade_amount() as a small-notional "spot-scale" risk budget
+        # (e.g. ~$500 on a multi-thousand-dollar balance) tuned for the bot's tiny
+        # $0.80-$1.20 flat profit targets. Previously this branch multiplied that budget
+        # by exchange_leverage (10x-25x) to compute the futures order quantity, which
+        # inflated the ACTUAL notional exposure by the same factor (e.g. $500 -> $10k+).
+        # That let ordinary crypto price moves swing P&L by tens of dollars per trade,
+        # blowing straight through HARD_LOSS_PER_TRADE_LIMIT and erasing banked profit in
+        # 1-2 trades (observed: bot lost -$31.94 then -$15.88 on ETHUSDT right after
+        # peaking at +$5.23). Leverage still reduces the margin required to open the
+        # position (see _resolve_binance_futures_min_margin_budget), it must NOT inflate
+        # the notional/quantity — so effective_notional stays equal to the budgeted
+        # quote_amount regardless of leverage tier.
         effective_notional = quote_amount
         if normalized_market == 'futures':
-            leverage_multiplier = max(1.0, float(exchange_leverage or 1.0))
-            effective_notional *= leverage_multiplier
             details['method'] = 'binance-futures-price-notional'
         else:
             details['method'] = 'binance-price-notional'
