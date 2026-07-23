@@ -34,6 +34,7 @@ def _load_or_create_key() -> bytes:
     raw = os.getenv('CREDENTIALS_ENCRYPTION_KEY', '').strip()
     if raw:
         try:
+            # Validate it's a Fernet-compatible 32-byte urlsafe base64 key
             Fernet(raw.encode())
             return raw.encode()
         except Exception as e:
@@ -59,6 +60,7 @@ def _load_or_create_key() -> bytes:
         except Exception:
             logger.error("[CREDENTIAL CRYPTO] Sidecar key file %s is corrupt; regenerating.", key_file)
 
+    # Generate fresh key
     key = Fernet.generate_key()
     try:
         with open(key_file, 'wb') as f:
@@ -75,7 +77,9 @@ def _load_or_create_key() -> bytes:
         )
     except Exception as e:
         logger.error(
-            "[CREDENTIAL CRYPTO] Failed to persist generated key to %s: %s.",
+            "[CREDENTIAL CRYPTO] Failed to persist generated key to %s: %s. "
+            "Credentials encrypted in this process will be lost on restart unless "
+            "you set CREDENTIALS_ENCRYPTION_KEY explicitly.",
             key_file,
             e,
         )
@@ -90,29 +94,37 @@ def _get_cipher() -> Fernet:
 
 
 def encrypt_secret(plaintext: Optional[str]) -> Optional[str]:
+    """Encrypt a secret string. Returns the original value unchanged when:
+    - input is None or empty (nothing to encrypt)
+    - input is already encrypted (starts with marker)
+    """
     if plaintext is None:
         return None
     s = str(plaintext)
     if not s:
         return s
     if s.startswith(_MARKER):
-        return s
+        return s  # already encrypted
     token = _get_cipher().encrypt(s.encode('utf-8')).decode('ascii')
     return _MARKER + token
 
 
 def decrypt_secret(value: Optional[str]) -> Optional[str]:
+    """Decrypt a secret string. If the value lacks our marker, it's treated as
+    legacy plaintext and returned as-is (backward compatibility).
+    """
     if value is None:
         return None
     s = str(value)
     if not s.startswith(_MARKER):
-        return s
+        return s  # legacy plaintext row
     token = s[len(_MARKER):]
     try:
         return _get_cipher().decrypt(token.encode('ascii')).decode('utf-8')
     except InvalidToken:
         logger.error(
-            "[CREDENTIAL CRYPTO] Failed to decrypt a secret — encryption key may have changed."
+            "[CREDENTIAL CRYPTO] Failed to decrypt a secret — encryption key may have changed. "
+            "Returning empty string to fail closed."
         )
         return ''
 
@@ -121,11 +133,16 @@ SENSITIVE_FIELDS = ('api_key', 'password')
 
 
 def decrypt_credential_row(row: Any) -> Dict[str, Any]:
+    """Convert a sqlite3.Row or dict into a plain dict with sensitive fields decrypted.
+
+    Safe to call on rows that don't contain those keys (no-op for missing fields).
+    """
     if row is None:
         return {}
     try:
         d = dict(row)
     except Exception:
+        # Fall back: assume mapping-like
         d = {k: row[k] for k in row.keys()} if hasattr(row, 'keys') else {}
     for field in SENSITIVE_FIELDS:
         if field in d and d[field] is not None:
@@ -134,6 +151,7 @@ def decrypt_credential_row(row: Any) -> Dict[str, Any]:
 
 
 def decrypt_credential_rows(rows):
+    """Decrypt a list of credential rows."""
     return [decrypt_credential_row(r) for r in (rows or [])]
 
 # ==================== Transparent decrypting row factory ====================
