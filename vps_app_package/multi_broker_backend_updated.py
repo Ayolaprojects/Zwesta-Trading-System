@@ -5285,9 +5285,18 @@ def cleanup_demo_bots():
         conn = get_db_connection()
         cursor = conn.cursor()
         # Remove bots with 'demo', 'test', 'sample', or 'dummy' in name or strategy
-        cursor.execute("""
-            DELETE FROM user_bots WHERE LOWER(name) LIKE '%demo%' OR LOWER(name) LIKE '%test%' OR LOWER(name) LIKE '%sample%' OR LOWER(name) LIKE '%dummy%' OR LOWER(strategy) LIKE '%demo%' OR LOWER(strategy) LIKE '%test%' OR LOWER(strategy) LIKE '%sample%' OR LOWER(strategy) LIKE '%dummy%'
-        """)
+        match_clause = "LOWER(name) LIKE '%demo%' OR LOWER(name) LIKE '%test%' OR LOWER(name) LIKE '%sample%' OR LOWER(name) LIKE '%dummy%' OR LOWER(strategy) LIKE '%demo%' OR LOWER(strategy) LIKE '%test%' OR LOWER(strategy) LIKE '%sample%' OR LOWER(strategy) LIKE '%dummy%'"
+        cursor.execute(f"SELECT bot_id FROM user_bots WHERE {match_clause}")
+        matched_bot_ids = [row[0] for row in cursor.fetchall()]
+        if matched_bot_ids:
+            params = [(bid,) for bid in matched_bot_ids]
+            # Delete child rows first (bot_credentials.bot_id FK -> user_bots.bot_id),
+            # otherwise Postgres raises "violates foreign key constraint
+            # bot_credentials_bot_id_fkey ... is still referenced from table bot_credentials"
+            cursor.executemany('DELETE FROM bot_credentials WHERE bot_id = ?', params)
+            cursor.executemany('DELETE FROM bot_deletion_tokens WHERE bot_id = ?', params)
+            cursor.executemany('DELETE FROM bot_activation_pins WHERE bot_id = ?', params)
+            cursor.executemany('DELETE FROM user_bots WHERE bot_id = ?', params)
         conn.commit()
         conn.close()
         # Remove from memory
@@ -30094,7 +30103,12 @@ def cleanup_old_bots(max_bots=10):
         keep_ids = set(bot_ids[:max_bots])
         remove_ids = [bot_id for bot_id in bot_ids if bot_id not in keep_ids]
         if remove_ids:
-            cursor.executemany('DELETE FROM user_bots WHERE bot_id = ?', [(bid,) for bid in remove_ids])
+            params = [(bid,) for bid in remove_ids]
+            # Delete child rows first (bot_credentials.bot_id FK -> user_bots.bot_id)
+            cursor.executemany('DELETE FROM bot_credentials WHERE bot_id = ?', params)
+            cursor.executemany('DELETE FROM bot_deletion_tokens WHERE bot_id = ?', params)
+            cursor.executemany('DELETE FROM bot_activation_pins WHERE bot_id = ?', params)
+            cursor.executemany('DELETE FROM user_bots WHERE bot_id = ?', params)
             conn.commit()
         conn.close()
         # Remove from memory
@@ -49692,10 +49706,14 @@ def _delete_bot_internal(bot_id: str, user_id: str, reason: str = 'manual delete
         bot_stop_flags.pop(bot_id, None)
 
         if db_bot:
-            cursor.execute('DELETE FROM user_bots WHERE bot_id = ?', (bot_id,))
+            # Delete child rows (FK references bot_id -> user_bots.bot_id) BEFORE the
+            # parent user_bots row, otherwise Postgres raises:
+            # "update or delete on table user_bots violates foreign key constraint
+            #  bot_credentials_bot_id_fkey ... is still referenced from table bot_credentials"
             cursor.execute('DELETE FROM bot_credentials WHERE bot_id = ?', (bot_id,))
             cursor.execute('DELETE FROM bot_deletion_tokens WHERE bot_id = ?', (bot_id,))
             cursor.execute('DELETE FROM bot_activation_pins WHERE bot_id = ?', (bot_id,))
+            cursor.execute('DELETE FROM user_bots WHERE bot_id = ?', (bot_id,))
         conn.commit()
 
         active_bots.pop(bot_id, None)
