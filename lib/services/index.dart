@@ -4,6 +4,7 @@ export 'broker_connection_service.dart';
 export 'connection_analytics_service.dart';
 export 'exness_trading_service.dart';
 export 'financial_service.dart';
+export 'financial_export_service.dart';
 export 'mock_data_provider.dart';
 export 'pdf_export_service.dart';
 export 'statement_service.dart';

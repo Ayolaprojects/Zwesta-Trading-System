@@ -77,6 +77,7 @@ class BinanceUserCredential {
     String? brokerName,
     String? accountNumber,
     String? memo,
+    DateTime? lastUsedAt,
   }) {
     return BinanceUserCredential(
       id: id,
@@ -89,7 +90,7 @@ class BinanceUserCredential {
       brokerName: brokerName ?? this.brokerName,
       accountNumber: accountNumber ?? this.accountNumber,
       createdAt: createdAt,
-      lastUsedAt: lastUsedAt,
+      lastUsedAt: lastUsedAt ?? this.lastUsedAt,
       memo: memo ?? this.memo,
     );
   }

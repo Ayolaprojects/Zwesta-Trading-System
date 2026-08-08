@@ -57,7 +57,7 @@ class _CryptoStrategiesScreenState extends State<CryptoStrategiesScreen> with Si
 
   Future<void> _activateStrategy(Map<String, dynamic> strategy) async {
     final params = Map<String, dynamic>.from(strategy['configurable_params'] ?? {});
-    final pairController = TextEditingController(text: (strategy['supported_pairs'] as List?)?.first ?? 'BTCUSDT');
+    final pairController = TextEditingController(text: (strategy['supported_pairs'] as List?)?.first ?? '');
     final paramControllers = <String, TextEditingController>{};
     for (final key in params.keys) {
       paramControllers[key] = TextEditingController(text: params[key]['default'].toString());

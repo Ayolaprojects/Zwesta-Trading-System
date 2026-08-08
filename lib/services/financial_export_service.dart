@@ -609,6 +609,24 @@ class FinancialExportService {
     );
   }
 
+  // Save PDF to a directory (used for Downloads or any target directory).
+  // Keep a single implementation and reuse it for both app documents and external folders.
+  static Future<String?> savePdfToDirectoryGeneric(String directoryPath, String filename, pw.Document pdf) async {
+    try {
+      final dir = Directory(directoryPath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      final file = File('${dir.path}/$filename');
+      final bytes = await pdf.save();
+      await file.writeAsBytes(bytes, flush: true);
+      return file.path;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Helper to save PDF to Downloads (Android). Returns saved path or null on failure.
   static Future<String?> savePdfToDownloads(String filename, pw.Document pdf) async {
     try {
       if (Platform.isAndroid) {
@@ -623,15 +641,13 @@ class FinancialExportService {
         final fallback = await getApplicationDocumentsDirectory();
         dirPath = fallback.path;
       }
-      final file = File('$dirPath/$filename');
-      final bytes = await pdf.save();
-      await file.writeAsBytes(bytes, flush: true);
-      return file.path;
+      return await savePdfToDirectoryGeneric(dirPath, filename, pdf);
     } catch (e) {
       return null;
     }
   }
 
+  // Share a generated PDF using share_plus. Writes a temporary file then shares it.
   static Future<void> sharePdf(pw.Document pdf, String filename) async {
     final tempDir = await getTemporaryDirectory();
     final file = File('${tempDir.path}/$filename');

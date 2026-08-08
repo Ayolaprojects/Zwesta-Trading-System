@@ -211,10 +211,10 @@ class BinanceOfflineCredentialService extends ChangeNotifier {
       _credentials =
           _sorted(decoded.map((e) => BinanceOfflineUserCredential.fromJson(Map<String, dynamic>.from(e as Map))).toList());
       final activeId = prefs.getString(_activeOfflineKey);
-      if (activeId != null && activeId.isNotEmpty) {
+      if (activeId != null && activeId.isNotEmpty && _credentials.isNotEmpty) {
         _activeCredential = _credentials.firstWhere(
           (c) => c.credentialId == activeId,
-          orElse: () => _credentials.isNotEmpty ? _credentials.first : null,
+          orElse: () => _credentials.first,
         );
       } else if (_credentials.isNotEmpty) {
         _activeCredential = _credentials.first;

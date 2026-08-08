@@ -51,6 +51,9 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Backwards-compatible alias used by some tests and callers
+  void clearErrorMessage() => clearError();
+
   User? _currentUser;
   String? _token;
   bool _isLoading = false;
@@ -85,6 +88,26 @@ class AuthService extends ChangeNotifier {
   String? _pending2faToken;
   String? get pending2faToken => _pending2faToken;
 
+  Future<dynamic> _decodeResponse(http.Response response) async {
+    final contentType = response.headers['content-type'] ?? '';
+    final trimmedBody = response.body.trimLeft();
+
+    if (!contentType.toLowerCase().contains('application/json')) {
+      if (trimmedBody.startsWith('<')) {
+        throw Exception('Unexpected non-JSON response from server: ${response.statusCode}. Response begins with HTML.');
+      }
+      if (trimmedBody.isEmpty) {
+        throw Exception('Empty response body from server: ${response.statusCode}');
+      }
+    }
+
+    try {
+      return jsonDecode(response.body);
+    } catch (e) {
+      throw Exception('Failed to decode JSON response (${response.statusCode}): ${response.body.length > 256 ? response.body.substring(0, 256) + '...' : response.body}');
+    }
+  }
+
   Future<bool> login(String username, String password) async {
     await ensureInitialized();
     _isLoading = true;
@@ -103,16 +126,15 @@ class AuthService extends ChangeNotifier {
         body: jsonEncode({'email': username, 'password': password}),
       ).timeout(const Duration(seconds: 8));
 
+      final data = await _decodeResponse(response);
+
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        
         if (data['success'] == true) {
-          // Check if 2FA is required
           if (data['requires_2fa'] == true) {
             _pending2faToken = data['temp_token'];
             _isLoading = false;
             notifyListeners();
-            return true; // Caller checks pending2faToken to know 2FA is needed
+            return true;
           }
 
           _token = data['session_token'];
@@ -129,13 +151,12 @@ class AuthService extends ChangeNotifier {
           _isLoading = false;
           notifyListeners();
           return true;
-        } else {
-          throw Exception(data['error'] ?? 'Login failed');
         }
-      } else {
-        final data = jsonDecode(response.body);
-        throw Exception(data['error'] ?? 'Login failed with code ${response.statusCode}');
+
+        throw Exception(data['error'] ?? 'Login failed');
       }
+
+      throw Exception(data['error'] ?? 'Login failed with code ${response.statusCode}');
     } catch (e) {
       _errorMessage = 'Login Error: ${e.toString()}';
       _isLoading = false;
@@ -157,8 +178,10 @@ class AuthService extends ChangeNotifier {
         },
         body: jsonEncode({'temp_token': tempToken, 'code': code}),
       ).timeout(const Duration(seconds: 10));
+
+      final data = await _decodeResponse(response);
+
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
         if (data['success'] == true) {
           _token = data['session_token'];
           _currentUser = User(
@@ -173,13 +196,12 @@ class AuthService extends ChangeNotifier {
           _isLoading = false;
           notifyListeners();
           return true;
-        } else {
-          throw Exception(data['error'] ?? '2FA verification failed');
         }
-      } else {
-        final data = jsonDecode(response.body);
-        throw Exception(data['error'] ?? '2FA failed with code ${response.statusCode}');
+
+        throw Exception(data['error'] ?? '2FA verification failed');
       }
+
+      throw Exception(data['error'] ?? '2FA failed with code ${response.statusCode}');
     } catch (e) {
       _errorMessage = '2FA Error: ${e.toString()}';
       _isLoading = false;
@@ -229,9 +251,8 @@ class AuthService extends ChangeNotifier {
         body: jsonEncode(body),
       ).timeout(const Duration(seconds: 10));
 
+      final data = await _decodeResponse(response);
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final data = jsonDecode(response.body);
-
         final returnedToken = data['session_token'];
         if (returnedToken == null || returnedToken.toString().isEmpty) {
           throw Exception('Registration succeeded but no session token was returned by the backend');
@@ -255,7 +276,6 @@ class AuthService extends ChangeNotifier {
         notifyListeners();
         return true;
       } else {
-        final data = jsonDecode(response.body);
         throw Exception(data['error'] ?? 'Registration failed');
       }
     } catch (e) {

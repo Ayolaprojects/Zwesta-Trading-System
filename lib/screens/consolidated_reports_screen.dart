@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/financial_export_service.dart';
 import '../utils/environment_config.dart';
 import '../widgets/logo_widget.dart';
 
@@ -342,6 +343,16 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadReports,
+          ),
+          IconButton(
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            tooltip: 'Export PDF',
+            onPressed: _exportReportPdf,
+          ),
+          IconButton(
+            icon: const Icon(Icons.share_outlined),
+            tooltip: 'Share Report',
+            onPressed: _shareReport,
           ),
         ],
       ),
@@ -710,4 +721,64 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _exportReportPdf() async {
+    final reports = _reportData['reports'] as Map<String, dynamic>? ?? {};
+    if (reports.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No report data to export'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+    try {
+      final reportList = reports.entries.map((e) => Map<String, dynamic>.from(e.value as Map)).toList();
+      final pdf = await FinancialExportService.generateReportsPdf(
+        reports: reportList,
+        mode: _selectedMode,
+      );
+      final filename = 'zwesta_consolidated_report_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final path = await FinancialExportService.savePdfToDownloads(filename, pdf);
+      if (!mounted) return;
+      if (path != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF saved to $path'), backgroundColor: Colors.green),
+        );
+      } else {
+        final fallback = await FinancialExportService.savePdf(filename, pdf);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF saved to $fallback'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('PDF export failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _shareReport() async {
+    final reports = _reportData['reports'] as Map<String, dynamic>? ?? {};
+    if (reports.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No report data to share'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+    try {
+      final reportList = reports.entries.map((e) => Map<String, dynamic>.from(e.value as Map)).toList();
+      final pdf = await FinancialExportService.generateReportsPdf(
+        reports: reportList,
+        mode: _selectedMode,
+      );
+      final filename = 'zwesta_consolidated_report_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      await FinancialExportService.sharePdf(pdf, filename);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Share failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
 }

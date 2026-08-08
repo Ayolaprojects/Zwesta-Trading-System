@@ -96,12 +96,9 @@ late WebSocketChannel? _channel;
   static const Duration _reconnectDelay = Duration(seconds: 5);
   
   // Subscriptions storage
+  // Subscriptions / callback storage
   final Map<String, List<PriceUpdateCallback>> _priceCallbacks = {};
   final List<ConnectionStatusCallback> _statusCallbacks = [];
-   
-   // Callback storage
-   final Map<String, List<PriceUpdateCallback>> _priceCallbacks = {};
-   final List<ConnectionStatusCallback> _statusCallbacks = [];
 
   // ==================== CONNECTION ====================
 

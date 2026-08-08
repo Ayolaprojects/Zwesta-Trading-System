@@ -4,9 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:cross_file/cross_file.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
 
 import '../models/account.dart';
 import '../models/financial_statement.dart';
+import '../models/trade.dart';
+import '../services/financial_export_service.dart';
 import '../services/financial_service.dart';
 import '../services/trading_service.dart';
 import '../theme/app_theme.dart';
@@ -34,6 +41,187 @@ class _FinancialsScreenState extends State<FinancialsScreen> {
 
   String _formatCurrency(FinancialStatement stmt, double amount) {
     return FinancialMetrics.formatCurrency(amount, stmt.currency);
+  }
+
+  Future<void> _exportToCsv() async {
+    if (selectedStatement == null) {
+      return;
+    }
+
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final csv = FinancialExportService.buildFinancialStatementCsv(selectedStatement!, trades);
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.csv';
+
+    try {
+      final path = await FinancialExportService.saveCsv(filename, csv);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('CSV export saved to $path'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('CSV export failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _shareCsv() async {
+    if (selectedStatement == null) return;
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final csv = FinancialExportService.buildFinancialStatementCsv(selectedStatement!, trades);
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.csv';
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/$filename');
+      await file.writeAsString(csv, flush: true);
+      await Share.shareXFiles([XFile(file.path)], text: 'Zwesta financial statement');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Share CSV failed: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _saveCsvToDownloads() async {
+    if (selectedStatement == null) return;
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final csv = FinancialExportService.buildFinancialStatementCsv(selectedStatement!, trades);
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.csv';
+    try {
+      final path = await FinancialExportService.saveCsvToDownloads(filename, csv);
+      if (path == null) throw Exception('Permission denied or save failed');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('CSV saved to $path'), backgroundColor: Colors.green));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save CSV failed: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _saveCsvAs() async {
+    if (selectedStatement == null) return;
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final csv = FinancialExportService.buildFinancialStatementCsv(selectedStatement!, trades);
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.csv';
+    try {
+      final directoryPath = await FilePicker.platform.getDirectoryPath();
+      if (directoryPath == null) return;
+      final path = await FinancialExportService.saveCsvToDirectory(directoryPath, filename, csv);
+      if (path == null) throw Exception('Save failed');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('CSV saved to $path'), backgroundColor: Colors.green));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save CSV failed: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _exportToPdf() async {
+    if (selectedStatement == null) {
+      return;
+    }
+
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final selectedAccount = _selectedAccount ?? widget.account;
+    final pdf = await FinancialExportService.generateFinancialStatementPdf(
+      selectedStatement!,
+      selectedAccount,
+      trades,
+    );
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.pdf';
+
+    try {
+      final path = await FinancialExportService.savePdf(filename, pdf);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PDF export saved to $path'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PDF export failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _sharePdf() async {
+    if (selectedStatement == null) return;
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final selectedAccount = _selectedAccount ?? widget.account;
+    final pdf = await FinancialExportService.generateFinancialStatementPdf(
+      selectedStatement!,
+      selectedAccount,
+      trades,
+    );
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.pdf';
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/$filename');
+      final bytes = await pdf.save();
+      await file.writeAsBytes(bytes, flush: true);
+      await Share.shareXFiles([XFile(file.path)], text: 'Zwesta financial statement (PDF)');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Share PDF failed: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _savePdfToDownloads() async {
+    if (selectedStatement == null) return;
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final selectedAccount = _selectedAccount ?? widget.account;
+    final pdf = await FinancialExportService.generateFinancialStatementPdf(
+      selectedStatement!,
+      selectedAccount,
+      trades,
+    );
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.pdf';
+    try {
+      final path = await FinancialExportService.savePdfToDownloads(filename, pdf);
+      if (path == null) throw Exception('Permission denied or save failed');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('PDF saved to $path'), backgroundColor: Colors.green));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save PDF failed: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _savePdfAs() async {
+    if (selectedStatement == null) return;
+    final tradingService = context.read<TradingService>();
+    final trades = tradingService.trades;
+    final selectedAccount = _selectedAccount ?? widget.account;
+    final pdf = await FinancialExportService.generateFinancialStatementPdf(
+      selectedStatement!,
+      selectedAccount,
+      trades,
+    );
+    final filename = 'zwesta_financial_statement_${DateTime.now().millisecondsSinceEpoch}.pdf';
+    try {
+      final directoryPath = await FilePicker.platform.getDirectoryPath();
+      if (directoryPath == null) return;
+      final path = await FinancialExportService.savePdfToDirectory(directoryPath, filename, pdf);
+      if (path == null) throw Exception('Save failed');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('PDF saved to $path'), backgroundColor: Colors.green));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save PDF failed: $e'), backgroundColor: Colors.red));
+    }
   }
 
   @override
@@ -266,6 +454,86 @@ class _FinancialsScreenState extends State<FinancialsScreen> {
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
               ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: selectedStatement != null ? _exportToCsv : null,
+                    icon: const Icon(Icons.file_download),
+                    label: const Text('Export CSV'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryColor,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: selectedStatement != null ? _exportToPdf : null,
+                    icon: const Icon(Icons.picture_as_pdf),
+                    label: const Text('Export PDF'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryColor,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // Quick actions for CSV
+            Row(
+              children: [
+                Expanded(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      IconButton(
+                        onPressed: selectedStatement != null ? _shareCsv : null,
+                        icon: const Icon(Icons.share),
+                        tooltip: 'Share CSV',
+                      ),
+                      IconButton(
+                        onPressed: selectedStatement != null ? _saveCsvToDownloads : null,
+                        icon: const Icon(Icons.download),
+                        tooltip: 'Save CSV to Downloads',
+                      ),
+                      IconButton(
+                        onPressed: selectedStatement != null ? _saveCsvAs : null,
+                        icon: const Icon(Icons.folder_open),
+                        tooltip: 'Save CSV As',
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // Quick actions for PDF
+                Expanded(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      IconButton(
+                        onPressed: selectedStatement != null ? _sharePdf : null,
+                        icon: const Icon(Icons.share),
+                        tooltip: 'Share PDF',
+                      ),
+                      IconButton(
+                        onPressed: selectedStatement != null ? _savePdfToDownloads : null,
+                        icon: const Icon(Icons.download),
+                        tooltip: 'Save PDF to Downloads',
+                      ),
+                      IconButton(
+                        onPressed: selectedStatement != null ? _savePdfAs : null,
+                        icon: const Icon(Icons.folder_open),
+                        tooltip: 'Save PDF As',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 24),
 

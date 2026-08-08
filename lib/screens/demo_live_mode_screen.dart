@@ -59,6 +59,8 @@ class _DemoLiveModeScreenState extends State<DemoLiveModeScreen> {
         setState(() {
           isDemoMode = data['mode'] == 'DEMO';
           selectedMode = isDemoMode ? 'DEMO' : 'LIVE';
+          liveAccountController.text = data['live_account'] ?? '';
+          liveServerController.text = data['live_server'] ?? '';
         });
       }
     } catch (e) {

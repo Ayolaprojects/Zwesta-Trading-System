@@ -394,227 +394,226 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   static const Map<String, Map<String, dynamic>> _binancePairAnalytics = {
     'BTCUSDT': {
-      'edgePct': 6.8,
-      'winRate': 63.0,
-      'liquidityScore': 98.0,
+      'edgePct': 7.5,
+      'winRate': 65.0,
+      'liquidityScore': 99.0,
       'risk': 'Low',
       'analysis': 'Momentum leader',
     },
     'ETHUSDT': {
-      'edgePct': 6.2,
-      'winRate': 61.0,
-      'liquidityScore': 95.0,
+      'edgePct': 7.0,
+      'winRate': 63.0,
+      'liquidityScore': 97.0,
       'risk': 'Low',
       'analysis': 'Trend continuation',
     },
     'BNBUSDT': {
-      'edgePct': 5.3,
-      'winRate': 58.0,
-      'liquidityScore': 90.0,
+      'edgePct': 6.0,
+      'winRate': 60.0,
+      'liquidityScore': 92.0,
       'risk': 'Medium',
       'analysis': 'Exchange beta',
     },
     'SOLUSDT': {
-      'edgePct': 7.4,
-      'winRate': 59.0,
-      'liquidityScore': 88.0,
+      'edgePct': 8.0,
+      'winRate': 61.0,
+      'liquidityScore': 90.0,
       'risk': 'Medium',
       'analysis': 'High momentum',
     },
     'XRPUSDT': {
-      'edgePct': 5.6,
-      'winRate': 57.0,
-      'liquidityScore': 89.0,
+      'edgePct': 6.5,
+      'winRate': 59.0,
+      'liquidityScore': 91.0,
       'risk': 'Low',
       'analysis': 'Range breakout • micro-safe',
     },
     'ADAUSDT': {
-      'edgePct': 5.1,
-      'winRate': 56.0,
-      'liquidityScore': 84.0,
+      'edgePct': 6.0,
+      'winRate': 58.0,
+      'liquidityScore': 86.0,
       'risk': 'Low',
       'analysis': 'Mean reversion • micro-safe',
     },
     'DOGEUSDT': {
-      'edgePct': 6.5,
-      'winRate': 54.0,
-      'liquidityScore': 86.0,
+      'edgePct': 7.2,
+      'winRate': 56.0,
+      'liquidityScore': 88.0,
       'risk': 'Medium',
       'analysis': 'Volatility spikes • micro-safe',
     },
     'AVAXUSDT': {
-      'edgePct': 6.1,
-      'winRate': 55.0,
-      'liquidityScore': 80.0,
+      'edgePct': 7.0,
+      'winRate': 57.0,
+      'liquidityScore': 82.0,
       'risk': 'High',
       'analysis': 'Momentum bursts',
     },
     'MATICUSDT': {
-      'edgePct': 5.4,
-      'winRate': 55.0,
-      'liquidityScore': 79.0,
+      'edgePct': 6.2,
+      'winRate': 57.0,
+      'liquidityScore': 81.0,
       'risk': 'Medium',
       'analysis': 'Swing setup • micro-safe',
     },
     'LINKUSDT': {
-      'edgePct': 5.8,
-      'winRate': 57.0,
-      'liquidityScore': 82.0,
+      'edgePct': 6.5,
+      'winRate': 59.0,
+      'liquidityScore': 84.0,
       'risk': 'Medium',
       'analysis': 'Trend strength',
     },
     'LTCUSDT': {
-      'edgePct': 4.8,
-      'winRate': 54.0,
-      'liquidityScore': 76.0,
+      'edgePct': 5.5,
+      'winRate': 56.0,
+      'liquidityScore': 78.0,
       'risk': 'Medium',
       'analysis': 'Lower beta',
     },
     'TRXUSDT': {
-      'edgePct': 4.3,
-      'winRate': 56.0,
-      'liquidityScore': 74.0,
+      'edgePct': 5.0,
+      'winRate': 58.0,
+      'liquidityScore': 76.0,
       'risk': 'Low',
       'analysis': 'Stable mover • micro-safe',
     },
     'DOTUSDT': {
-      'edgePct': 5.0,
-      'winRate': 55.0,
-      'liquidityScore': 75.0,
+      'edgePct': 5.8,
+      'winRate': 57.0,
+      'liquidityScore': 77.0,
       'risk': 'Medium',
       'analysis': 'Trend rebound',
     },
     'ATOMUSDT': {
-      'edgePct': 5.2,
-      'winRate': 54.0,
-      'liquidityScore': 73.0,
+      'edgePct': 6.0,
+      'winRate': 56.0,
+      'liquidityScore': 75.0,
       'risk': 'Medium',
       'analysis': 'Range expansion',
     },
     'SHIBUSDT': {
-      'edgePct': 7.0,
-      'winRate': 51.0,
-      'liquidityScore': 78.0,
+      'edgePct': 7.8,
+      'winRate': 53.0,
+      'liquidityScore': 80.0,
       'risk': 'High',
       'analysis': 'Speculative bursts • micro-safe',
     },
     'UNIUSDT': {
-      'edgePct': 5.7,
-      'winRate': 55.0,
-      'liquidityScore': 70.0,
+      'edgePct': 6.5,
+      'winRate': 57.0,
+      'liquidityScore': 72.0,
       'risk': 'High',
       'analysis': 'DeFi momentum',
     },
     'NEARUSDT': {
-      'edgePct': 6.0,
-      'winRate': 54.0,
-      'liquidityScore': 72.0,
+      'edgePct': 6.8,
+      'winRate': 56.0,
+      'liquidityScore': 74.0,
       'risk': 'High',
       'analysis': 'Trend acceleration',
     },
     'ARBUSDT': {
-      'edgePct': 6.4,
-      'winRate': 53.0,
-      'liquidityScore': 74.0,
+      'edgePct': 7.2,
+      'winRate': 55.0,
+      'liquidityScore': 76.0,
       'risk': 'High',
       'analysis': 'L2 impulse',
     },
     'OPUSDT': {
-      'edgePct': 6.3,
-      'winRate': 53.0,
-      'liquidityScore': 73.0,
+      'edgePct': 7.0,
+      'winRate': 55.0,
+      'liquidityScore': 75.0,
       'risk': 'High',
       'analysis': 'L2 breakout',
     },
     'APTUSDT': {
-      'edgePct': 6.7,
-      'winRate': 52.0,
-      'liquidityScore': 71.0,
+      'edgePct': 7.5,
+      'winRate': 54.0,
+      'liquidityScore': 73.0,
       'risk': 'High',
       'analysis': 'High beta alpha',
     },
     'INJUSDT': {
-      'edgePct': 7.8,
-      'winRate': 56.0,
-      'liquidityScore': 69.0,
+      'edgePct': 8.5,
+      'winRate': 58.0,
+      'liquidityScore': 71.0,
       'risk': 'High',
       'analysis': 'Strong trend alpha',
     },
     'SUIUSDT': {
-      'edgePct': 6.9,
-      'winRate': 53.0,
-      'liquidityScore': 68.0,
+      'edgePct': 7.5,
+      'winRate': 55.0,
+      'liquidityScore': 70.0,
       'risk': 'High',
       'analysis': 'Volatility trend',
     },
     'FTMUSDT': {
-      'edgePct': 6.5,
-      'winRate': 52.0,
-      'liquidityScore': 66.0,
+      'edgePct': 7.2,
+      'winRate': 54.0,
+      'liquidityScore': 68.0,
       'risk': 'High',
       'analysis': 'Fast movers',
     },
     'AAVEUSDT': {
-      'edgePct': 5.9,
-      'winRate': 54.0,
-      'liquidityScore': 67.0,
+      'edgePct': 6.5,
+      'winRate': 56.0,
+      'liquidityScore': 69.0,
       'risk': 'High',
       'analysis': 'DeFi trend',
     },
     'SANDUSDT': {
-      'edgePct': 5.6,
-      'winRate': 52.0,
-      'liquidityScore': 63.0,
+      'edgePct': 6.2,
+      'winRate': 54.0,
+      'liquidityScore': 65.0,
       'risk': 'High',
       'analysis': 'Narrative spikes',
     },
     'MANAUSDT': {
-      'edgePct': 5.4,
-      'winRate': 51.0,
-      'liquidityScore': 62.0,
+      'edgePct': 6.0,
+      'winRate': 53.0,
+      'liquidityScore': 64.0,
       'risk': 'High',
       'analysis': 'Event-driven',
     },
     'RUNEUSDT': {
-      'edgePct': 6.1,
-      'winRate': 53.0,
-      'liquidityScore': 65.0,
+      'edgePct': 6.8,
+      'winRate': 55.0,
+      'liquidityScore': 67.0,
       'risk': 'High',
       'analysis': 'Cross-chain momentum',
     },
     'ALGOUSDT': {
-      'edgePct': 4.9,
-      'winRate': 53.0,
-      'liquidityScore': 61.0,
+      'edgePct': 5.5,
+      'winRate': 55.0,
+      'liquidityScore': 63.0,
       'risk': 'Medium',
       'analysis': 'Range rotations',
     },
-    // --- Micro-account viable symbols (low per-unit price, $20 min notional reachable at 5x) ---
     'XLMUSDT': {
-      'edgePct': 4.6,
-      'winRate': 54.0,
-      'liquidityScore': 72.0,
+      'edgePct': 5.2,
+      'winRate': 56.0,
+      'liquidityScore': 74.0,
       'risk': 'Low',
       'analysis': 'Breakout pulses • micro-safe',
     },
     'HBARUSDT': {
-      'edgePct': 4.5,
-      'winRate': 53.0,
-      'liquidityScore': 68.0,
+      'edgePct': 5.0,
+      'winRate': 55.0,
+      'liquidityScore': 70.0,
       'risk': 'Low',
       'analysis': 'Network momentum • micro-safe',
     },
     'PEPEUSDT': {
-      'edgePct': 7.2,
-      'winRate': 50.0,
-      'liquidityScore': 70.0,
+      'edgePct': 7.8,
+      'winRate': 52.0,
+      'liquidityScore': 72.0,
       'risk': 'High',
       'analysis': 'Meme momentum • micro-safe',
     },
     'TONUSDT': {
-      'edgePct': 5.2,
-      'winRate': 54.0,
-      'liquidityScore': 73.0,
+      'edgePct': 5.8,
+      'winRate': 56.0,
+      'liquidityScore': 75.0,
       'risk': 'Medium',
       'analysis': 'Ecosystem growth • micro-safe',
     },
@@ -705,9 +704,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   List<String> _allowedVolatility = ['Very Low', 'Low'];
 
   // ========== NEW: Automated Risk Management Settings ==========
-  double _riskPercent = 2; // Risk per trade as %
-  int _maxOpenTrades = 3; // Max simultaneous trades
-  double _maxDrawdownPercent = 20; // Max allowed drawdown %
+  double _riskPercent = 5; // Risk per trade as %
+  int _maxOpenTrades = 10; // Max simultaneous trades
+  double _maxDrawdownPercent = 30; // Max allowed drawdown %
   String _managementProfile = 'beginner';
   int? _manualSignalThreshold;
 
@@ -775,9 +774,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'strategy': 'Swing Trend DCA',
       'managementProfile': 'small_account',
       'riskPercent': 5.0,
-      'maxDailyLoss': 20.0,
-      'maxOpenTrades': 2,
-      'maxDrawdownPercent': 15.0,
+      'maxDailyLoss': 50.0,
+      'maxOpenTrades': 5,
+      'maxDrawdownPercent': 20.0,
       'allowedVolatility': ['Very Low', 'Low', 'Medium'],
       'tips': [
         'DCA weekly: buy fixed amount regardless of price',
@@ -799,9 +798,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'strategy': 'Swing Trend DCA',
       'managementProfile': 'small_account',
       'riskPercent': 5.0,
-      'maxDailyLoss': 20.0,
-      'maxOpenTrades': 2,
-      'maxDrawdownPercent': 15.0,
+      'maxDailyLoss': 50.0,
+      'maxOpenTrades': 5,
+      'maxDrawdownPercent': 20.0,
       'allowedVolatility': ['Very Low', 'Low', 'Medium'],
       'tips': [
         'Use cent/micro account (0.01 lots)',
@@ -845,9 +844,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'strategy': 'Swing Trend DCA',
       'managementProfile': 'small_account',
       'riskPercent': 5.0,
-      'maxDailyLoss': 20.0,
-      'maxOpenTrades': 1,
-      'maxDrawdownPercent': 15.0,
+      'maxDailyLoss': 50.0,
+      'maxOpenTrades': 3,
+      'maxDrawdownPercent': 20.0,
       'allowedVolatility': ['Very Low', 'Low', 'Medium'],
       'tips': [
         'Gold is volatile — use wider stops (1.5-2x ATR)',
@@ -869,9 +868,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'strategy': 'Swing Trend DCA',
       'managementProfile': 'small_account',
       'riskPercent': 5.0,
-      'maxDailyLoss': 20.0,
-      'maxOpenTrades': 2,
-      'maxDrawdownPercent': 15.0,
+      'maxDailyLoss': 50.0,
+      'maxOpenTrades': 5,
+      'maxDrawdownPercent': 20.0,
       'allowedVolatility': ['Very Low', 'Low', 'Medium'],
       'tips': [
         'Max 3 assets — keeps risk manageable',
@@ -915,20 +914,20 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       'recommendedMaxUsd': 10000.0,
       'accountLabel': 'Exness crypto accounts',
       'intelligentScanner': false,
-      'symbols': ['BTCUSDm', 'ETHUSDm'],
+      'symbols': ['BTCUSDT', 'ETHUSDT'],
       'strategy': 'Trend Following',
       'managementProfile': 'small_account',
-      'riskPercent': 3.0,
-      'maxDailyLoss': 50.0,
-      'maxOpenTrades': 1,
-      'maxDrawdownPercent': 15.0,
-      'signalThreshold': 65,
+      'riskPercent': 5.0,
+      'maxDailyLoss': 100.0,
+      'maxOpenTrades': 5,
+      'maxDrawdownPercent': 25.0,
+      'signalThreshold': 15,
       'allowedVolatility': ['Medium', 'High'],
       'tips': [
         'BTC target: R200–R1000+ per trade at 0.10 lot',
         'ETH target: R200–R700+ per trade at 0.10 lot',
-        'Max 1 open position (crypto is volatile)',
-        'Signal ≥ 65 before entering — avoid choppy weekends',
+        'Max 5 open positions (crypto is volatile)',
+        'Signal ≥ 15 before entering — allows more entries',
         'Bot auto-sizes to 0.10 lot for meaningful profit',
       ],
     },
@@ -1225,12 +1224,12 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       return true;
     }
 
-  List<int> get _availableSignalThresholds {
-    if (_isCryptoOnlySelection) {
-      return const [5, 15, 30, 45];
-    }
-    return const [30, 45, 60, 70];
-  }
+List<int> get _availableSignalThresholds {
+     if (_isCryptoOnlySelection) {
+       return const [1, 5, 10, 15, 20, 30];
+     }
+     return const [10, 20, 30, 40, 50, 60];
+   }
 
   void _applyCryptoSelectionSafetyDefaults() {
     if (!_isCryptoOnlySelection) {
@@ -1979,32 +1978,32 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
       if (_selectedPreset != null && profile != 'small_account') {
         _selectedPreset = null;
       }
-      if (profile == 'beginner') {
-        if (_maxOpenTrades > 2) _maxOpenTrades = 2;
-        if (_riskPercent > 2.0) _riskPercent = 2.0;
-        if (_maxDrawdownPercent > 12.0) _maxDrawdownPercent = 12.0;
-        _allowedVolatility = ['Very Low', 'Low'];
-      } else if (profile == 'balanced') {
-        if (_maxOpenTrades > 3) _maxOpenTrades = 3;
-        if (_riskPercent > 3.0) _riskPercent = 3.0;
-        if (_maxDrawdownPercent > 18.0) _maxDrawdownPercent = 18.0;
-        _allowedVolatility = ['Low', 'Medium'];
-      } else if (profile == 'fast_growth') {
-        // Quick Profit: faster cadence, but with tighter downside controls.
-        _maxOpenTrades = 4;
-        _riskPercent = 3.0;
-        _maxDrawdownPercent = 18.0;
-        _allowedVolatility = ['Low', 'Medium'];
-        _targetProfit = 20; // Lower target for quick compounding
-        _minProfit = 5;
-        _maxProfit = 50;
-        _winRateMin = 58;
-        _profitProtectionActivationPercent = 2;
-        _profitProtectionActivationMinProfit = 0.50;  // 🎯 Aggressive (was 2)
-        _profitProtectionRetracePercent = 12;  // 🚨 Fast exit (was 22)
-      } else if (profile == 'small_account') {
-        _maxOpenTrades = 2;
-        _riskPercent = 5.0;
+if (profile == 'beginner') {
+         if (_maxOpenTrades > 10) _maxOpenTrades = 10;
+         if (_riskPercent > 5.0) _riskPercent = 5.0;
+         if (_maxDrawdownPercent > 30.0) _maxDrawdownPercent = 30.0;
+         _allowedVolatility = ['Very Low', 'Low', 'Medium'];
+       } else if (profile == 'balanced') {
+         if (_maxOpenTrades > 10) _maxOpenTrades = 10;
+         if (_riskPercent > 5.0) _riskPercent = 5.0;
+         if (_maxDrawdownPercent > 30.0) _maxDrawdownPercent = 30.0;
+         _allowedVolatility = ['Low', 'Medium', 'High'];
+       } else if (profile == 'fast_growth') {
+         // Quick Profit: faster cadence, but with tighter downside controls.
+         _maxOpenTrades = 10;
+         _riskPercent = 5.0;
+         _maxDrawdownPercent = 30.0;
+         _allowedVolatility = ['Low', 'Medium', 'High'];
+         _targetProfit = 20; // Lower target for quick compounding
+         _minProfit = 5;
+         _maxProfit = 50;
+         _winRateMin = 58;
+         _profitProtectionActivationPercent = 2;
+         _profitProtectionActivationMinProfit = 0.50;  // 🎯 Aggressive (was 2)
+         _profitProtectionRetracePercent = 12;  // 🚨 Fast exit (was 22)
+       } else if (profile == 'small_account') {
+         _maxOpenTrades = 10;
+         _riskPercent = 5.0;
         _maxDrawdownPercent = 15.0;
         _allowedVolatility = ['Very Low', 'Low', 'Medium'];
       } else {

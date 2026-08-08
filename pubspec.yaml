@@ -42,6 +42,10 @@ dependencies:
   
   # PDF Generation
   pdf: ^3.10.0
+  # Sharing files
+  share_plus: ^6.0.0
+  # Permissions for saving to Downloads on Android
+  permission_handler: ^10.4.0
   
   # Logging and Analytics
   logger: ^2.0.0
