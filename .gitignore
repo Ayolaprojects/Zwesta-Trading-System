@@ -21,7 +21,9 @@ replay_pid*.log
 hs_err_pid*.log
 *.log
 .dart_tool/
+.dart_tool/package_config.json
 .flutter-plugins-dependencies
+pubspec.lock
 android/key.properties
 android/*.jks
 android/*.keystore
