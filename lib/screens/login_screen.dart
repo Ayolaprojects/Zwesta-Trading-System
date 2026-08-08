@@ -144,6 +144,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               _loginBrokerChip('B', 'Binance', const Color(0xFFF3BA2F)),
                               _loginBrokerChip('E', 'Exness', const Color(0xFF00E5FF)),
                               _loginBrokerChip('F', 'FXCM', const Color(0xFF7C4DFF)),
+                              _loginBrokerChip('L', 'Luno', const Color(0xFF6C4CFF)),
                             ],
                           ),
                           ],
