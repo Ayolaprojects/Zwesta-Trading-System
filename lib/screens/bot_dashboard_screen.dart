@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/currency_provider.dart';
 import '../services/bot_service.dart';
 import '../services/broker_credentials_service.dart';
+import '../services/financial_export_service.dart';
 import '../utils/environment_config.dart';
 import '../widgets/account_display_widget.dart';
 import '../widgets/logo_widget.dart';
@@ -1086,7 +1087,7 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     final roi = double.tryParse(bot['roi']?.toString() ?? '0') ?? 0;
     final avgTrade = double.tryParse(bot['avgProfitPerTrade']?.toString() ?? '0') ?? 0;
     final maxDrawdown = double.tryParse(bot['maxDrawdown']?.toString() ?? '0') ?? 0;
-    final todaysProfit = double.tryParse(bot['dailyProfit']?.toString() ?? '0') ?? 0;
+    final todayClosedProfit = double.tryParse(bot['dailyProfit']?.toString() ?? '0') ?? 0;
     final openPositions = (bot['openPositionsPreview'] as List?) ?? (bot['openPositions'] as List?) ?? [];
     final floatingProfit = double.tryParse(bot['floatingProfit']?.toString() ?? '0') ??
       openPositions.fold<double>(0, (sum, position) => sum + (double.tryParse(position['profit']?.toString() ?? '0') ?? 0));
@@ -1403,10 +1404,32 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           const SizedBox(height: 6),
           Row(
             children: [
-              Text('Today closed ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
-              Text(_formatAmount(currencyProvider, todaysProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: todaysProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w600, fontSize: 12)),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Today closed (Realized) ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                  const SizedBox(width: 4),
+                  Tooltip(
+                    message: 'Profit from positions closed today only, excluding current open positions.',
+                    child: Icon(Icons.info_outline, size: 12, color: Colors.white54),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 4),
+              Text(_formatAmount(currencyProvider, todayClosedProfit, currencyCode: displayCurrency), style: GoogleFonts.poppins(color: todayClosedProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80), fontWeight: FontWeight.w600, fontSize: 12)),
               const Spacer(),
-              Text('Session P/L ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Session P/L (Today + Open) ', style: GoogleFonts.poppins(color: Colors.white60, fontSize: 12)),
+                  const SizedBox(width: 4),
+                  Tooltip(
+                    message: 'Realized profit for today plus current open position profit.',
+                    child: Icon(Icons.info_outline, size: 12, color: Colors.white54),
+                  ),
+                ],
+              ),
+
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1921,7 +1944,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                         ),
                       );
                     }
-                  } else if (value == 'delete') {
+                   } else if (value == 'export_pdf') {
+                     _exportBotReportPdf(context, bot);
+                   } else if (value == 'share_report') {
+                     _shareBotReport(context, bot);
+                   } else if (value == 'delete') {
                     final confirmed = await showDialog<bool>(
                       context: context,
                       builder: (ctx) => AlertDialog(
@@ -2015,6 +2042,26 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
                       ),
                     ),
                   PopupMenuItem(
+                    value: 'export_pdf',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.picture_as_pdf_outlined, color: Color(0xFF69F0AE), size: 18),
+                        const SizedBox(width: 8),
+                        Text('Export PDF Report', style: GoogleFonts.poppins(color: const Color(0xFF69F0AE), fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'share_report',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.share_outlined, color: Color(0xFF00E5FF), size: 18),
+                        const SizedBox(width: 8),
+                        Text('Share Report', style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
                     value: 'delete',
                     child: Row(
                       children: [
@@ -2030,7 +2077,56 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           ),
         ],
       ),
-    );
+     );
+   }
+
+  Future<void> _exportBotReportPdf(BuildContext context, Map<String, dynamic> bot) async {
+    try {
+      final tradeHistory = List<Map<String, dynamic>>.from(bot['tradeHistory'] ?? []);
+      final openPositions = List<Map<String, dynamic>>.from(bot['openPositions'] ?? bot['openPositionsPreview'] ?? []);
+      final pdf = await FinancialExportService.generateBotReportPdf(
+        bot: bot,
+        tradeHistory: tradeHistory,
+        openPositions: openPositions,
+      );
+      final filename = 'zwesta_bot_report_${bot['botId'] ?? DateTime.now().millisecondsSinceEpoch}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final path = await FinancialExportService.savePdfToDownloads(filename, pdf);
+      if (!context.mounted) return;
+      if (path != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF saved to $path'), backgroundColor: Colors.green),
+        );
+      } else {
+        final fallbackPath = await FinancialExportService.savePdf(filename, pdf);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF saved to $fallbackPath'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('PDF export failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _shareBotReport(BuildContext context, Map<String, dynamic> bot) async {
+    try {
+      final tradeHistory = List<Map<String, dynamic>>.from(bot['tradeHistory'] ?? []);
+      final openPositions = List<Map<String, dynamic>>.from(bot['openPositions'] ?? bot['openPositionsPreview'] ?? []);
+      final pdf = await FinancialExportService.generateBotReportPdf(
+        bot: bot,
+        tradeHistory: tradeHistory,
+        openPositions: openPositions,
+      );
+      final filename = 'zwesta_bot_report_${bot['botId'] ?? DateTime.now().millisecondsSinceEpoch}.pdf';
+      await FinancialExportService.sharePdf(pdf, filename);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Share failed: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   Widget _buildProtectionChip(String label, Color color) {
