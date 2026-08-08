@@ -52,29 +52,6 @@ class FinancialExportService {
     }
   }
 
-  static Future<String?> savePdfToDownloads(String filename, pw.Document pdf) async {
-    try {
-      if (Platform.isAndroid) {
-        final status = await Permission.storage.request();
-        if (!status.isGranted) return null;
-      }
-      final dirs = await getExternalStorageDirectories(type: StorageDirectory.downloads);
-      String dirPath;
-      if (dirs != null && dirs.isNotEmpty) {
-        dirPath = dirs.first.path;
-      } else {
-        final fallback = await getApplicationDocumentsDirectory();
-        dirPath = fallback.path;
-      }
-      final file = File('$dirPath/$filename');
-      final bytes = await pdf.save();
-      await file.writeAsBytes(bytes, flush: true);
-      return file.path;
-    } catch (e) {
-      return null;
-    }
-  }
-
   static Future<String?> saveCsvToDirectory(String directoryPath, String filename, String csvContent) async {
     try {
       final dir = Directory(directoryPath);
@@ -609,8 +586,6 @@ class FinancialExportService {
     );
   }
 
-  // Save PDF to a directory (used for Downloads or any target directory).
-  // Keep a single implementation and reuse it for both app documents and external folders.
   static Future<String?> savePdfToDirectoryGeneric(String directoryPath, String filename, pw.Document pdf) async {
     try {
       final dir = Directory(directoryPath);

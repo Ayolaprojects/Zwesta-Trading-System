@@ -65,8 +65,11 @@ dependencies:
   # Notifications
   flutter_local_notifications: ^17.0.0
 
-  # File picker for credential import
-  file_picker: ^8.0.2
+   # File picker for credential import
+   file_picker: ^8.0.2
+
+   # Cross-platform file reference (required by share_plus)
+   cross_file: ^3.1.0
 
 dev_dependencies:
   flutter_test:
