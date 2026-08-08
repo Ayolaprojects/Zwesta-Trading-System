@@ -265,10 +265,14 @@ class BinanceTradingService {
 
   // ==================== TRANSACTIONS ====================
 
-  static Future<Map<String, dynamic>> getTransactions({String symbol = 'BTCUSDT', int pageSize = 50}) async {
+  static Future<Map<String, dynamic>> getTransactions({String? symbol, int pageSize = 50}) async {
     try {
+      var url = '$_baseUrl/api/binance/transactions?pageSize=$pageSize';
+      if (symbol != null && symbol.isNotEmpty) {
+        url = '$_baseUrl/api/binance/transactions?symbol=$symbol&pageSize=$pageSize';
+      }
       final resp = await http.get(
-        Uri.parse('$_baseUrl/api/binance/transactions?symbol=$symbol&pageSize=$pageSize'),
+        Uri.parse(url),
       ).timeout(const Duration(seconds: 10));
 
       if (resp.statusCode == 200) return jsonDecode(resp.body);
