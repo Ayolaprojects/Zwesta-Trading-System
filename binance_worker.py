@@ -56,9 +56,21 @@ WORKER_INSTANCE_ID = int(os.environ.get('BINANCE_WORKER_ID', '1'))
 MAX_BOTS_PER_WORKER = int(os.environ.get('MAX_BOTS_PER_BINANCE_WORKER', '500'))
 HEARTBEAT_INTERVAL = 10          # seconds
 COMMAND_POLL_INTERVAL = 2        # seconds
-DEFAULT_TRADING_INTERVAL = 300   # 5 minutes between trade cycles
-PRICE_CACHE_TTL = 30             # seconds before Redis price is considered stale
-BINANCE_REQUEST_TIMEOUT = 15     # seconds
+DEFAULT_TRADING_INTERVAL = 60   # 1 minute between trade cycles for faster profit capture
+PRICE_CACHE_TTL = 15             # 15 seconds — fresher prices for faster signals
+BINANCE_REQUEST_TIMEOUT = 10     # 10 seconds — faster failover
+
+# ==================== PROFIT MAXIMIZATION SETTINGS ====================
+DEFAULT_TAKE_PROFIT_PCT = 0.025   # 2.5% take-profit target
+DEFAULT_STOP_LOSS_PCT = 0.012     # 1.2% stop-loss (1:2 risk-reward)
+TRAILING_STOP_PCT = 0.010         # 1.0% trailing stop activation
+TRAILING_STEP_PCT = 0.005         # 0.5% trailing step
+COMPOUND_REINVEST_PCT = 0.5       # Reinvest 50% of realized profits
+MAX_CONSECUTIVE_LOSSES = 3        # Auto-reduce lot size after 3 consecutive losses
+LOT_SIZE_REDUCTION_FACTOR = 0.5   # Halve lot size after max consecutive losses
+LOT_SIZE_RESTORE_AFTER = 5        # Restore lot size after 5 consecutive wins
+MIN_LOT_SIZE_USDT = 5.0           # Minimum lot size
+MAX_LOT_SIZE_USDT = 500.0         # Maximum lot size per trade
 
 # Binance base URLs (overridable for region restrictions)
 BINANCE_LIVE_URL = os.environ.get('BINANCE_REST_BASE', 'https://api.binance.com/api')
@@ -327,11 +339,12 @@ def calculate_signal(
     Generate BUY/SELL/None signal based on strategy.
 
     Strategies:
-    - RSI:      Buy RSI < 30 (oversold), Sell RSI > 70 (overbought)
+    - RSI:      Buy RSI < 35 (oversold), Sell RSI > 65 (overbought) — wider bands
     - EMA:      Buy when price > EMA20, Sell when price < EMA20
     - MOMENTUM: Buy on 3 consecutive green candles, Sell on 3 red
-    - SCALP:    Fast RSI(7) with tighter bands 35/65
+    - SCALP:    Fast RSI(7) with tighter bands 30/70
     - AUTO:     RSI + EMA confirmation (more reliable)
+    - TREND:    EMA crossover with momentum — rides trends longer
     """
     if not klines or len(klines) < 20:
         return None
@@ -343,9 +356,9 @@ def calculate_signal(
         rsi = calculate_rsi(closes, 14)
         if rsi is None:
             return None
-        if rsi < 30:
+        if rsi < 35:
             return 'BUY'
-        if rsi > 70:
+        if rsi > 65:
             return 'SELL'
         return None
 
@@ -374,20 +387,36 @@ def calculate_signal(
         rsi = calculate_rsi(closes, 7)
         if rsi is None:
             return None
-        if rsi < 35:
+        if rsi < 30:
             return 'BUY'
-        if rsi > 65:
+        if rsi > 70:
             return 'SELL'
         return None
 
-    else:  # AUTO: RSI + EMA confirmation
+    elif strategy_upper == 'TREND':
+        ema20 = calculate_ema(closes, 20)
+        ema50 = calculate_ema(closes, 50)
+        ema100 = calculate_ema(closes, 100)
+        if ema20 is None or ema50 is None:
+            return None
+        # Strong trend: price above all EMAs and EMA20 > EMA50 > EMA100
+        if current_price > ema20 and ema20 > ema50:
+            if ema100 is None or ema50 > ema100:
+                return 'BUY'
+        # Strong downtrend: price below all EMAs and EMA20 < EMA50 < EMA100
+        if current_price < ema20 and ema20 < ema50:
+            if ema100 is None or ema50 < ema100:
+                return 'SELL'
+        return None
+
+    else:  # AUTO: RSI + EMA confirmation — more aggressive thresholds
         rsi = calculate_rsi(closes, 14)
         ema20 = calculate_ema(closes, 20)
         if rsi is None or ema20 is None:
             return None
-        if rsi < 35 and current_price > ema20:
+        if rsi < 40 and current_price > ema20:
             return 'BUY'
-        if rsi > 65 and current_price < ema20:
+        if rsi > 60 and current_price < ema20:
             return 'SELL'
         return None
 
@@ -434,6 +463,49 @@ def record_trade(
         conn.close()
     except Exception as e:
         logger.warning(f"record_trade failed ({bot_id}): {e}")
+
+
+def record_trade_close(
+    bot_id: str,
+    user_id: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+    entry_price: float,
+    exit_price: float,
+    order_id: str,
+    profit: float,
+    close_reason: str = 'TP',
+) -> None:
+    """Mark an open trade as closed with realized profit in the trades table."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now_iso = datetime.now().isoformat()
+        cursor.execute('''
+            UPDATE trades
+            SET profit = ?,
+                status = 'closed',
+                time_close = ?,
+                updated_at = ?
+            WHERE ticket = ? AND bot_id = ? AND status = 'open'
+        ''', (profit, now_iso, now_iso, order_id, bot_id))
+        if cursor.rowcount == 0:
+            trade_id = str(uuid.uuid4())
+            cursor.execute('''
+                INSERT INTO trades
+                (trade_id, bot_id, user_id, symbol, order_type, volume, price,
+                 profit, ticket, time_open, time_close, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?)
+            ''', (
+                trade_id, bot_id, user_id, symbol, 'SELL' if side.upper() == 'BUY' else 'BUY',
+                quantity, exit_price, profit, order_id,
+                now_iso, now_iso, now_iso, now_iso,
+            ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"record_trade_close failed ({bot_id}): {e}")
 
 
 def update_bot_profit(bot_id: str, profit_delta: float) -> None:
@@ -506,7 +578,7 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict, credentials: D
     if isinstance(symbol, list):
         symbol = symbol[0] if symbol else 'BTCUSDT'
     strategy = bot_config.get('strategy', 'AUTO')
-    lot_size_usdt = float(bot_config.get('lot_size') or bot_config.get('riskPerTrade') or 10.0)
+    lot_size_usdt = float(bot_config.get('lot_size') or bot_config.get('riskPerTrade') or 50.0)
     trading_interval = int(bot_config.get('tradingInterval') or DEFAULT_TRADING_INTERVAL)
     is_live = bool(credentials.get('is_live', False))
 
@@ -523,8 +595,11 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict, credentials: D
         logger.error(f"[Bot {bot_id[:8]}] Unsupported symbol: {symbol}")
         return
 
-    last_order_side: Optional[str] = None  # Prevent flipping too fast
     consecutive_errors = 0
+    consecutive_wins = 0
+    consecutive_losses = 0
+    current_lot_size_usdt = lot_size_usdt
+    active_positions: Dict[str, Dict] = {}
 
     while not bot_stop_flags.get(bot_id, False):
         cycle_start = time.time()
@@ -546,29 +621,118 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict, credentials: D
 
             consecutive_errors = 0
 
-            # ── 2. Fetch klines for signal analysis ──────────────────────────
+            # ── 2. Check open positions for TP/SL/trailing ──────────────────
+            positions_to_close = []
+            for pos_id, pos in list(active_positions.items()):
+                entry_price = pos['entry_price']
+                side = pos['side']
+                quantity = pos['quantity']
+                highest_price = pos.get('highest_price', entry_price)
+                lowest_price = pos.get('lowest_price', entry_price)
+
+                if side == 'BUY':
+                    unrealized_pnl_pct = (current_price - entry_price) / entry_price
+                    highest_price = max(highest_price, current_price)
+                    # Trailing stop: if price pulled back from peak by TRAILING_STOP_PCT
+                    trailing_stop_price = highest_price * (1 - TRAILING_STOP_PCT)
+                    # Hard stop-loss
+                    stop_loss_price = entry_price * (1 - DEFAULT_STOP_LOSS_PCT)
+                    # Take-profit
+                    take_profit_price = entry_price * (1 + DEFAULT_TAKE_PROFIT_PCT)
+
+                    if current_price >= take_profit_price:
+                        positions_to_close.append((pos_id, 'TP', take_profit_price))
+                    elif current_price <= stop_loss_price:
+                        positions_to_close.append((pos_id, 'SL', stop_loss_price))
+                    elif current_price <= trailing_stop_price:
+                        positions_to_close.append((pos_id, 'TRAILING', trailing_stop_price))
+                else:  # SELL
+                    unrealized_pnl_pct = (entry_price - current_price) / entry_price
+                    lowest_price = min(lowest_price, current_price)
+                    trailing_stop_price = lowest_price * (1 + TRAILING_STOP_PCT)
+                    stop_loss_price = entry_price * (1 + DEFAULT_STOP_LOSS_PCT)
+                    take_profit_price = entry_price * (1 - DEFAULT_TAKE_PROFIT_PCT)
+
+                    if current_price <= take_profit_price:
+                        positions_to_close.append((pos_id, 'TP', take_profit_price))
+                    elif current_price >= stop_loss_price:
+                        positions_to_close.append((pos_id, 'SL', stop_loss_price))
+                    elif current_price >= trailing_stop_price:
+                        positions_to_close.append((pos_id, 'TRAILING', trailing_stop_price))
+
+                active_positions[pos_id]['highest_price'] = highest_price
+                active_positions[pos_id]['lowest_price'] = lowest_price
+
+            # Close positions that hit TP/SL/trailing
+            for pos_id, close_type, close_price in positions_to_close:
+                pos = active_positions.pop(pos_id, None)
+                if pos is None:
+                    continue
+                close_side = 'SELL' if pos['side'] == 'BUY' else 'BUY'
+                close_result = client.place_market_order(norm_symbol, close_side, pos['quantity'])
+                if close_result.get('success'):
+                    pnl_pct = (close_price - pos['entry_price']) / pos['entry_price'] if pos['entry_price'] > 0 else 0
+                    pnl_usdt = pnl_pct * pos['quantity'] * pos['entry_price']
+                    if pnl_usdt > 0:
+                        consecutive_wins += 1
+                        consecutive_losses = 0
+                        # Compound: increase lot size on win streak
+                        if consecutive_wins >= LOT_SIZE_RESTORE_AFTER:
+                            current_lot_size_usdt = min(lot_size_usdt * (1 + COMPOUND_REINVEST_PCT), MAX_LOT_SIZE_USDT)
+                            consecutive_wins = 0
+                    else:
+                        consecutive_losses += 1
+                        consecutive_wins = 0
+                        # Reduce lot size on loss streak
+                        if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                            current_lot_size_usdt = max(lot_size_usdt * LOT_SIZE_REDUCTION_FACTOR, MIN_LOT_SIZE_USDT)
+                            consecutive_losses = 0
+                    logger.info(
+                        f"[Bot {bot_id[:8]}] 📊 {close_type} {norm_symbol} @ {close_price:.4f} | "
+                        f"P&L: ${pnl_usdt:.2f} ({pnl_pct*100:.2f}%) | Lot: ${current_lot_size_usdt:.2f}"
+                    )
+                    # Persist the close: mark trade as closed with realized P&L
+                    try:
+                        record_trade_close(
+                            bot_id=bot_id,
+                            user_id=user_id,
+                            symbol=norm_symbol,
+                            side=pos['side'],
+                            quantity=pos['quantity'],
+                            entry_price=pos['entry_price'],
+                            exit_price=close_price,
+                            order_id=pos.get('order_id', ''),
+                            profit=pnl_usdt,
+                            close_reason=close_type,
+                        )
+                        update_bot_profit(bot_id, pnl_usdt)
+                    except Exception as _close_rec_err:
+                        logger.warning(f"[Bot {bot_id[:8]}] Failed to persist close for {norm_symbol}: {_close_rec_err}")
+                else:
+                    logger.warning(f"[Bot {bot_id[:8]}] Failed to close position {pos_id}: {close_result.get('error')}")
+
+            # ── 3. Fetch klines for signal analysis ──────────────────────────
             klines = client.get_klines(norm_symbol, interval='1h', limit=60)
             if not klines:
                 time.sleep(30)
                 continue
 
-            # ── 3. Generate signal ────────────────────────────────────────────
+            # ── 4. Generate signal ──────────────────────────────────────────
             signal = calculate_signal(norm_symbol, strategy, klines, current_price, bot_config)
 
             if signal is None:
-                # No signal — log occasionally and wait
                 logger.debug(
                     f"[Bot {bot_id[:8]}] {norm_symbol} @ {current_price:.4f} — no signal ({strategy})"
                 )
-            elif signal == last_order_side:
-                # Same direction as last trade — skip to avoid overexposure
-                logger.debug(f"[Bot {bot_id[:8]}] Signal {signal} matches last order, skipping")
             else:
-                # ── 4. Place order ────────────────────────────────────────────
-                quantity = _estimate_quantity(client, norm_symbol, lot_size_usdt)
+                # ── 5. Place order ──────────────────────────────────────────
+                quantity = _estimate_quantity(client, norm_symbol, current_lot_size_usdt)
+                if quantity <= 0:
+                    quantity = 0.001
+
                 logger.info(
                     f"[Bot {bot_id[:8]}] Signal: {signal} {norm_symbol} | "
-                    f"price={current_price:.4f} qty={quantity} usdt≈{lot_size_usdt}"
+                    f"price={current_price:.4f} qty={quantity} usdt≈{current_lot_size_usdt:.2f}"
                 )
 
                 result = client.place_market_order(norm_symbol, signal, quantity)
@@ -591,10 +755,21 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict, credentials: D
                         price=filled_price,
                         order_id=order_id,
                     )
-                    last_order_side = signal
+                    # Track position for TP/SL
+                    pos_id = f"{norm_symbol}_{signal}_{order_id[:8]}"
+                    active_positions[pos_id] = {
+                        'side': signal,
+                        'entry_price': filled_price,
+                        'quantity': quantity,
+                        'highest_price': filled_price,
+                        'lowest_price': filled_price,
+                        'order_id': order_id,
+                    }
                     logger.info(
                         f"[Bot {bot_id[:8]}] ✅ {signal} {quantity} {norm_symbol} "
-                        f"@ {filled_price:.4f} | Order: {order_id}"
+                        f"@ {filled_price:.4f} | Order: {order_id} | "
+                        f"TP={filled_price*(1+DEFAULT_TAKE_PROFIT_PCT):.4f} "
+                        f"SL={filled_price*(1-DEFAULT_STOP_LOSS_PCT):.4f}"
                     )
                 else:
                     err_code = result.get('code', 0)
@@ -602,19 +777,19 @@ def bot_trading_loop(bot_id: str, user_id: str, bot_config: Dict, credentials: D
                     logger.warning(
                         f"[Bot {bot_id[:8]}] ❌ Order failed: {err_msg} (code={err_code})"
                     )
-                    # Rate limited? Back off
+                    # Rate limited? Back off briefly
                     if err_code in (-1003, -1015, 429):
-                        logger.warning(f"[Bot {bot_id[:8]}] Rate limited — sleeping 60s")
-                        time.sleep(60)
+                        logger.warning(f"[Bot {bot_id[:8]}] Rate limited — sleeping 10s")
+                        time.sleep(10)
                         continue
 
         except Exception as cycle_err:
             logger.error(f"[Bot {bot_id[:8]}] Cycle exception: {cycle_err}")
             consecutive_errors += 1
 
-        # ── 5. Sleep until next cycle ─────────────────────────────────────
+        # ── 6. Sleep until next cycle ──────────────────────────────────
         elapsed = time.time() - cycle_start
-        sleep_time = max(10, trading_interval - elapsed)
+        sleep_time = max(5, trading_interval - elapsed)
         # Add small random jitter ±10% to prevent thundering herd
         jitter = random.uniform(-sleep_time * 0.1, sleep_time * 0.1)
         actual_sleep = sleep_time + jitter
