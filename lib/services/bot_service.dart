@@ -224,7 +224,7 @@ class BotService extends ChangeNotifier {
 
       final modeParam = mode.trim().toUpperCase();
       final summaryMode = modeParam == 'LIVE' || modeParam == 'DEMO' ? modeParam : 'ALL';
-      var url = '$_apiUrl/api/bot/summary?mode=$summaryMode';
+      var url = '$_apiUrl/api/bot/summary?mode=$summaryMode&include_broker_snapshots=true';
       if (includeHistory) {
         url += '&include_history=true';
       }
@@ -678,7 +678,7 @@ class BotService extends ChangeNotifier {
         return false;
       }
 
-      final response = await http.delete(
+      final response = await http.post(
         Uri.parse('$_apiUrl/api/bot/delete/$botId'),
         headers: {
           'Content-Type': 'application/json',

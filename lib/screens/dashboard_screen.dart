@@ -1031,7 +1031,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       final modeParam = _balanceMode == 'all' ? 'ALL' : _balanceMode.toUpperCase();
-      var url = '${EnvironmentConfig.apiUrl}/api/bot/summary?mode=$modeParam&include_history=true';
+      var url = '${EnvironmentConfig.apiUrl}/api/bot/summary?mode=$modeParam&include_history=true&include_broker_snapshots=true';
       if (userId != null && userId.isNotEmpty) {
         url += '&user_id=$userId';
       }
@@ -2077,16 +2077,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           final token = prefs.getString('auth_token') ?? '';
                                           final userId = prefs.getString('user_id');
                                           
-                                          final response = await http.delete(
-                                            Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/delete/$botId'),
-                                            headers: {
-                                              'Content-Type': 'application/json',
-                                              'X-Session-Token': token,
-                                            },
-                                            body: jsonEncode({
-                                              if (userId != null && userId.isNotEmpty) 'user_id': userId,
-                                            }),
-                                          );
+                                           final response = await http.post(
+                                             Uri.parse('${EnvironmentConfig.apiUrl}/api/bot/delete/$botId'),
+                                             headers: {
+                                               'Content-Type': 'application/json',
+                                               'X-Session-Token': token,
+                                             },
+                                             body: jsonEncode({
+                                               if (userId != null && userId.isNotEmpty) 'user_id': userId,
+                                             }),
+                                           );
                                           
                                           if (response.statusCode == 200) {
                                             _performRefresh();

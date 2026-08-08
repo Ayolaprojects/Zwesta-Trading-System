@@ -47471,7 +47471,14 @@ def _build_binance_bot_broker_snapshot(
         if position_ticket and position_ticket in tracked_tickets:
             return True
         position_symbol = str(position.get('symbol') or '').strip().upper()
-        return position_symbol in bot_symbols
+        if position_symbol in bot_symbols:
+            return True
+        # For Binance futures (shared account), return ALL exchange positions
+        # since the exchange tracks positions by symbol and multiple bots/
+        # strategies may operate across symbols on the same credential
+        if str(bot.get('binanceMarket') or bot.get('market') or '').strip().lower() == 'futures':
+            return True
+        return False
 
     def _trade_matches(trade: Dict[str, Any]) -> bool:
         if not bot_symbols and not tracked_tickets:
@@ -47480,7 +47487,11 @@ def _build_binance_bot_broker_snapshot(
         if trade_ticket and trade_ticket in tracked_tickets:
             return True
         trade_symbol = str(trade.get('symbol') or '').strip().upper()
-        return trade_symbol in bot_symbols
+        if trade_symbol in bot_symbols:
+            return True
+        if str(bot.get('binanceMarket') or bot.get('market') or '').strip().lower() == 'futures':
+            return True
+        return False
 
     filtered_positions = [position for position in cached_snapshot.get('positions', []) if _position_matches(position)]
     filtered_trades = [trade for trade in cached_snapshot.get('recentTrades', []) if _trade_matches(trade)]
