@@ -36262,8 +36262,12 @@ def manage_protected_open_positions(bot_id, bot_config, current_positions, activ
             symbol,
             effective_protection,
         )
+        binance_min_hold_minutes = 5.0
         protection_hold_satisfied = time_in_position >= protection_min_hold_minutes
-        early_profit_exit_allowed = protection_hold_satisfied or not (is_exness_forex_position or is_exness_index_runner_position)
+        if is_binance_position:
+            early_profit_exit_allowed = time_in_position >= binance_min_hold_minutes
+        else:
+            early_profit_exit_allowed = protection_hold_satisfied or not (is_exness_forex_position or is_exness_index_runner_position)
         # Portfolio loser rotation is allowed to bypass the full protection hold when
         # stronger peers are active, but Exness live forex/index positions still need a
         # short minimum age so spread noise does not create instant open/close churn.
