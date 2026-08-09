@@ -128,8 +128,10 @@ def _infer_request_binance_market_preference() -> str:
     return 'spot'
 
 
-def _resolve_request_binance_credentials() -> dict:
-    market_preference = _infer_request_binance_market_preference()
+def _resolve_request_binance_credentials(market_preference_override: str = None) -> dict:
+    market_preference = market_preference_override
+    if market_preference is None:
+        market_preference = _infer_request_binance_market_preference()
     if has_request_context():
         cached_credentials_map = getattr(g, '_binance_request_credentials_by_market', None)
         if isinstance(cached_credentials_map, dict):
@@ -309,22 +311,20 @@ _BINANCE_TIME_OFFSET_MS = 0
 _BINANCE_TIME_OFFSET_UPDATED_AT = 0.0
 
 
-def _binance_headers(api_key: str = None):
-    """Build standard Binance API headers."""
-    resolved_api_key = str(api_key or _resolve_request_binance_credentials().get('api_key') or '').strip()
+def _binance_headers(api_key: str = None, market: str = 'spot'):
+    resolved_api_key = str(api_key or _resolve_request_binance_credentials(market_preference_override=market).get('api_key') or '').strip()
     return {
         "X-MBX-APIKEY": resolved_api_key,
         "Content-Type": "application/json",
     }
 
 
-def _sign_params(params: dict, api_secret: str = None) -> dict:
-    """Add timestamp and HMAC-SHA256 signature to params."""
+def _sign_params(params: dict, api_secret: str = None, market: str = 'spot') -> dict:
     signed_params = dict(params or {})
     signed_params.setdefault('recvWindow', 60000)
     signed_params['timestamp'] = int(time.time() * 1000) + int(_BINANCE_TIME_OFFSET_MS)
     query_string = urlencode(signed_params)
-    resolved_api_secret = str(api_secret or _resolve_request_binance_credentials().get('api_secret') or '').strip()
+    resolved_api_secret = str(api_secret or _resolve_request_binance_credentials(market_preference_override=market).get('api_secret') or '').strip()
     signature = hmac.new(
         resolved_api_secret.encode('utf-8'),
         query_string.encode('utf-8'),
@@ -369,14 +369,14 @@ def _response_is_timestamp_error(response) -> bool:
     return payload.get('code') in (-1021, -1022)
 
 
-def _signed_request(method: str, url: str, *, headers: dict, params: dict = None, timeout: int = 10, api_secret: str = None):
+def _signed_request(method: str, url: str, *, headers: dict, params: dict = None, timeout: int = 10, api_secret: str = None, market: str = 'spot'):
     request_params = dict(params or {})
     _sync_server_time(url, timeout=min(max(1, int(timeout or 5)), 5))
     response = requests.request(
         method,
         url,
         headers=headers,
-        params=_sign_params(request_params, api_secret=api_secret),
+        params=_sign_params(request_params, api_secret=api_secret, market=market),
         timeout=timeout,
     )
     if not _response_is_timestamp_error(response):
@@ -388,7 +388,7 @@ def _signed_request(method: str, url: str, *, headers: dict, params: dict = None
         method,
         url,
         headers=headers,
-        params=_sign_params(request_params, api_secret=api_secret),
+        params=_sign_params(request_params, api_secret=api_secret, market=market),
         timeout=timeout,
     )
 
@@ -438,13 +438,14 @@ def api_binance_accounts():
     try:
         market_preference = _infer_request_binance_market_preference()
         base_url = FAPI_URL if market_preference == 'futures' else BASE_URL
-        headers = _binance_headers()
+        headers = _binance_headers(market=market_preference)
         resp = _signed_request(
             'GET',
             f"{base_url}/{'v2/account' if market_preference == 'futures' else 'v3/account'}",
             headers=headers,
             params={},
             timeout=10,
+            market=market_preference,
         )
         if resp.status_code == 200:
             acct = resp.json()
@@ -472,13 +473,14 @@ def api_binance_balance():
 
         market_preference = _infer_request_binance_market_preference()
         base_url = FAPI_URL if market_preference == 'futures' else BASE_URL
-        headers = _binance_headers()
+        headers = _binance_headers(market=market_preference)
         resp = _signed_request(
             'GET',
             f"{base_url}/{'v2/balance' if market_preference == 'futures' else 'v3/account'}",
             headers=headers,
             params={},
             timeout=10,
+            market=market_preference,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -543,7 +545,7 @@ def api_binance_funds():
 
         market_preference = _infer_request_binance_market_preference()
         base_url = FAPI_URL if market_preference == 'futures' else BASE_URL
-        headers = _binance_headers()
+        headers = _binance_headers(market=market_preference)
         
         if market_preference == 'futures':
             resp = _signed_request(
@@ -552,6 +554,7 @@ def api_binance_funds():
                 headers=headers,
                 params={},
                 timeout=10,
+                market='futures',
             )
             if resp.status_code == 200:
                 balances = resp.json() if isinstance(resp.json(), list) else []
@@ -575,6 +578,7 @@ def api_binance_funds():
                 headers=headers,
                 params={},
                 timeout=10,
+                market='spot',
             )
             if resp.status_code == 200:
                 acct = resp.json()
@@ -604,7 +608,7 @@ def api_binance_positions():
     """Get all open orders (spot) or positions (futures)."""
     try:
         market_preference = _infer_request_binance_market_preference()
-        headers = _binance_headers()
+        headers = _binance_headers(market=market_preference)
         
         if market_preference == 'futures':
             # For futures, get positions from FAPI
@@ -614,6 +618,7 @@ def api_binance_positions():
                 headers=headers,
                 params={},
                 timeout=10,
+                market='futures',
             )
             if resp.status_code == 200:
                 positions_data = resp.json()
@@ -637,6 +642,7 @@ def api_binance_positions():
                 headers=headers,
                 params={},
                 timeout=10,
+                market='spot',
             )
             if resp.status_code == 200:
                 orders = resp.json()
@@ -666,13 +672,14 @@ def api_binance_positions():
 def api_binance_futures_positions():
     """Get all open futures positions with unrealized P&L."""
     try:
-        headers = _binance_headers()
+        headers = _binance_headers(market='futures')
         resp = _signed_request(
             'GET',
             f"{FAPI_URL}/v2/positionRisk",
             headers=headers,
             params={},
             timeout=10,
+            market='futures',
         )
         if resp.status_code == 200:
             raw = resp.json()
@@ -704,7 +711,7 @@ def api_binance_futures_positions():
 
 @binance_api.route('/api/binance/close-position', methods=['POST'])
 def api_binance_close_position():
-    """Close an open order (cancel) or sell a spot holding via market order."""
+    """Close an open order (cancel) or sell a spot holding / close a futures position."""
     try:
         data = request.json or {}
         symbol = data.get('instrument') or data.get('symbol')
@@ -712,19 +719,23 @@ def api_binance_close_position():
         user_id = str(data.get('user_id') or '').strip()
         bot_id = str(data.get('bot_id') or f'binance-manual-close:{symbol or order_id or "position"}')
         profit_amount = _as_float(data.get('profit_amount'))
+        market = str(data.get('market') or _infer_request_binance_market_preference()).strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
 
         if not symbol:
             return jsonify({"success": False, "error": "symbol is required"}), 400
 
-        headers = _binance_headers()
+        headers = _binance_headers(market=market)
 
-        if profit_amount <= 0:
+        if profit_amount <= 0 and market == 'futures':
             risk_resp = _signed_request(
                 'GET',
                 f"{FAPI_URL}/v2/positionRisk",
                 headers=headers,
                 params={'symbol': symbol},
                 timeout=10,
+                market='futures',
             )
             if risk_resp.status_code == 200:
                 for position in risk_resp.json():
@@ -740,32 +751,61 @@ def api_binance_close_position():
 
         # If orderId provided, cancel that specific order
         if order_id:
-            resp = _signed_request(
-                'DELETE',
-                f"{BASE_URL}/v3/order",
-                headers=headers,
-                params={'symbol': symbol, 'orderId': int(order_id)},
-                timeout=15,
-            )
+            if market == 'futures':
+                resp = _signed_request(
+                    'DELETE',
+                    f"{FAPI_URL}/v1/order",
+                    headers=headers,
+                    params={'symbol': symbol, 'orderId': int(order_id)},
+                    timeout=15,
+                    market='futures',
+                )
+            else:
+                resp = _signed_request(
+                    'DELETE',
+                    f"{BASE_URL}/v3/order",
+                    headers=headers,
+                    params={'symbol': symbol, 'orderId': int(order_id)},
+                    timeout=15,
+                    market='spot',
+                )
         else:
-            # Market sell the given quantity
+            # Close position via market order
             quantity = data.get('size') or data.get('quantity')
             direction = data.get('direction', 'SELL')
             if not quantity:
                 return jsonify({"success": False, "error": "size/quantity required for market close"}), 400
 
-            resp = _signed_request(
-                'POST',
-                f"{BASE_URL}/v3/order",
-                headers=headers,
-                params={
-                    'symbol': symbol,
-                    'side': direction,
-                    'type': 'MARKET',
-                    'quantity': str(quantity),
-                },
-                timeout=15,
-            )
+            if market == 'futures':
+                close_side = 'SELL' if float(quantity) > 0 else 'BUY'
+                resp = _signed_request(
+                    'POST',
+                    f"{FAPI_URL}/v1/order",
+                    headers=headers,
+                    params={
+                        'symbol': symbol,
+                        'side': close_side,
+                        'type': 'MARKET',
+                        'quantity': str(abs(float(quantity))),
+                        'reduceOnly': 'true',
+                    },
+                    timeout=15,
+                    market='futures',
+                )
+            else:
+                resp = _signed_request(
+                    'POST',
+                    f"{BASE_URL}/v3/order",
+                    headers=headers,
+                    params={
+                        'symbol': symbol,
+                        'side': direction,
+                        'type': 'MARKET',
+                        'quantity': str(quantity),
+                    },
+                    timeout=15,
+                    market='spot',
+                )
 
         if resp.status_code == 200:
             _record_close_commission(user_id, bot_id, profit_amount, 'BINANCE')
@@ -785,7 +825,7 @@ def api_binance_close_all():
         data = request.json or {}
         user_id = str(data.get('user_id') or '').strip()
         bot_id = str(data.get('bot_id') or 'binance-manual-close-all')
-        headers = _binance_headers()
+        headers = _binance_headers(market='futures')
 
         # Get all futures positions
         resp = _signed_request(
@@ -794,6 +834,7 @@ def api_binance_close_all():
             headers=headers,
             params={},
             timeout=10,
+            market='futures',
         )
         if resp.status_code != 200:
             return jsonify({"success": False, "error": "Failed to fetch positions"}), 500
@@ -822,6 +863,7 @@ def api_binance_close_all():
                     'reduceOnly': 'true',
                 },
                 timeout=15,
+                market='futures',
             )
             if close_resp.status_code == 200:
                 if position_profit > 0:
@@ -850,22 +892,32 @@ def api_binance_place_order():
     """Place a spot or futures order on Binance."""
     try:
         data = request.json or {}
-        headers = _binance_headers()
 
         symbol = data.get('instrument') or data.get('symbol')
         direction = data.get('direction', 'BUY').upper()
         size = data.get('size') or data.get('quantity')
         order_type = data.get('orderType', 'MARKET').upper()
-        market = data.get('market', 'spot')  # 'spot' or 'futures'
+        market = str(data.get('market') or 'spot').strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
+        position_side = data.get('positionSide')  # 'BOTH', 'LONG', 'SHORT' for hedge mode
+        reduce_only = data.get('reduceOnly', False)
 
         if not symbol or not size:
             return jsonify({"success": False, "error": "symbol and size are required"}), 400
+
+        headers = _binance_headers(market=market)
 
         order_params = {
             'symbol': symbol,
             'side': direction,
             'type': order_type,
         }
+
+        if market == 'futures':
+            order_params['reduceOnly'] = str(bool(reduce_only)).lower()
+            if position_side is not None:
+                order_params['positionSide'] = str(position_side).upper()
 
         if order_type == 'MARKET':
             order_params['quantity'] = str(size)
@@ -891,6 +943,7 @@ def api_binance_place_order():
                 headers=headers,
                 params=order_params,
                 timeout=15,
+                market='futures',
             )
         else:
             resp = _signed_request(
@@ -899,6 +952,7 @@ def api_binance_place_order():
                 headers=headers,
                 params=order_params,
                 timeout=15,
+                market='spot',
             )
 
         if resp.status_code == 200:
@@ -924,15 +978,24 @@ def api_binance_place_order():
 def api_binance_pending_orders():
     """Get all open (pending) orders."""
     try:
-        headers = _binance_headers()
+        market = str(request.args.get('market') or _infer_request_binance_market_preference()).strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
+        headers = _binance_headers(market=market)
         symbol = request.args.get('symbol')
         query = {'symbol': symbol} if symbol else {}
+        base_url = FAPI_URL if market == 'futures' else BASE_URL
+        if market == 'futures':
+            endpoint = f"{FAPI_URL}/v1/openOrders"
+        else:
+            endpoint = f"{BASE_URL}/v3/openOrders"
         resp = _signed_request(
             'GET',
-            f"{BASE_URL}/v3/openOrders",
+            endpoint,
             headers=headers,
             params=query,
             timeout=10,
+            market=market,
         )
         if resp.status_code == 200:
             orders = resp.json()
@@ -961,7 +1024,10 @@ def api_binance_create_pending_order():
     """Create a limit order (pending)."""
     try:
         data = request.json or {}
-        headers = _binance_headers()
+        market = str(data.get('market') or 'spot').strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
+        headers = _binance_headers(market=market)
 
         symbol = data.get('instrument') or data.get('symbol')
         direction = data.get('direction', 'BUY').upper()
@@ -971,19 +1037,28 @@ def api_binance_create_pending_order():
         if not symbol or not size or not price:
             return jsonify({"success": False, "error": "symbol, size, and price are required"}), 400
 
+        order_params = {
+            'symbol': symbol,
+            'side': direction,
+            'type': 'LIMIT',
+            'quantity': str(size),
+            'price': str(price),
+            'timeInForce': data.get('timeInForce', 'GTC'),
+        }
+        if market == 'futures':
+            order_params['reduceOnly'] = str(bool(data.get('reduceOnly', False))).lower()
+            position_side = data.get('positionSide')
+            if position_side is not None:
+                order_params['positionSide'] = str(position_side).upper()
+
+        endpoint = f"{FAPI_URL}/v1/order" if market == 'futures' else f"{BASE_URL}/v3/order"
         resp = _signed_request(
             'POST',
-            f"{BASE_URL}/v3/order",
+            endpoint,
             headers=headers,
-            params={
-                'symbol': symbol,
-                'side': direction,
-                'type': 'LIMIT',
-                'quantity': str(size),
-                'price': str(price),
-                'timeInForce': data.get('timeInForce', 'GTC'),
-            },
+            params=order_params,
             timeout=15,
+            market=market,
         )
         if resp.status_code == 200:
             return jsonify({"success": True, "order": resp.json()})
@@ -1000,13 +1075,19 @@ def api_binance_cancel_order(order_id):
         if not symbol:
             return jsonify({"success": False, "error": "symbol query param required"}), 400
 
-        headers = _binance_headers()
+        market = str(request.args.get('market') or 'spot').strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
+
+        headers = _binance_headers(market=market)
+        endpoint = f"{FAPI_URL}/v1/order" if market == 'futures' else f"{BASE_URL}/v3/order"
         resp = _signed_request(
             'DELETE',
-            f"{BASE_URL}/v3/order",
+            endpoint,
             headers=headers,
             params={'symbol': symbol, 'orderId': int(order_id)},
             timeout=10,
+            market=market,
         )
         if resp.status_code == 200:
             return jsonify({"success": True, "cancelled": resp.json()})
@@ -1021,36 +1102,91 @@ def api_binance_cancel_order(order_id):
 def api_binance_transactions():
     """Get recent trade history for a symbol."""
     try:
-        headers = _binance_headers()
-        symbol = request.args.get('symbol', 'BTCUSDT')
+        market = str(request.args.get('market') or _infer_request_binance_market_preference()).strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
+        headers = _binance_headers(market=market)
+        symbol = request.args.get('symbol')
         limit = request.args.get('pageSize', '50')
 
-        resp = _signed_request(
-            'GET',
-            f"{BASE_URL}/v3/myTrades",
-            headers=headers,
-            params={'symbol': symbol, 'limit': int(limit)},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            trades = resp.json()
-            formatted = []
-            for t in trades:
-                formatted.append({
-                    'tradeId': t.get('id', ''),
-                    'orderId': t.get('orderId', ''),
-                    'symbol': t.get('symbol', ''),
-                    'side': 'BUY' if t.get('isBuyer') else 'SELL',
-                    'price': float(t.get('price', 0)),
-                    'quantity': float(t.get('qty', 0)),
-                    'quoteQty': float(t.get('quoteQty', 0)),
-                    'commission': float(t.get('commission', 0)),
-                    'commissionAsset': t.get('commissionAsset', ''),
-                    'time': t.get('time', ''),
-                    'isMaker': t.get('isMaker', False),
-                })
-            return jsonify({"success": True, "transactions": formatted, "count": len(formatted)})
-        return jsonify({"success": False, "error": resp.text}), resp.status_code
+        # If a specific symbol was requested, fetch that symbol's trades.
+        # If no symbol provided, aggregate across configured BINANCE_SYMBOLS env var.
+        symbols = []
+        if symbol and symbol.strip():
+            symbols = [symbol.strip()]
+        else:
+            symbols_env = os.environ.get('BINANCE_SYMBOLS', '')
+            if symbols_env:
+                symbols = [s.strip() for s in symbols_env.split(',') if s.strip()]
+
+        if not symbols:
+            return jsonify({"success": False, "error": "symbol query param required or BINANCE_SYMBOLS not configured"}), 400
+
+        aggregated = []
+        for sym in symbols:
+            try:
+                if market == 'futures':
+                    resp = _signed_request(
+                        'GET',
+                        f"{FAPI_URL}/v1/userTrades",
+                        headers=headers,
+                        params={'symbol': sym, 'limit': int(limit)},
+                        timeout=15,
+                        market='futures',
+                    )
+                else:
+                    resp = _signed_request(
+                        'GET',
+                        f"{BASE_URL}/v3/myTrades",
+                        headers=headers,
+                        params={'symbol': sym, 'limit': int(limit)},
+                        timeout=15,
+                        market='spot',
+                    )
+                if resp.status_code != 200:
+                    # skip this symbol on failure but continue with others
+                    logger.warning(f"Binance trades for {sym} ({market}) failed: {resp.status_code} {resp.text}")
+                    continue
+                trades = resp.json()
+                for t in trades:
+                    if market == 'futures':
+                        aggregated.append({
+                            'tradeId': t.get('id', ''),
+                            'orderId': t.get('orderId', ''),
+                            'symbol': t.get('symbol', ''),
+                            'side': 'BUY' if t.get('side', '').upper() == 'BUY' else 'SELL',
+                            'price': float(t.get('price', 0)),
+                            'quantity': float(t.get('qty', 0)),
+                            'quoteQty': float(t.get('quoteQty', 0)),
+                            'commission': float(t.get('commission', 0)),
+                            'commissionAsset': t.get('commissionAsset', ''),
+                            'time': t.get('time', ''),
+                            'isMaker': t.get('isMaker', False),
+                        })
+                    else:
+                        aggregated.append({
+                            'tradeId': t.get('id', ''),
+                            'orderId': t.get('orderId', ''),
+                            'symbol': t.get('symbol', ''),
+                            'side': 'BUY' if t.get('isBuyer') else 'SELL',
+                            'price': float(t.get('price', 0)),
+                            'quantity': float(t.get('qty', 0)),
+                            'quoteQty': float(t.get('quoteQty', 0)),
+                            'commission': float(t.get('commission', 0)),
+                            'commissionAsset': t.get('commissionAsset', ''),
+                            'time': t.get('time', ''),
+                            'isMaker': t.get('isMaker', False),
+                        })
+            except Exception as ex:
+                logger.warning(f"Error fetching trades for {sym}: {ex}")
+
+        # sort by time descending if time available
+        try:
+            aggregated.sort(key=lambda x: x.get('time', 0), reverse=True)
+        except Exception:
+            pass
+
+        return jsonify({"success": True, "transactions": aggregated, "count": len(aggregated)})
     except Exception as e:
         logger.error(f"Binance transactions error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -1062,8 +1198,12 @@ def api_binance_transactions():
 def api_binance_instruments():
     """Get available trading pairs. Optional filter via searchTerm."""
     try:
+        market = str(request.args.get('market') or 'spot').strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
+        base_url = FAPI_URL if market == 'futures' else BASE_URL
         resp = requests.get(
-            f"{BASE_URL}/v3/exchangeInfo",
+            f"{base_url}/v1/exchangeInfo" if market == 'futures' else f"{BASE_URL}/v3/exchangeInfo",
             timeout=15,
         )
         if resp.status_code == 200:
@@ -1096,16 +1236,20 @@ def api_binance_instruments():
 def api_binance_pricing():
     """Get current prices. Query: instruments=BTCUSDT,ETHUSDT (comma-separated)."""
     try:
+        market = str(request.args.get('market') or 'spot').strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
         instruments = request.args.get('instruments', '')
         if not instruments:
             return jsonify({"success": False, "error": "instruments param required (e.g. BTCUSDT,ETHUSDT)"}), 400
 
         symbols = [s.strip() for s in instruments.split(',')]
         prices = []
+        base_url = FAPI_URL if market == 'futures' else BASE_URL
 
         for sym in symbols:
             resp = requests.get(
-                f"{BASE_URL}/v3/ticker/bookTicker",
+                f"{base_url}/v2/ticker/bookTicker" if market == 'futures' else f"{base_url}/v3/ticker/bookTicker",
                 params={"symbol": sym}, timeout=10,
             )
             if resp.status_code == 200:
@@ -1131,6 +1275,9 @@ def api_binance_pricing():
 def api_binance_candles(symbol):
     """Get candlestick/kline data. Query: interval=1h&limit=100"""
     try:
+        market = str(request.args.get('market') or 'spot').strip().lower() or 'spot'
+        if market not in ('spot', 'futures'):
+            market = 'spot'
         interval = request.args.get('granularity') or request.args.get('interval', '1h')
         limit = request.args.get('count') or request.args.get('limit', '100')
 
@@ -1144,8 +1291,9 @@ def api_binance_candles(symbol):
         if request.args.get('endTime'):
             params['endTime'] = int(request.args['endTime'])
 
+        base_url = FAPI_URL if market == 'futures' else BASE_URL
         resp = requests.get(
-            f"{BASE_URL}/v3/klines",
+            f"{base_url}/v1/klines",
             params=params, timeout=15,
         )
         if resp.status_code == 200:
@@ -1193,7 +1341,7 @@ def api_binance_profit_check():
         if target_profit <= 0:
             return jsonify({"success": False, "error": "target_profit must be > 0"}), 400
 
-        headers = _binance_headers()
+        headers = _binance_headers(market='futures')
 
         # 1. Fetch open futures positions
         resp = _signed_request(
@@ -1202,6 +1350,7 @@ def api_binance_profit_check():
             headers=headers,
             params={},
             timeout=10,
+            market='futures',
         )
         if resp.status_code != 200:
             return jsonify({"success": False, "error": "Failed to fetch positions"}), 500
@@ -1250,6 +1399,7 @@ def api_binance_profit_check():
                         'reduceOnly': 'true',
                     },
                     timeout=15,
+                    market='futures',
                 )
                 if close_resp.status_code == 200:
                     close_results.append({"symbol": symbol, "success": True})
@@ -1271,6 +1421,7 @@ def api_binance_profit_check():
                 headers=headers,
                 params={},
                 timeout=10,
+                market='futures',
             )
             if bal_resp.status_code == 200:
                 balances = bal_resp.json()
@@ -1338,9 +1489,10 @@ def api_binance_withdraw():
             return jsonify({"success": False, "error": "wallet address is required"}), 400
 
         headers = _binance_headers()
+        withdraw_base = BASE_URL.replace('/api', '')
         resp = _signed_request(
             'POST',
-            "https://api.binance.com/sapi/v1/capital/withdraw/apply",
+            f"{withdraw_base}/sapi/v1/capital/withdraw/apply",
             headers=headers,
             params={
                 'coin': 'USDT',
