@@ -707,7 +707,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   double _riskPercent = 5; // Risk per trade as %
   int _maxOpenTrades = 10; // Max simultaneous trades
   double _maxDrawdownPercent = 30; // Max allowed drawdown %
-  String _managementProfile = 'beginner';
+  String _managementProfile = 'balanced';
   int? _manualSignalThreshold;
 
   String _selectedStrategy = 'Trend Following';
@@ -736,8 +736,8 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
   double _profitProtectionActivationMinProfit = 0.50;  // 🎯 Aggressive early activation (was 5)
   double _profitProtectionMinLockedProfit = 0.30;  // Lock 30% minimum (was 0)
   double _profitProtectionMarginTakeProfitPercent = 30;
-  double _profitProtectionRetracePercent = 12;  // 🚨 Fast exit on 12% retrace (was 35) - mimics manual pattern
-  bool _profitProtectionSwitchOnReversal = true;
+  double _profitProtectionRetracePercent = 25;  // Exit on 25% retrace (was 12) - let trends play out
+  bool _profitProtectionSwitchOnReversal = false;  // Don't reverse position on micro-reversals
   bool _profitProtectionAdaptiveByVolatility = true;
   bool _copyTradingEnabled = false;
   String _copyTradingSourceMode = 'auto_success';
@@ -1140,7 +1140,7 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
     return strategies;
   }
 
-    int get _cryptoOnlyAutoThreshold => 5;
+    int get _cryptoOnlyAutoThreshold => 15;
 
     String _binanceQuoteAsset(String symbol) {
       final normalized = _normalizeSymbolBase(symbol);
@@ -2000,7 +2000,7 @@ if (profile == 'beginner') {
          _winRateMin = 58;
          _profitProtectionActivationPercent = 2;
          _profitProtectionActivationMinProfit = 0.50;  // 🎯 Aggressive (was 2)
-         _profitProtectionRetracePercent = 12;  // 🚨 Fast exit (was 22)
+          _profitProtectionRetracePercent = 25;  // Consistent with default profit protection
        } else if (profile == 'small_account') {
          _maxOpenTrades = 10;
          _riskPercent = 5.0;
