@@ -23,7 +23,8 @@ hs_err_pid*.log
 .dart_tool/
 .dart_tool/package_config.json
 .flutter-plugins-dependencies
-pubspec.lock
+# Track pubspec.lock for reproducible CI builds
+# pubspec.lock
 android/key.properties
 android/*.jks
 android/*.keystore
