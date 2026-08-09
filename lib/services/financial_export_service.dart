@@ -397,10 +397,10 @@ class FinancialExportService {
                 ],
               ),
               if (brokerName != null)
-                pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                pw.Table(
+                  border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+                  columnWidths: {0: const pw.FlexColumnWidth(1), 1: const pw.FlexColumnWidth(2)},
                   children: [
-                    pw.SizedBox(height: 12),
                     _pdfTableRow('Broker', brokerName),
                     if (accountNumber != null)
                       _pdfTableRow('Account #', accountNumber),
