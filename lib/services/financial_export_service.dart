@@ -336,6 +336,247 @@ class FinancialExportService {
     );
   }
 
+  // ==================== TRADES REPORT PDF ====================
+
+  static Future<pw.Document> generateTradesPdf({
+    required List<Trade> trades,
+    String? brokerName,
+    String? accountNumber,
+  }) async {
+    final dateFormat = DateFormat('MMM dd, yyyy – hh:mm a');
+    final currencyFormat = NumberFormat.currency(symbol: r'$');
+    final pdf = pw.Document();
+
+    final openTrades = trades.where((t) => t.status == TradeStatus.open).toList();
+    final closedTrades = trades.where((t) => t.status == TradeStatus.closed).toList();
+    final totalRealizedProfit = closedTrades.fold<double>(
+        0.0, (sum, t) => sum + (t.profit ?? 0.0));
+    final totalOpenProfit = openTrades.fold<double>(
+        0.0, (sum, t) => sum + (t.profit ?? 0.0));
+    final winningTrades = closedTrades.where((t) => (t.profit ?? 0) > 0).length;
+    final losingTrades = closedTrades.where((t) => (t.profit ?? 0) <= 0).length;
+    final winRate = closedTrades.isNotEmpty
+        ? (winningTrades / closedTrades.length * 100)
+        : 0.0;
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(40),
+        build: (context) => [
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text('ZWESTA TRADING',
+                          style: pw.TextStyle(
+                              fontSize: 24, fontWeight: pw.FontWeight.bold)),
+                      pw.SizedBox(height: 4),
+                      pw.Text('Trading Analytics Report',
+                          style: pw.TextStyle(
+                              fontSize: 16,
+                              fontWeight: pw.FontWeight.bold,
+                              color: PdfColors.blue)),
+                    ],
+                  ),
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.end,
+                    children: [
+                      pw.Text('Report Generated',
+                          style: const pw.TextStyle(fontSize: 10)),
+                      pw.Text(dateFormat.format(DateTime.now()),
+                          style: pw.TextStyle(
+                              fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                    ],
+                  ),
+                ],
+              ),
+              if (brokerName != null)
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.SizedBox(height: 12),
+                    _pdfTableRow('Broker', brokerName),
+                    if (accountNumber != null)
+                      _pdfTableRow('Account #', accountNumber),
+                  ],
+                ),
+              pw.Divider(height: 30),
+            ],
+          ),
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text('Summary',
+                  style: pw.TextStyle(
+                      fontSize: 14, fontWeight: pw.FontWeight.bold)),
+              pw.SizedBox(height: 12),
+              pw.Table(
+                border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+                columnWidths: {0: const pw.FlexColumnWidth(2), 1: const pw.FlexColumnWidth(2)},
+                children: [
+                  _perfRow('Total Trades', '${trades.length}', isBold: true),
+                  _perfRow('Open Trades', '${openTrades.length}', isBold: true),
+                  _perfRow('Closed Trades', '${closedTrades.length}', isBold: true),
+                  _perfRow('Winning Trades', '$winningTrades', isBold: true),
+                  _perfRow('Losing Trades', '$losingTrades', isBold: true),
+                  _perfRow('Win Rate', '${winRate.toStringAsFixed(1)}%', isBold: true),
+                  _perfRow('Realized P&L', currencyFormat.format(totalRealizedProfit), isBold: true),
+                  _perfRow('Unrealized P&L', currencyFormat.format(totalOpenProfit), isBold: true),
+                ],
+              ),
+              pw.SizedBox(height: 24),
+            ],
+          ),
+          if (closedTrades.isNotEmpty)
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('Closed Trades',
+                    style: pw.TextStyle(
+                        fontSize: 14, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 12),
+                pw.Table(
+                  border:
+                      pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+                  columnWidths: {
+                    0: const pw.FlexColumnWidth(1.2),
+                    1: const pw.FlexColumnWidth(1),
+                    2: const pw.FlexColumnWidth(1),
+                    3: const pw.FlexColumnWidth(1),
+                    4: const pw.FlexColumnWidth(1.2),
+                    5: const pw.FlexColumnWidth(1),
+                    6: const pw.FlexColumnWidth(1.2),
+                  },
+                  children: [
+                    pw.TableRow(
+                      decoration: const pw.BoxDecoration(color: PdfColors.blue50),
+                      children: [
+                        _pdfTableCell('Symbol', isHeader: true),
+                        _pdfTableCell('Type', isHeader: true),
+                        _pdfTableCell('Qty', isHeader: true),
+                        _pdfTableCell('Entry', isHeader: true),
+                        _pdfTableCell('Exit', isHeader: true),
+                        _pdfTableCell('P&L %', isHeader: true),
+                        _pdfTableCell('Open Time', isHeader: true),
+                      ],
+                    ),
+                    ...closedTrades.take(100).map((trade) {
+                      final profitColor =
+                          (trade.profit ?? 0) >= 0 ? PdfColors.green : PdfColors.red;
+                      return pw.TableRow(children: [
+                        _pdfTableCell(trade.symbol),
+                        _pdfTableCell(
+                            trade.type == TradeType.buy ? 'BUY' : 'SELL'),
+                        _pdfTableCell(trade.quantity.toStringAsFixed(4)),
+                        _pdfTableCell(trade.entryPrice.toStringAsFixed(2)),
+                        _pdfTableCell(
+                            (trade.currentPrice ?? 0).toStringAsFixed(2)),
+                        pw.Container(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text(
+                            '${(trade.profitPercentage ?? 0).toStringAsFixed(2)}%',
+                            style: pw.TextStyle(
+                                fontSize: 10, color: profitColor),
+                            textAlign: pw.TextAlign.right,
+                          ),
+                        ),
+                        _pdfTableCell(
+                            dateFormat.format(trade.openedAt.toLocal())),
+                      ]);
+                    }),
+                  ],
+                ),
+                pw.SizedBox(height: 24),
+              ],
+            ),
+          if (openTrades.isNotEmpty)
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('Open Positions',
+                    style: pw.TextStyle(
+                        fontSize: 14, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 12),
+                pw.Table(
+                  border:
+                      pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+                  columnWidths: {
+                    0: const pw.FlexColumnWidth(1.2),
+                    1: const pw.FlexColumnWidth(1),
+                    2: const pw.FlexColumnWidth(1),
+                    3: const pw.FlexColumnWidth(1),
+                    4: const pw.FlexColumnWidth(1.2),
+                    5: const pw.FlexColumnWidth(1),
+                  },
+                  children: [
+                    pw.TableRow(
+                      decoration: const pw.BoxDecoration(color: PdfColors.blue50),
+                      children: [
+                        _pdfTableCell('Symbol', isHeader: true),
+                        _pdfTableCell('Type', isHeader: true),
+                        _pdfTableCell('Qty', isHeader: true),
+                        _pdfTableCell('Entry', isHeader: true),
+                        _pdfTableCell('Current', isHeader: true),
+                        _pdfTableCell('Unrealized P&L', isHeader: true),
+                      ],
+                    ),
+                    ...openTrades.take(100).map((trade) {
+                      final profitColor =
+                          (trade.unrealizedProfit ?? 0) >= 0
+                              ? PdfColors.green
+                              : PdfColors.red;
+                      return pw.TableRow(children: [
+                        _pdfTableCell(trade.symbol),
+                        _pdfTableCell(
+                            trade.type == TradeType.buy ? 'BUY' : 'SELL'),
+                        _pdfTableCell(trade.quantity.toStringAsFixed(4)),
+                        _pdfTableCell(trade.entryPrice.toStringAsFixed(2)),
+                        _pdfTableCell(
+                            (trade.currentPrice ?? 0).toStringAsFixed(2)),
+                        pw.Container(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text(
+                            currencyFormat.format(
+                                trade.unrealizedProfit ?? 0),
+                            style: pw.TextStyle(
+                                fontSize: 10, color: profitColor),
+                            textAlign: pw.TextAlign.right,
+                          ),
+                        ),
+                      ]);
+                    }),
+                  ],
+                ),
+                pw.SizedBox(height: 24),
+              ],
+            ),
+        ],
+        footer: (context) => pw.Column(
+          children: [
+            pw.Divider(),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text('Zwesta Trading System',
+                    style: const pw.TextStyle(fontSize: 8)),
+                pw.Text('Page ${context.pageNumber} of ${context.pagesCount}',
+                    style: const pw.TextStyle(fontSize: 8)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return pdf;
+  }
+
   // ==================== BOT REPORT PDF ====================
 
   static Future<pw.Document> generateBotReportPdf({

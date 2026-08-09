@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/trade.dart';
+import '../services/financial_export_service.dart';
 import '../services/trading_service.dart';
 import '../utils/constants.dart';
 import '../utils/environment_config.dart';
@@ -34,6 +35,44 @@ class _TradesScreenState extends State<TradesScreen> {
             IconButton(
               icon: const Icon(Icons.add),
               onPressed: () => _showOpenTradeDialog(context),
+            ),
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                if (value == 'export_pdf') {
+                  _exportTradesPdf(context);
+                } else if (value == 'share_report') {
+                  _shareTradesReport(context);
+                }
+              },
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: 'export_pdf',
+                  child: Row(
+                    children: [
+                      const Icon(Icons.picture_as_pdf_outlined,
+                          color: Color(0xFF69F0AE), size: 18),
+                      const SizedBox(width: 8),
+                      Text('Export PDF',
+                          style: GoogleFonts.poppins(
+                              color: const Color(0xFF69F0AE), fontSize: 13)),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'share_report',
+                  child: Row(
+                    children: [
+                      const Icon(Icons.share_outlined,
+                          color: Color(0xFF00E5FF), size: 18),
+                      const SizedBox(width: 8),
+                      Text('Share Report',
+                          style: GoogleFonts.poppins(
+                              color: const Color(0xFF00E5FF), fontSize: 13)),
+                    ],
+                  ),
+                ),
+              ],
+              icon: const Icon(Icons.more_vert),
             ),
           ],
         ),
@@ -938,4 +977,97 @@ class _TradesScreenState extends State<TradesScreen> {
           ],
         ),
       );
+
+  Future<void> _exportTradesPdf(BuildContext context) async {
+    final tradingService = Provider.of<TradingService>(context, listen: false);
+    final trades = tradingService.trades;
+    if (trades.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('No trades to export'),
+            backgroundColor: Colors.orange),
+      );
+      return;
+    }
+    try {
+      String? brokerName;
+      String? accountNumber;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        brokerName = prefs.getString('broker');
+        accountNumber = prefs.getString('account_number');
+      } catch (_) {}
+
+      final pdf = await FinancialExportService.generateTradesPdf(
+        trades: trades,
+        brokerName: brokerName,
+        accountNumber: accountNumber,
+      );
+      final filename =
+          'zwesta_trades_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final path =
+          await FinancialExportService.savePdfToDownloads(filename, pdf);
+      if (!context.mounted) return;
+      if (path != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('PDF saved to $path'),
+              backgroundColor: Colors.green),
+        );
+      } else {
+        final fallbackPath =
+            await FinancialExportService.savePdf(filename, pdf);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('PDF saved to $fallbackPath'),
+              backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('PDF export failed: $e'),
+            backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _shareTradesReport(BuildContext context) async {
+    final tradingService = Provider.of<TradingService>(context, listen: false);
+    final trades = tradingService.trades;
+    if (trades.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('No trades to share'),
+            backgroundColor: Colors.orange),
+      );
+      return;
+    }
+    try {
+      String? brokerName;
+      String? accountNumber;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        brokerName = prefs.getString('broker');
+        accountNumber = prefs.getString('account_number');
+      } catch (_) {}
+
+      final pdf = await FinancialExportService.generateTradesPdf(
+        trades: trades,
+        brokerName: brokerName,
+        accountNumber: accountNumber,
+      );
+      final filename =
+          'zwesta_trades_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      await FinancialExportService.sharePdf(pdf, filename);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Share failed: $e'),
+            backgroundColor: Colors.red),
+      );
+    }
+  }
 }

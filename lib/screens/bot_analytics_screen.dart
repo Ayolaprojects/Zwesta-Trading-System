@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/financial_export_service.dart';
 import '../services/ig_trading_service.dart';
 import '../utils/environment_config.dart';
 import 'bot_configuration_screen.dart' show BotConfigurationScreen;
@@ -855,6 +856,16 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
               },
               icon: const Icon(Icons.settings),
               label: const Text('Config'),
+            ),
+            IconButton(
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              tooltip: 'Export PDF',
+              onPressed: () => _exportAnalyticsPdf(context),
+            ),
+            IconButton(
+              icon: const Icon(Icons.share_outlined),
+              tooltip: 'Share Report',
+              onPressed: () => _shareAnalyticsPdf(context),
             ),
           ],
         ),
@@ -2852,5 +2863,54 @@ class _BotAnalyticsScreenState extends State<BotAnalyticsScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _exportAnalyticsPdf(BuildContext context) async {
+    try {
+      final tradeHistory = List<Map<String, dynamic>>.from(_botData['tradeHistory'] ?? []);
+      final openPositions = List<Map<String, dynamic>>.from(_botData['openPositionsPreview'] ?? _botData['openPositions'] ?? []);
+      final pdf = await FinancialExportService.generateBotReportPdf(
+        bot: _botData,
+        tradeHistory: tradeHistory,
+        openPositions: openPositions,
+      );
+      final filename = 'zwesta_bot_report_${_botData['botId'] ?? DateTime.now().millisecondsSinceEpoch}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final path = await FinancialExportService.savePdfToDownloads(filename, pdf);
+      if (!context.mounted) return;
+      if (path != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF saved to $path'), backgroundColor: Colors.green),
+        );
+      } else {
+        final fallbackPath = await FinancialExportService.savePdf(filename, pdf);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF saved to $fallbackPath'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('PDF export failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _shareAnalyticsPdf(BuildContext context) async {
+    try {
+      final tradeHistory = List<Map<String, dynamic>>.from(_botData['tradeHistory'] ?? []);
+      final openPositions = List<Map<String, dynamic>>.from(_botData['openPositionsPreview'] ?? _botData['openPositions'] ?? []);
+      final pdf = await FinancialExportService.generateBotReportPdf(
+        bot: _botData,
+        tradeHistory: tradeHistory,
+        openPositions: openPositions,
+      );
+      final filename = 'zwesta_bot_report_${_botData['botId'] ?? DateTime.now().millisecondsSinceEpoch}.pdf';
+      await FinancialExportService.sharePdf(pdf, filename);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Share failed: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
 }
