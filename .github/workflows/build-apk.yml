@@ -98,9 +98,8 @@ jobs:
           EOF
 
       # ── Build ─────────────────────────────────────────────────────────────
-      - name: Clean & get dependencies
+      - name: Get dependencies
         run: |
-          flutter clean
           flutter pub get 2>&1
           if [ $? -ne 0 ]; then
             echo "ERROR: flutter pub get failed"
@@ -120,6 +119,8 @@ jobs:
 
       - name: Build release APK
         run: |
+          # Ensure package_config.json is fresh before Gradle build
+          flutter pub get 2>&1
           API_URL="${{ github.event.inputs.api_url }}"
           if [ -z "$API_URL" ]; then API_URL="$DEFAULT_API_URL"; fi
           PROD_KEY="${{ secrets.PROD_API_KEY }}"
