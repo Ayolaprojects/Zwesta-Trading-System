@@ -101,7 +101,11 @@ jobs:
       - name: Clean & get dependencies
         run: |
           flutter clean
-          flutter pub get
+          flutter pub get 2>&1
+          if [ $? -ne 0 ]; then
+            echo "ERROR: flutter pub get failed"
+            exit 1
+          fi
 
       - name: Flutter analyze
         run: |
