@@ -721,7 +721,6 @@ class _ConsolidatedReportsScreenState extends State<ConsolidatedReportsScreen> {
         ],
       ),
     );
-  }
 
   Future<void> _exportReportPdf() async {
     final reports = _reportData['reports'] as Map<String, dynamic>? ?? {};

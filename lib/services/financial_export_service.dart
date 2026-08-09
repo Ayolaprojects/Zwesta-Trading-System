@@ -586,6 +586,86 @@ class FinancialExportService {
     );
   }
 
+  // ==================== CONSOLIDATED REPORTS PDF ====================
+
+  static Future<pw.Document> generateReportsPdf({
+    required List<Map<String, dynamic>> reports,
+    required String mode,
+  }) async {
+    final dateFormat = DateFormat('MMM dd, yyyy – hh:mm a');
+    final currencyFormat = NumberFormat.currency(symbol: '\$');
+    final pdf = pw.Document();
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(40),
+        build: (context) => [
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text('ZWESTA TRADING', style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold)),
+              pw.SizedBox(height: 4),
+              pw.Text('Consolidated Reports', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue)),
+            ],
+          ),
+          pw.Divider(height: 30),
+          ...reports.map((report) => _buildReportPage(report, currencyFormat, dateFormat, mode)).expand((w) => [w, pw.SizedBox(height: 24)]),
+        ],
+        footer: (context) => pw.Column(
+          children: [
+            pw.Divider(),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text('Zwesta Trading System', style: const pw.TextStyle(fontSize: 8)),
+                pw.Text('Page ${context.pageNumber} of ${context.pagesCount}', style: const pw.TextStyle(fontSize: 8)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return pdf;
+  }
+
+  static pw.Widget _buildReportPage(
+    Map<String, dynamic> report,
+    NumberFormat currencyFormat,
+    DateFormat dateFormat,
+    String mode,
+  ) {
+    final broker = (report['broker'] ?? 'Unknown').toString();
+    final accountNumber = (report['accountNumber'] ?? 'N/A').toString();
+    final currency = (report['currency'] ?? 'USD').toString();
+    final balance = double.tryParse(report['balance']?.toString() ?? '0') ?? 0.0;
+    final equity = double.tryParse(report['equity']?.toString() ?? '0') ?? 0.0;
+    final profit = double.tryParse(report['netProfit']?.toString() ?? '0') ?? 0.0;
+    final winRate = double.tryParse(report['winRate']?.toString() ?? '0') ?? 0.0;
+    final totalTrades = int.tryParse(report['totalTrades']?.toString() ?? '0') ?? 0;
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text('$broker • $accountNumber', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+        pw.SizedBox(height: 8),
+        pw.Text('Mode: $mode  |  Generated: ${dateFormat.format(DateTime.now())}', style: pw.TextStyle(fontSize: 10, color: PdfColors.grey600)),
+        pw.SizedBox(height: 16),
+        pw.Table(
+          border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+          children: [
+            _pdfTableRow('Balance', currencyFormat.format(balance)),
+            _pdfTableRow('Equity', currencyFormat.format(equity)),
+            _pdfTableRow('Net Profit', currencyFormat.format(profit)),
+            _pdfTableRow('Total Trades', '$totalTrades'),
+            _pdfTableRow('Win Rate', '${winRate.toStringAsFixed(1)}%'),
+          ],
+        ),
+      ],
+    );
+  }
+
   static Future<String?> savePdfToDirectoryGeneric(String directoryPath, String filename, pw.Document pdf) async {
     try {
       final dir = Directory(directoryPath);
