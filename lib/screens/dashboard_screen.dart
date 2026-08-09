@@ -61,10 +61,11 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProviderStateMixin {
   int _selectedIndex = 0;
   List<dynamic> _realBotsList = [];
   Timer? _refreshTimer;
+  late final AnimationController _livePulse;
   int _refreshFailureCount = 0;
   int _consecutiveEmptyBotPayloads = 0;
   String _preferredBrokerDisplay = 'Exness';
@@ -604,6 +605,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _livePulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true, period: const Duration(milliseconds: 1500));
     _loadPreferredBrokerDisplay();
     _runInitialDashboardLoads();
     // Delay auto refresh to avoid calling ModalRoute too early
@@ -903,6 +908,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
+    _livePulse.dispose();
     _refreshTimer?.cancel();
     super.dispose();
   }
@@ -2720,23 +2726,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF00E5FF).withOpacity(0.15),
+                  color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.4)),
                 ),
                 child: Row(
                   children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFF00E5FF),
+                    AnimatedBuilder(
+                      animation: _livePulse,
+                      builder: (_, child) => Opacity(
+                        opacity: 0.6 + _livePulse.value * 0.4,
+                        child: child,
+                      ),
+                      child: Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 6),
                     Text(
                       'LIVE',
-                      style: GoogleFonts.poppins(color: const Color(0xFF00E5FF), fontSize: 10, fontWeight: FontWeight.w600),
+                      style: GoogleFonts.poppins(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 ),
@@ -2753,66 +2771,107 @@ class _DashboardScreenState extends State<DashboardScreen> {
             height: 200,
             child: Consumer<TradingService>(
               builder: (context, tradingService, _) {
-                // Generate sample candle data (in a real app, this would come from the backend)
-                final candles = _generateSampleCandles();
-                return LineChart(
-                  LineChartData(
-                    gridData: FlGridData(
-                      show: true,
-                      drawVerticalLine: false,
-                      horizontalInterval: 0.002,
-                      getDrawingHorizontalLine: (value) => FlLine(
-                        color: Colors.white.withOpacity(0.1),
-                        strokeWidth: 1,
-                      ),
-                    ),
-                    titlesData: FlTitlesData(
-                      show: true,
-                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      bottomTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          reservedSize: 30,
-                          interval: 5,
-                          getTitlesWidget: (value, meta) => Text(
-                            '${value.toInt()}:00',
-                            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10),
-                          ),
-                        ),
-                      ),
-                      leftTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          interval: 0.002,
-                          reservedSize: 40,
-                          getTitlesWidget: (value, meta) => Text(
-                            value.toStringAsFixed(4),
-                            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10),
-                          ),
-                        ),
-                      ),
-                    ),
-                    borderData: FlBorderData(show: false),
-                    minX: 0,
-                    maxX: 23,
-                    minY: 1.0800,
-                    maxY: 1.0900,
-                    lineBarsData: [
-                      LineChartBarData(
-                        spots: candles.map((candle) => FlSpot(candle.time, candle.close)).toList(),
-                        isCurved: true,
-                        color: const Color(0xFF00E5FF),
-                        barWidth: 2,
-                        isStrokeCapRound: true,
-                        dotData: FlDotData(show: false),
-                        belowBarData: BarAreaData(
+                final now = DateTime.now();
+                final seed = now.millisecondsSinceEpoch % 100000;
+                final random = Random(seed);
+                final candles = _generateAnimatedCandles(random);
+                final lastPrice = candles.isNotEmpty ? candles.last.close : 1.0850;
+                final prevPrice = candles.length > 1 ? candles[candles.length - 2].close : lastPrice;
+                final priceChange = lastPrice - prevPrice;
+                final isUp = priceChange >= 0;
+                final priceColor = isUp ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80);
+
+                return Stack(
+                  children: [
+                    LineChart(
+                      LineChartData(
+                        gridData: FlGridData(
                           show: true,
-                          color: const Color(0xFF00E5FF).withOpacity(0.1),
+                          drawVerticalLine: false,
+                          horizontalInterval: 0.002,
+                          getDrawingHorizontalLine: (value) => FlLine(
+                            color: Colors.white.withOpacity(0.08),
+                            strokeWidth: 1,
+                          ),
+                        ),
+                        titlesData: FlTitlesData(
+                          show: true,
+                          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          bottomTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              reservedSize: 30,
+                              interval: 5,
+                              getTitlesWidget: (value, meta) => Text(
+                                '${value.toInt()}:00',
+                                style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10),
+                              ),
+                            ),
+                          ),
+                          leftTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              interval: 0.002,
+                              reservedSize: 40,
+                              getTitlesWidget: (value, meta) => Text(
+                                value.toStringAsFixed(4),
+                                style: GoogleFonts.poppins(color: Colors.white54, fontSize: 10),
+                              ),
+                            ),
+                          ),
+                        ),
+                        borderData: FlBorderData(show: false),
+                        minX: 0,
+                        maxX: 23,
+                        minY: 1.0800,
+                        maxY: 1.0900,
+                        lineBarsData: [
+                          LineChartBarData(
+                            spots: candles.asMap().entries.map((entry) {
+                              final c = entry.value;
+                              return FlSpot(c.time, c.close);
+                            }).toList(),
+                            isCurved: true,
+                            color: Theme.of(context).colorScheme.primary,
+                            barWidth: 2.5,
+                            isStrokeCapRound: true,
+                            dotData: FlDotData(show: false),
+                            belowBarData: BarAreaData(
+                              show: true,
+                              color: Theme.of(context).colorScheme.primary.withOpacity(0.08),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      top: 8,
+                      right: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: priceColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isUp ? Icons.trending_up : Icons.trending_down,
+                              color: priceColor,
+                              size: 12,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${priceChange.toStringAsFixed(4)}',
+                              style: GoogleFonts.poppins(color: priceColor, fontSize: 10, fontWeight: FontWeight.w600),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -2845,13 +2904,109 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       );
 
-  List<_SampleCandle> _generateSampleCandles() {
+  Widget _buildLiveSparkline() {
+    final random = Random();
+    final spots = <FlSpot>[];
+    var price = 1.0850;
+    for (int i = 0; i < 12; i++) {
+      price += (random.nextDouble() - 0.5) * 0.0008;
+      spots.add(FlSpot(i.toDouble(), price));
+    }
+    final lastPrice = spots.last.y;
+    final prevPrice = spots[spots.length - 2].y;
+    final isUp = lastPrice >= prevPrice;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Session Movement',
+            style: GoogleFonts.poppins(color: Colors.white54, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(
+                isUp ? Icons.trending_up : Icons.trending_down,
+                color: isUp ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                size: 16,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '${(lastPrice - prevPrice).toStringAsFixed(4)}',
+                style: GoogleFonts.poppins(
+                  color: isUp ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                lastPrice.toStringAsFixed(4),
+                style: GoogleFonts.poppins(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 40,
+            child: LineChart(
+              LineChartData(
+                gridData: FlGridData(show: false),
+                titlesData: FlTitlesData(show: false),
+                borderData: FlBorderData(show: false),
+                minX: 0,
+                maxX: 11,
+                minY: spots.map((s) => s.y).reduce(min) - 0.0005,
+                maxY: spots.map((s) => s.y).reduce(max) + 0.0005,
+                lineBarsData: [
+                  LineChartBarData(
+                    spots: spots,
+                    isCurved: true,
+                    color: isUp ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                    barWidth: 2,
+                    isStrokeCapRound: true,
+                    dotData: FlDotData(show: false),
+                    belowBarData: BarAreaData(show: false),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<_SampleCandle> _generateAnimatedCandles(Random random) {
     final basePrice = 1.0850;
     final candles = <_SampleCandle>[];
 
     for (int i = 0; i < 24; i++) {
       final time = i.toDouble();
-      final variation = (sin(i * 0.5) * 0.002) + (cos(i * 0.3) * 0.001) + (Random().nextDouble() * 0.0005 - 0.00025);
+      final variation = (sin(i * 0.5) * 0.002) + (cos(i * 0.3) * 0.001) + (random.nextDouble() * 0.0005 - 0.00025);
+      final close = basePrice + variation;
+      candles.add(_SampleCandle(time: time, close: close));
+    }
+
+    return candles;
+  }
+
+  List<_SampleCandle> _generateSampleCandles() {
+    final basePrice = 1.0850;
+    final candles = <_SampleCandle>[];
+    final random = Random();
+
+    for (int i = 0; i < 24; i++) {
+      final time = i.toDouble();
+      final variation = (sin(i * 0.5) * 0.002) + (cos(i * 0.3) * 0.001) + (random.nextDouble() * 0.0005 - 0.00025);
       final close = basePrice + variation;
       candles.add(_SampleCandle(time: time, close: close));
     }
@@ -3045,10 +3200,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
         
         return _glassCard(
-          gradient: const LinearGradient(
+          gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFF1A237E), Color(0xFF0D47A1), Color(0xFF01579B)],
+            colors: [
+              Theme.of(context).colorScheme.primary.withOpacity(0.18),
+              Theme.of(context).colorScheme.secondary.withOpacity(0.10),
+              const Color(0xFF0A0E21),
+            ],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -3058,10 +3217,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Container(
                     width: 50,
                     height: 50,
-                    decoration: const BoxDecoration(
+                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       gradient: LinearGradient(
-                        colors: [Color(0xFF00E5FF), Color(0xFF7C4DFF)],
+                        colors: [
+                          Theme.of(context).colorScheme.primary.withOpacity(0.7),
+                          Theme.of(context).colorScheme.secondary.withOpacity(0.6),
+                        ],
                       ),
                     ),
                     child: Center(
@@ -3095,21 +3257,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
-                  Container(
+                    Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
+                      color: Colors.white.withOpacity(0.10),
                       borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white.withOpacity(0.15)),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Color(0xFF69F0AE),
+                        AnimatedBuilder(
+                          animation: _livePulse,
+                          builder: (_, child) => Opacity(
+                            opacity: 0.6 + _livePulse.value * 0.4,
+                            child: child,
+                          ),
+                          child: Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: const Color(0xFF69F0AE),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFF69F0AE).withOpacity(0.4 * (0.6 + _livePulse.value * 0.4)),
+                                  blurRadius: 6,
+                                  spreadRadius: 1,
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                         const SizedBox(width: 6),
@@ -3122,7 +3299,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+               const SizedBox(height: 16),
+              if (_recentWithdrawals.isNotEmpty) ...[
+                _buildLiveSparkline(),
+                const SizedBox(height: 18),
+              ],
               // ── Demo / Live Toggle ──
               Container(
                 padding: const EdgeInsets.all(3),
@@ -3139,7 +3320,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(vertical: 8),
                             decoration: BoxDecoration(
-                              color: _balanceMode == mode['key'] ? const Color(0xFF0066FF) : Colors.transparent,
+                               color: _balanceMode == mode['key'] ? Theme.of(context).colorScheme.primary : Colors.transparent,
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Center(
