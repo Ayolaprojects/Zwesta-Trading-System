@@ -520,7 +520,13 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
           final matchesFilter = _filterStatus == 'all' ||
               (_filterStatus == 'active' && isEnabled) ||
               (_filterStatus == 'inactive' && !isEnabled);
-          final matchesMode = _isLiveBot(bot) == (_tradingMode.toUpperCase() == 'LIVE');
+          // NOTE: Previously bots were hidden unless their own is_live flag
+          // matched the app's global trading_mode switcher. Now that the backend
+          // returns both demo and live bots (mode=ALL), we keep ALL active bots
+          // visible and rely on the per-card LIVE/DEMO badge to distinguish them.
+          // The global switcher still re-fetches, but it no longer hides the other
+          // mode's bots — so a LIVE bot stays visible while the app is in DEMO.
+          final matchesMode = true;
           return matchesSearch && matchesFilter && matchesMode;
         }).toList();
 

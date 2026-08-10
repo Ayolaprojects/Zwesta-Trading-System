@@ -223,7 +223,11 @@ class BotService extends ChangeNotifier {
       }
 
       final modeParam = mode.trim().toUpperCase();
-      final summaryMode = modeParam == 'LIVE' || modeParam == 'DEMO' ? modeParam : 'ALL';
+      // Always fetch BOTH demo and live bots so the dashboard can show every
+      // active bot regardless of the app's global trading_mode switcher. The
+      // per-card LIVE/DEMO badge (not the global filter) distinguishes them,
+      // and the dashboard applies its own mode filter client-side when needed.
+      final summaryMode = 'ALL';
       var url = '$_apiUrl/api/bot/summary?mode=$summaryMode&include_broker_snapshots=true';
       if (includeHistory) {
         url += '&include_history=true';
