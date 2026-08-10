@@ -29,6 +29,7 @@ $steps = @(
     @{ Name = 'Install dependencies'; Script = '.\vps_rdp_bundle\01_install_dependencies.ps1'; Args = @('-AppPath', $AppPath, '-PythonExe', $PythonExe, '-RequirementsFile', $RequirementsFile) },
     @{ Name = 'Prepare .env'; Script = '.\vps_rdp_bundle\02_prepare_env.ps1'; Args = @('-AppPath', $AppPath) },
     @{ Name = 'Open firewall'; Script = '.\vps_rdp_bundle\05_open_firewall_port.ps1'; Args = @('-Port', "$Port", '-RuleName', 'Zwesta Backend API') },
+    @{ Name = 'Start Exness MT5 terminals'; Script = '.\vps_rdp_bundle\07_start_exness_terminals.ps1'; Args = @('-AppPath', $AppPath) },
     @{ Name = 'Register startup task'; Script = '.\vps_rdp_bundle\04_register_startup_task.ps1'; Args = @('-AppPath', $AppPath, '-TaskName', $TaskName, '-Port', "$Port") }
 )
 

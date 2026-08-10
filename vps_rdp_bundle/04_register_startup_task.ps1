@@ -12,6 +12,15 @@ if (-not (Test-Path -LiteralPath $scriptPath)) {
 }
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -AppPath `"$AppPath`" -Port $Port"
+
+# Also register the Exness MT5 terminal keep-alive supervisor so the backend can
+# read live Exness positions via the MT5 IPC channel.
+$terminalScript = Join-Path $AppPath 'vps_rdp_bundle\07_start_exness_terminals.ps1'
+if (Test-Path -LiteralPath $terminalScript) {
+    $terminalAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$terminalScript`" -AppPath `"$AppPath`""
+    Register-ScheduledTask -TaskName 'ZwestaExnessTerminals' -Action $terminalAction -Trigger (New-ScheduledTaskTrigger -AtStartup) -Principal $principal -Settings $settings -Force | Out-Null
+    Write-Host "Scheduled task 'ZwestaExnessTerminals' registered." -ForegroundColor Green
+}
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew

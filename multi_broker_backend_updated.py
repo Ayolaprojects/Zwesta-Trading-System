@@ -16777,6 +16777,80 @@ def get_account_detailed():
         }), 500
 
 
+# Last-known open positions per credential. Populated whenever a live broker
+# connection successfully returns positions, and served as a fallback when the
+# live connection is unavailable (e.g. the MT5 terminal is not running on the
+# VPS). This keeps manually-opened positions visible in the app instead of them
+# vanishing the moment the terminal session drops.
+_MT5_POSITIONS_CACHE: Dict[str, Dict[str, Any]] = {}
+_MT5_POSITIONS_CACHE_LOCK = threading.Lock()
+
+
+def _cache_positions_for_credential(credential_id: str, broker_positions: List[Dict[str, Any]]) -> None:
+    try:
+        normalized = [
+            {
+                'symbol': p.get('symbol') or p.get('instrument'),
+                'type': p.get('type') or p.get('direction'),
+                'volume': p.get('volume') or p.get('size'),
+                'openPrice': p.get('openPrice') or p.get('level'),
+                'price_current': p.get('price_current') or p.get('currentPrice'),
+                'profit': p.get('profit') or p.get('pnl') or p.get('profit_loss') or p.get('unrealizedPL'),
+                'ticket': p.get('ticket') or p.get('deal_id') or p.get('trade_id'),
+                'time': p.get('time') or p.get('openTime'),
+            }
+            for p in (broker_positions or [])
+        ]
+        with _MT5_POSITIONS_CACHE_LOCK:
+            _MT5_POSITIONS_CACHE[str(credential_id)] = {
+                'positions': normalized,
+                'ts': time.time(),
+            }
+    except Exception as exc:
+        logger.warning(f"Could not cache positions for {credential_id}: {exc}")
+
+
+def _cached_positions_for_credential(credential_id: str) -> List[Dict[str, Any]]:
+    with _MT5_POSITIONS_CACHE_LOCK:
+        entry = _MT5_POSITIONS_CACHE.get(str(credential_id))
+    if not entry:
+        return []
+    return list(entry.get('positions') or [])
+
+
+def _append_cached_positions(positions: List[Dict[str, Any]], cred: Dict[str, Any],
+                              broker_name: str, identity_fields: Dict[str, Any]) -> None:
+    """Append last-known positions from cache when the live connection is down."""
+    cached = _cached_positions_for_credential(cred['credential_id'])
+    if not cached:
+        return
+    logger.info(
+        f"Serving {len(cached)} cached position(s) for {broker_name} "
+        f"{cred['account_number']} (live terminal unavailable)"
+    )
+    for position in cached:
+        pnl = position.get('profit') or position.get('pnl') or position.get('unrealizedPL') or 0
+        positions.append({
+            'credentialId': cred['credential_id'],
+            'broker': broker_name,
+            'accountNumber': cred['account_number'],
+            'market': identity_fields.get('market', ''),
+            'server': identity_fields.get('server', ''),
+            'brokerDisplay': identity_fields.get('brokerDisplay', broker_name),
+            'accountDisplay': identity_fields.get('accountDisplay', cred['account_number']),
+            'accountKey': identity_fields.get('accountKey', ''),
+            'modeLabel': identity_fields.get('modeLabel', ''),
+            'positionId': str(position.get('ticket') or position.get('deal_id') or position.get('trade_id') or ''),
+            'instrument': position.get('symbol') or position.get('instrument') or '',
+            'direction': position.get('type') or position.get('direction') or '',
+            'size': float(position.get('volume', position.get('size', 0)) or 0),
+            'level': float(position.get('openPrice', position.get('level', 0)) or 0),
+            'unrealizedPL': float(pnl or 0),
+            'dataSource': 'cached',
+            'raw': position,
+        })
+
+
 @app.route('/api/positions/detailed', methods=['GET'])
 @require_session
 def get_positions_detailed():
@@ -16863,10 +16937,15 @@ def get_positions_detailed():
             )
             if not broker_conn:
                 warnings_list.append(f"{broker_name} {cred['account_number']}: {conn_label}")
+                # Fall back to last-known positions so manually-opened trades
+                # remain visible when the live terminal session is down.
+                _append_cached_positions(positions, cred, broker_name, identity_fields)
                 continue
 
             try:
                 broker_positions = broker_conn.get_positions() or []
+                if broker_positions:
+                    _cache_positions_for_credential(cred['credential_id'], broker_positions)
                 for position in broker_positions:
                     pnl = position.get('pnl', position.get('profit_loss', position.get('unrealizedPL', 0)))
                     positions.append({
@@ -16889,6 +16968,7 @@ def get_positions_detailed():
                     })
             except Exception as e:
                 warnings_list.append(f"{broker_name} {cred['account_number']}: {e}")
+                _append_cached_positions(positions, cred, broker_name, identity_fields)
             finally:
                 if hasattr(broker_conn, 'disconnect'):
                     try:
