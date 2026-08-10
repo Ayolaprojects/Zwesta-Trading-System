@@ -16909,8 +16909,18 @@ def get_positions_detailed():
         for cred in rows:
             broker_name = canonicalize_broker_name(cred.get('broker_name'))
             effective_is_live = int(normalize_mt5_is_live_flag(broker_name, cred.get('is_live'), cred.get('server')))
+            # NOTE: Previously this skipped credentials whose is_live flag did not
+            # match the requested mode. That hid real open positions (e.g. a LIVE
+            # Binance account when the app trading_mode pref was DEMO), so the
+            # Trades screen disagreed with the broker terminal. Each credential is
+            # connected to its own account individually, so we now include all
+            # active credentials and only use the mode as a soft preference.
             if effective_is_live != desired_live:
-                continue
+                logger.info(
+                    f"Mode mismatch for {broker_name} {cred['account_number']} "
+                    f"(credential is_live={effective_is_live}, requested mode={desired_live}); "
+                    f"still including its open positions in the detailed view"
+                )
 
             identity_fields = _build_account_identity_fields(
                 broker_name=broker_name,
@@ -47576,15 +47586,24 @@ def _build_binance_bot_broker_snapshot(
 
     binance_market = str(bot.get('binanceMarket') or bot.get('market') or '').strip().lower()
     def _position_matches(position: Dict[str, Any]) -> bool:
+        # Show every position that is genuinely open on the exchange for this
+        # bot's Binance credential. Previously positions were hidden unless their
+        # symbol was in the bot's configured symbol list OR their ticket was in the
+        # bot's tracked open_positions map. That dropped real open trades (e.g.
+        # opened by a previous bot run or manually) so the app disagreed with the
+        # Binance terminal. The bot card now reflects the true account state; the
+        # symbol/ticket match is only used as a soft preference, not a gate.
         if not bot_symbols and not tracked_tickets:
-            return binance_market == 'futures'
+            return binance_market == 'futures' or binance_market == 'spot'
         position_ticket = str(position.get('ticket') or '').strip()
         if position_ticket and position_ticket in tracked_tickets:
             return True
         position_symbol = str(position.get('symbol') or '').strip().upper()
         if position_symbol in bot_symbols:
             return True
-        return False
+        # Fallback: include any live exchange position so the dashboard always
+        # matches what the user sees in the Binance terminal.
+        return True
 
     def _trade_matches(trade: Dict[str, Any]) -> bool:
         if not bot_symbols and not tracked_tickets:
