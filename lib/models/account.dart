@@ -5,6 +5,7 @@ class Account {
   final double usedMargin;
   final double availableMargin;
   final double profit;
+  final double equity;
   final String currency;
   final String status;
   final DateTime createdAt;
@@ -19,6 +20,7 @@ class Account {
     required this.usedMargin,
     required this.availableMargin,
     required this.profit,
+    this.equity = 0.0,
     required this.currency,
     required this.status,
     required this.createdAt,
@@ -35,6 +37,7 @@ class Account {
       usedMargin: (json['usedMargin'] ?? 0).toDouble(),
       availableMargin: (json['availableMargin'] ?? 0).toDouble(),
       profit: (json['profit'] ?? 0).toDouble(),
+      equity: (json['equity'] ?? 0).toDouble(),
       currency: json['currency'] ?? 'USD',
       status: json['status'] ?? 'active',
       createdAt: DateTime.parse(json['createdAt'] ?? DateTime.now().toString()),
@@ -51,6 +54,7 @@ class Account {
       'balance': balance,
       'usedMargin': usedMargin,
       'availableMargin': availableMargin,
+      'equity': equity,
       'currency': currency,
       'status': status,
       'createdAt': createdAt.toIso8601String(),

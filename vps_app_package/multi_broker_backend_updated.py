@@ -12540,25 +12540,21 @@ def filter_mt5_credentials_for_active_session(
         return credentials
 
     mt5_brokers = {'Exness', 'MetaTrader5', 'PXBT', 'XM', 'XM Global'}
-    filtered_credentials: List[Dict[str, Any]] = []
-    matched_mt5_account = False
-
-    for cred in credentials:
-        broker_name = canonicalize_broker_name(cred.get('broker_name'))
-        if broker_name in mt5_brokers:
-            if str(cred.get('account_number') or '').strip() == active_account_number:
-                filtered_credentials.append(cred)
-                matched_mt5_account = True
-        else:
-            filtered_credentials.append(cred)
+    matched_mt5_account = any(
+        canonicalize_broker_name(cred.get('broker_name')) in mt5_brokers
+        and str(cred.get('account_number') or '').strip() == active_account_number
+        for cred in credentials
+    )
 
     if matched_mt5_account:
         logger.info(
-            f"Restricting MT5 credential scan to active session account {active_account_number} "
-            f"(preventing cross-account MT5 polling)"
+            f"Active MT5 session matches one stored credential ({active_account_number}); "
+            f"keeping all credentials so non-matching accounts are still polled individually."
         )
-        return filtered_credentials
 
+    # NOTE: We no longer drop MT5 credentials that don't match the active session.
+    # get_broker_connection() connects to each credential's own account/server, so
+    # filtering here could silently hide a user's real Exness open positions.
     return credentials
 
 # ==================== IN-MEMORY STORAGE ====================
@@ -47562,6 +47558,11 @@ def _build_binance_bot_broker_snapshot(
         for symbol in (bot.get('symbols') or [])
         if str(symbol).strip()
     }
+    if not bot_symbols:
+        fallback_symbol = str(bot.get('symbol') or '').strip()
+        if fallback_symbol:
+            bot_symbols.add(fallback_symbol.upper())
+
     tracked_tickets = {
         str(ticket).strip()
         for ticket in (bot.get('open_positions') or {}).keys()
@@ -47573,32 +47574,26 @@ def _build_binance_bot_broker_snapshot(
             if trade_ticket:
                 tracked_tickets.add(trade_ticket)
 
+    binance_market = str(bot.get('binanceMarket') or bot.get('market') or '').strip().lower()
     def _position_matches(position: Dict[str, Any]) -> bool:
         if not bot_symbols and not tracked_tickets:
-            return True
+            return binance_market == 'futures'
         position_ticket = str(position.get('ticket') or '').strip()
         if position_ticket and position_ticket in tracked_tickets:
             return True
         position_symbol = str(position.get('symbol') or '').strip().upper()
         if position_symbol in bot_symbols:
             return True
-        # For Binance futures (shared account), return ALL exchange positions
-        # since the exchange tracks positions by symbol and multiple bots/
-        # strategies may operate across symbols on the same credential
-        if str(bot.get('binanceMarket') or bot.get('market') or '').strip().lower() == 'futures':
-            return True
         return False
 
     def _trade_matches(trade: Dict[str, Any]) -> bool:
         if not bot_symbols and not tracked_tickets:
-            return True
+            return binance_market == 'futures'
         trade_ticket = str(trade.get('ticket') or '').strip()
         if trade_ticket and trade_ticket in tracked_tickets:
             return True
         trade_symbol = str(trade.get('symbol') or '').strip().upper()
         if trade_symbol in bot_symbols:
-            return True
-        if str(bot.get('binanceMarket') or bot.get('market') or '').strip().lower() == 'futures':
             return True
         return False
 
@@ -47910,12 +47905,31 @@ def bot_summary():
             logger.warning("bot_summary fallback: _get_trades_table_stats_by_bot is unavailable in this runtime; using runtime counters only")
             trade_stats_loader = lambda bot_ids: {}
 
+        def _is_runtime_bot_backed_by_persistence(runtime_bot: Dict[str, Any]) -> bool:
+            runtime_bot_id = str(runtime_bot.get('botId') or '').strip()
+            if not runtime_bot_id:
+                return False
+            if not persisted_lookup_ready or runtime_bot_id in persisted_bot_ids:
+                return True
+            is_enabled = bool(runtime_bot.get('enabled'))
+            is_running = bool(running_bots.get(runtime_bot_id, False))
+            if is_enabled or is_running:
+                logger.warning(
+                    f"[BOT SUMMARY] allowing runtime-only active bot {runtime_bot_id} for user {user_id} "
+                    "because it is enabled or marked running despite missing user_bots row"
+                )
+                return True
+            logger.warning(
+                f"Skipping runtime-only ghost bot {runtime_bot_id} from /api/bot/summary for user {user_id} "
+                "because no backing user_bots row exists"
+            )
+            return False
+
         has_matching_runtime_bot = False
         for bot in list(active_bots.values()):
             if bot.get('user_id') != user_id:
                 continue
-            runtime_bot_id = str(bot.get('botId') or '').strip()
-            if persisted_lookup_ready and runtime_bot_id and runtime_bot_id not in persisted_bot_ids:
+            if not _is_runtime_bot_backed_by_persistence(bot):
                 continue
             if mode_filter in ('LIVE', 'DEMO'):
                 bot_mode = str(bot.get('mode') or 'demo').upper()
@@ -47959,17 +47973,13 @@ def bot_summary():
         for runtime_bot in list(active_bots.values()):
             if runtime_bot.get('user_id') != user_id:
                 continue
-            runtime_bot_id = str(runtime_bot.get('botId') or '').strip()
-            if persisted_lookup_ready and runtime_bot_id and runtime_bot_id not in persisted_bot_ids:
-                logger.warning(
-                    f"Skipping runtime-only ghost bot {runtime_bot_id} from /api/bot/summary for user {user_id} "
-                    f"because no backing user_bots row exists"
-                )
+            if not _is_runtime_bot_backed_by_persistence(runtime_bot):
                 continue
             if mode_filter in ('LIVE', 'DEMO'):
                 runtime_mode = (runtime_bot.get('mode') or 'demo').upper()
                 if runtime_mode != mode_filter:
                     continue
+            runtime_bot_id = str(runtime_bot.get('botId') or '').strip()
             if runtime_bot_id:
                 runtime_bot_ids.append(runtime_bot_id)
         trade_stats_by_bot = trade_stats_loader(runtime_bot_ids)
@@ -47983,11 +47993,7 @@ def bot_summary():
                 continue
 
             bot_id = str(bot.get('botId') or '').strip()
-            if persisted_lookup_ready and bot_id and bot_id not in persisted_bot_ids:
-                logger.warning(
-                    f"Skipping runtime-only ghost bot {bot_id} from /api/bot/summary for user {user_id} "
-                    f"because no backing user_bots row exists"
-                )
+            if not _is_runtime_bot_backed_by_persistence(bot):
                 continue
 
             if mode_filter in ('LIVE', 'DEMO'):

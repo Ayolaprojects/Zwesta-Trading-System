@@ -71,7 +71,9 @@ class TradingService extends ChangeNotifier {
 
   // Account metrics getters
   double get accountBalance => primaryAccount?.balance ?? 0.0;
-  double get accountEquity => (primaryAccount?.balance ?? 0.0) + (primaryAccount?.profit ?? 0.0);
+  double get accountEquity => primaryAccount?.equity > 0
+      ? primaryAccount!.equity
+      : (primaryAccount?.balance ?? 0.0) + (primaryAccount?.profit ?? 0.0);
   double get freeMargin => primaryAccount?.availableMargin ?? 0.0;
   double get accountProfit => primaryAccount?.profit ?? 0.0;
 
@@ -90,6 +92,18 @@ class TradingService extends ChangeNotifier {
   }
 
   Account? get primaryAccount => _accounts.isNotEmpty ? _accounts[0] : null;
+
+  /// Currency inferred from the first open position that carries one, falling
+  /// back to the primary account currency. Used when a position lacks its own
+  /// currency field (e.g. from /api/positions/detailed).
+  String get _positionFallbackCurrency {
+    for (final t in _trades) {
+      if (t.currency.isNotEmpty && t.currency.toUpperCase() != 'ZAR') {
+        return t.currency.toUpperCase();
+      }
+    }
+    return accountCurrency;
+  }
 
   List<Trade> get activeTrades => _trades.where((t) => t.status == TradeStatus.open).toList();
   List<Trade> get closedTrades => _trades.where((t) => t.status == TradeStatus.closed).toList();
@@ -388,20 +402,28 @@ class TradingService extends ChangeNotifier {
               print('✅ Fetched ${positions.length} live MT5 positions');
             }
             
-            allTrades.addAll(positions.map((p) => Trade(
-                id: (p['ticket'] ?? p['id'] ?? DateTime.now().millisecondsSinceEpoch).toString(),
-                symbol: (p['symbol'] ?? 'UNKNOWN').toString(),
-                type: (p['type']?.toString().toUpperCase() == 'SELL') ? TradeType.sell : TradeType.buy,
-                quantity: _asDouble(p['volume'] ?? p['lots'] ?? 0),
-                entryPrice: _asDouble(p['openPrice'] ?? p['price'] ?? 0),
-                currentPrice: _asDouble(p['currentPrice'] ?? p['openPrice'] ?? p['price'] ?? 0),
+            // The /api/positions/detailed endpoint returns fields:
+            //   instrument, direction, size, level, unrealizedPL, positionId, currency, openTime
+            // Normalize both naming styles so Exness (MT5) and other brokers render correctly.
+            final posCurrency = (p['currency'] ?? _positionFallbackCurrency ?? 'USD').toString().toUpperCase();
+            allTrades.add(Trade(
+                id: (p['positionId'] ?? p['ticket'] ?? p['id'] ?? DateTime.now().millisecondsSinceEpoch).toString(),
+                symbol: (p['instrument'] ?? p['symbol'] ?? 'UNKNOWN').toString(),
+                type: ((p['direction'] ?? p['type'] ?? '').toString().toUpperCase() == 'SELL')
+                    ? TradeType.sell
+                    : TradeType.buy,
+                quantity: _asDouble(p['size'] ?? p['volume'] ?? p['lots'] ?? 0),
+                entryPrice: _asDouble(p['level'] ?? p['openPrice'] ?? p['price'] ?? 0),
+                currentPrice: _asDouble(
+                    p['currentPrice'] ?? p['level'] ?? p['openPrice'] ?? p['price'] ?? 0),
                 takeProfit: null,
                 stopLoss: null,
                 status: TradeStatus.open,
                 openedAt: _parseBackendTime(p['openTime'] ?? p['time']),
-                profit: _asDouble(p['pnl'] ?? p['profit'] ?? 0),
+                profit: _asDouble(p['unrealizedPL'] ?? p['pnl'] ?? p['profit'] ?? 0),
                 profitPercentage: _asDouble(p['pnlPercentage'] ?? p['profitPercent'] ?? 0),
-              )));
+                currency: posCurrency,
+              ));
           }
         } catch (e) {
           print('Note: Live MT5 positions not available: $e');
@@ -470,6 +492,7 @@ class TradingService extends ChangeNotifier {
               usedMargin: ((accData['margin'] ?? 0) as num).toDouble(),
               availableMargin: ((accData['marginFree'] ?? 0) as num).toDouble(),
               profit: (accData['profit'] ?? 0.0).toDouble(),
+              equity: (accData['equity'] as num? ?? 0.0).toDouble(),
               currency: accData['currency'] ?? 'USD',
               status: 'active',
               createdAt: DateTime.now().subtract(const Duration(days: 365)),

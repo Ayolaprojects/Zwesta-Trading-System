@@ -286,7 +286,7 @@ class _TradesScreenState extends State<TradesScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'R${value.toStringAsFixed(2)}',
+            '${tradingService.accountCurrencySymbol}${value.toStringAsFixed(2)}',
             style: GoogleFonts.poppins(
               color: color,
               fontSize: 14,
