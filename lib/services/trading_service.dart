@@ -71,9 +71,11 @@ class TradingService extends ChangeNotifier {
 
   // Account metrics getters
   double get accountBalance => primaryAccount?.balance ?? 0.0;
-  double get accountEquity => primaryAccount?.equity > 0
-      ? primaryAccount!.equity
-      : (primaryAccount?.balance ?? 0.0) + (primaryAccount?.profit ?? 0.0);
+  double get accountEquity {
+    final account = primaryAccount;
+    if (account != null && account.equity > 0) return account.equity;
+    return (account?.balance ?? 0.0) + (account?.profit ?? 0.0);
+  }
   double get freeMargin => primaryAccount?.availableMargin ?? 0.0;
   double get accountProfit => primaryAccount?.profit ?? 0.0;
 
@@ -405,8 +407,9 @@ class TradingService extends ChangeNotifier {
             // The /api/positions/detailed endpoint returns fields:
             //   instrument, direction, size, level, unrealizedPL, positionId, currency, openTime
             // Normalize both naming styles so Exness (MT5) and other brokers render correctly.
-            final posCurrency = (p['currency'] ?? _positionFallbackCurrency ?? 'USD').toString().toUpperCase();
-            allTrades.add(Trade(
+            allTrades.addAll(positions.map((p) {
+              final posCurrency = (p['currency'] ?? _positionFallbackCurrency ?? 'USD').toString().toUpperCase();
+              return Trade(
                 id: (p['positionId'] ?? p['ticket'] ?? p['id'] ?? DateTime.now().millisecondsSinceEpoch).toString(),
                 symbol: (p['instrument'] ?? p['symbol'] ?? 'UNKNOWN').toString(),
                 type: ((p['direction'] ?? p['type'] ?? '').toString().toUpperCase() == 'SELL')
@@ -423,7 +426,8 @@ class TradingService extends ChangeNotifier {
                 profit: _asDouble(p['unrealizedPL'] ?? p['pnl'] ?? p['profit'] ?? 0),
                 profitPercentage: _asDouble(p['pnlPercentage'] ?? p['profitPercent'] ?? 0),
                 currency: posCurrency,
-              ));
+              );
+            }));
           }
         } catch (e) {
           print('Note: Live MT5 positions not available: $e');

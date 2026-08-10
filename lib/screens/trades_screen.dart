@@ -211,19 +211,19 @@ class _TradesScreenState extends State<TradesScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
                     _buildAccountMetric('Account Balance',
-                        tradingService.accountBalance, Colors.white),
+                        tradingService.accountBalance, Colors.white, tradingService.accountCurrencySymbol),
                     Container(
                         width: 1,
                         height: 40,
                         color: Colors.white.withOpacity(0.1)),
                     _buildAccountMetric('Equity', tradingService.accountEquity,
-                        const Color(0xFF69F0AE)),
+                        const Color(0xFF69F0AE), tradingService.accountCurrencySymbol),
                     Container(
                         width: 1,
                         height: 40,
                         color: Colors.white.withOpacity(0.1)),
                     _buildAccountMetric('Free Margin',
-                        tradingService.freeMargin, const Color(0xFF00E5FF)),
+                        tradingService.freeMargin, const Color(0xFF00E5FF), tradingService.accountCurrencySymbol),
                   ],
                 ),
               ),
@@ -278,7 +278,7 @@ class _TradesScreenState extends State<TradesScreen> {
         ),
       );
 
-  Widget _buildAccountMetric(String label, double value, Color color) => Column(
+  Widget _buildAccountMetric(String label, double value, Color color, String currencySymbol) => Column(
         children: [
           Text(
             label,
@@ -286,7 +286,7 @@ class _TradesScreenState extends State<TradesScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            '${tradingService.accountCurrencySymbol}${value.toStringAsFixed(2)}',
+            '$currencySymbol${value.toStringAsFixed(2)}',
             style: GoogleFonts.poppins(
               color: color,
               fontSize: 14,
