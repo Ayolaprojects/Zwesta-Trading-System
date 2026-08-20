@@ -1,0 +1,72 @@
+INFO:multi_broker_backend_updated:Runtime infrastructure: {'database_backend': 'sqlite', 'active_database_target': 'C:\\zwesta-trader\\Zwesta Flutter App\\zwesta_trading_test.db', 'database_path': 'C:\\zwesta-trader\\Zwesta Flutter App\\zwesta_trading_test.db', 'database_url_configured': False, 'postgres_mode': False, 'sqlalchemy_ready': False, 'redis_url_configured': False, 'redis_ready': False}
+INFO:multi_broker_backend_updated:\u2705 MT5 connection lock initialized - ensures sequential MT5 connections
+INFO:multi_broker_backend_updated:\u2705 MT5 account queue initialized - supports multi-user account switching
+INFO:multi_broker_backend_updated:\u2705 Bot creation lock initialized - prevents concurrent bot creation
+INFO:multi_broker_backend_updated:\u2705 Balance cache initialized - stores real balances from successful MT5 connections
+INFO:multi_broker_backend_updated:\u2705 Credential cache initialized - caches broker credentials
+INFO:multi_broker_backend_updated:\u2705 Failed auth cooldown initialized - prevents repeated bad credential retries
+INFO:multi_broker_backend_updated:\u2705 Balance fallback cooldown initialized - prevents repeated MT5 balance probes
+INFO:multi_broker_backend_updated:\u2705 MT5 terminal startup tracker initialized - prevents duplicate local launches
+INFO:multi_broker_backend_updated:\u2705 Balance cache clean ù real balances populated by trading loops
+INFO:multi_broker_backend_updated:\u2705 Global MT5 singleton initialized - will reuse single terminal across all bots
+INFO:multi_broker_backend_updated:\u2705 WebSocket support initialized (flask-sock)
+INFO:worker_manager:WorkerPoolManager: DISABLED (WORKER_COUNT=0, using single-process mode)
+INFO:worker_manager:WorkerPoolManager runtime: {'database_backend': 'sqlite', 'active_database_target': 'C:\\zwesta-trader\\Zwesta Flutter App\\zwesta_trading_test.db', 'database_path': 'C:\\zwesta-trader\\Zwesta Flutter App\\zwesta_trading_test.db', 'database_url_configured': False, 'postgres_mode': False, 'sqlalchemy_ready': False, 'redis_url_configured': False, 'redis_ready': False}
+WARNING:multi_broker_backend_updated:Binance worker manager unavailable (No module named 'binance_worker_manager') - Binance worker pool disabled until binance_worker_manager.py is deployed
+INFO:rest_price_feed:REST Price Feed initialized (twelve_data=no, alpha_vantage=no)
+INFO:mt5_socket_bridge:No SOCKET_BRIDGES configured (use SOCKET_BRIDGES=broker:account:port,...)
+INFO:trade_router:TradeRouter initialized: metaapi=False, workers=False, prefer_rest=True
+INFO:multi_broker_backend_updated:[DUAL MT5] \u2705 Exness DEMO terminal hint: C:\MT5\Exness-Demo
+INFO:multi_broker_backend_updated:[DUAL MT5] \u2705 Exness LIVE terminal hint: C:\MT5\Exness-Live
+INFO:multi_broker_backend_updated:Found Exness MT5 (DEMO) at: C:\MT5\Exness-Demo
+INFO:multi_broker_backend_updated:[DUAL MT5] Resolved Exness DEMO executable: C:\Program Files\MetaTrader 5\terminal64.exe
+INFO:multi_broker_backend_updated:[DUAL MT5] Resolved Exness LIVE executable: C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe
+INFO:multi_broker_backend_updated:[DEMO MODE] \U0001f7e2 USING DEMO ACCOUNTS (Safe for Testing)
+INFO:multi_broker_backend_updated:[DEMO] Using Exness demo credentials - Account: 298997455
+INFO:multi_broker_backend_updated:[DEMO] To trade live, set ENVIRONMENT=LIVE in .env and restart
+INFO:multi_broker_backend_updated:[INIT] Backend initialized in DEMO mode
+INFO:multi_broker_backend_updated:[DEMO] DEMO MODE - Exness Account: 298997455 (Demo)
+INFO:multi_broker_backend_updated:[DEMO] Available in DEMO: 298997455
+INFO:multi_broker_backend_updated:[DEMO] Available in LIVE: 295677214
+INFO:multi_broker_backend_updated:\U0001f504 Checking database health...
+INFO:system.backup_and_recovery:\U0001f50d Checking database health on startup...
+INFO:system.backup_and_recovery:\u2705 Database integrity check passed
+ERROR:system.backup_and_recovery:\u274c Verification failed: no such table: users
+INFO:multi_broker_backend_updated:\u2705 Database verified: None
+INFO:system.backup_and_recovery:\U0001f504 Auto-backup started (interval: 7200s)
+INFO:multi_broker_backend_updated:\u2705 Backup system initialized
+WARNING:system.backup_and_recovery:\u26a0\ufe0f Deleting old backup: backup_20260425_235639.db.gz
+INFO:multi_broker_backend_updated:\u2705 IG API service loaded
+WARNING:multi_broker_backend_updated:\u26a0\ufe0f oanda_service module not found - OANDA integration disabled
+INFO:multi_broker_backend_updated:\u2705 FXCM API service loaded
+INFO:multi_broker_backend_updated:\u2705 Binance API service loaded
+INFO:multi_broker_backend_updated:\u2705 Unified broker service loaded
+WARNING:multi_broker_backend_updated:Enhanced risk profiles not available: No module named 'risk_profile_manager_enhanced'
+INFO:multi_broker_backend_updated:\u2705 User test_user switched to LIVE trading mode (status=warming)
+ERROR:multi_broker_backend_updated:Error loading broker connection: no such column: api_key
+INFO:multi_broker_backend_updated:\u2705 User test_user switched to DEMO trading mode (status=warming)
+ERROR:multi_broker_backend_updated:Error loading broker connection: no such column: api_key
+
+======================================================================
+[ENVIRONMENT] Current Mode: DEMO
+[DEPLOYMENT] Mode: LOCAL
+[WORKERS] Worker Count: 0 (single-process (legacy))
+[BINANCE SCALE] Active cap: 1000 (2 workers x 500 bots/worker)
+[REST TRADING] MetaAPI: DISABLED (no token)
+[REST TRADING] Prefer REST: True
+[PRICE FEED] Twelve Data: DISABLED | Alpha Vantage: DISABLED
+[SOCKET BRIDGE] DISABLED (no SOCKET_BRIDGES)
+======================================================================
+
+initial broker creds: [<_DecryptedRow {'credential_id': 'cred_live_123', 'user_id': 'test_user', 'broker_name': 'Exness', 'account_number': '12345', 'server': 'Exness-Real', 'is_live': 1, 'is_active': 1, 'created_at': '2026-01-01T00:00:00', 'updated_at': '2026-01-01T00:00:00'}>, <_DecryptedRow {'credential_id': 'cred_demo_123', 'user_id': 'test_user', 'broker_name': 'Exness', 'account_number': '298997455', 'server': 'Exness-MT5Trial9', 'is_live': 0, 'is_active': 1, 'created_at': '2026-01-01T00:00:00', 'updated_at': '2026-01-01T00:00:00'}>]
+LIVE resp status 200
+LIVE resp json {'account_info': {}, 'active_credential': {'account_number': '12345', 'broker_name': 'Exness', 'credential_id': 'cred_live_123', 'is_live': True, 'server': 'Exness-Real'}, 'connection_status': 'warming', 'message': 'Switched to LIVE trading mode', 'mode': 'LIVE', 'mt5_route': {'account': '12345', 'account_number': '12345', 'broker': 'Exness', 'cache_key': 'Exness:12345', 'configured_path': None, 'configured_server': 'Exness-Real', 'is_live': True, 'is_mt5': True, 'path_exists': True, 'selected_path': 'C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe', 'selected_server': 'Exness-Real'}, 'skipped_bot_ids': [], 'success': True, 'updated_bot_ids': [], 'user_id': 'test_user', 'warning': None}
+after LIVE user_preferences: [<_DecryptedRow {'user_id': 'test_user', 'trading_mode': 'LIVE', 'live_account': '12345', 'live_server': 'Exness-Real', 'updated_at': '2026-07-27T13:54:01.229284'}>]
+DEMO resp status 200
+INFO:multi_broker_backend_updated:\U0001f6d1 Creating final backup on shutdown...
+DEMO resp json {'account_info': {}, 'active_credential': {'account_number': '298997455', 'broker_name': 'Exness', 'credential_id': 'cred_demo_123', 'is_live': False, 'server': 'Exness-MT5Trial9'}, 'connection_status': 'warming', 'message': 'Switched to DEMO trading mode', 'mode': 'DEMO', 'mt5_route': {'account': '298997455', 'account_number': '298997455', 'broker': 'Exness', 'cache_key': 'Exness:298997455', 'configured_path': None, 'configured_server': 'Exness-MT5Trial9', 'is_live': False, 'is_mt5': True, 'path_exists': True, 'selected_path': 'C:\\Program Files\\MetaTrader 5\\terminal64.exe', 'selected_server': 'Exness-MT5Trial9'}, 'skipped_bot_ids': [], 'success': True, 'updated_bot_ids': [], 'user_id': 'test_user', 'warning': None}
+after DEMO user_preferences: [<_DecryptedRow {'user_id': 'test_user', 'trading_mode': 'DEMO', 'live_account': None, 'live_server': None, 'updated_at': '2026-07-27T13:54:01.696621'}>]
+INFO:trade_router:TradeRouter shutdown complete
+WARNING:system.backup_and_recovery:\u26a0\ufe0f Deleting old backup: backup_20260426_013939.db.gz
+INFO:system.backup_and_recovery:\u270b Auto-backup stopped
+INFO:multi_broker_backend_updated:\u2705 Final backup complete. System shutdown.
