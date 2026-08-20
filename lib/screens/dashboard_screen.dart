@@ -47,6 +47,7 @@ import 'trades_screen.dart';
 import 'unified_broker_dashboard_screen.dart';
 import 'user_wallet_screen.dart';
 import 'activity_log_screen.dart';
+import 'vps_management_screen.dart';
 
 class _SampleCandle {
   final double time;
@@ -2456,6 +2457,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 _FeatureAction('FXCM Out', Icons.account_balance_wallet, const Color(0xFF7C4DFF), () => _pushScreen(const FxcmWithdrawalScreen())),
                 _FeatureAction('Binance Out', Icons.currency_bitcoin, const Color(0xFFF0B90B), () => _pushScreen(const BinanceWithdrawalScreen())),
                 _FeatureAction('Verify', Icons.admin_panel_settings, const Color(0xFFE74C3C), () => _pushScreen(const AdminWithdrawalVerificationScreen())),
+                _FeatureAction('VPS Mgmt', Icons.dns, const Color(0xFF00E5FF), () => _pushScreen(const VpsManagementScreen())),
               ],
             ),
             const SizedBox(height: 16),

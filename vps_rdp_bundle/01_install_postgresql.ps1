@@ -23,6 +23,9 @@ function Get-PostgresPsqlPath {
     }
 
     $candidatePaths += @(
+        'C:\Program Files\PostgreSQL\18\bin\psql.exe',
+        'C:\Program Files\PostgreSQL\18.0\bin\psql.exe',
+        'C:\Program Files\PostgreSQL\18.1\bin\psql.exe',
         'C:\Program Files\PostgreSQL\16\bin\psql.exe',
         'C:\Program Files\PostgreSQL\16.3\bin\psql.exe',
         'C:\Program Files\PostgreSQL\16.0\bin\psql.exe',

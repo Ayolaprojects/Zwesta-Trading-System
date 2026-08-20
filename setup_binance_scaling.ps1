@@ -9,7 +9,7 @@ param(
     [string]$BackendPath = "C:\backend",
     [string]$RedisPort   = "6379",
     [string]$PgPort      = "5432",
-    [int]$WorkerCount    = 5
+    [int]$WorkerCount    = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -173,9 +173,9 @@ if (-not (Test-Path $envFile)) {
     # Settings to add/update (only add if not present)
     $newSettings = @{
         "REDIS_URL"                    = "redis://localhost:$RedisPort/0"
-        "MAX_CONCURRENT_ACTIVE_BOTS"   = "500"
+        "MAX_CONCURRENT_ACTIVE_BOTS"   = "2000"
         "BINANCE_WORKER_COUNT"         = "$WorkerCount"
-        "MAX_BOTS_PER_BINANCE_WORKER"  = "500"
+        "MAX_BOTS_PER_BINANCE_WORKER"  = "2000"
     }
 
     foreach ($key in $newSettings.Keys) {
@@ -340,9 +340,9 @@ Write-Log "  Binance Market Data (WS feed) background process"
 Write-Log "  Binance Workers x$WorkerCount             background processes"
 Write-Log ""
 Write-Log "CAPACITY:"
-Write-Log "  $WorkerCount workers x 500 bots = $($WorkerCount * 500) concurrent bots"
-Write-Log "  $($WorkerCount * 500) bots / 5 per user = $($WorkerCount * 100) simultaneous active users"
-Write-Log "  At 10% concurrency: $($WorkerCount * 1000) registered users supported"
+Write-Log "  $WorkerCount workers x 2000 bots = $($WorkerCount * 2000) concurrent bots"
+Write-Log "  $($WorkerCount * 2000) bots / 5 per user = $($WorkerCount * 400) simultaneous active users"
+Write-Log "  At 10% concurrency: $($WorkerCount * 2000) registered users supported"
 Write-Log ""
 Write-Log "NEXT STEPS:"
 Write-Log "  1. Restart the Waitress backend:  Restart-Service ZwestaBackendAutoStart"

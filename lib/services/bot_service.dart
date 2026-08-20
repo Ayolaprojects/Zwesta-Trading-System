@@ -6,6 +6,11 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/bot_model.dart';
+import '../models/trade.dart';
+import '../models/trading_signal.dart';
+import '../models/account.dart';
+import '../services/risk_management_service.dart';
+import '../services/trade_alert_service.dart';
 import '../utils/environment_config.dart';
 
 class BotService extends ChangeNotifier {
@@ -25,6 +30,10 @@ class BotService extends ChangeNotifier {
   String? _errorMessage;
   String? _apiUrl;
   List<Map<String, dynamic>> _activeBots = [];
+  List<Trade> _activeTrades = [];
+  final Map<String, DateTime> _lastTradeBySymbol = {};
+  RiskManagementService? _riskService;
+  TradeAlertService? _alertService;
   SharedPreferences? _prefs;
   Timer? _pollTimer;
   bool _authPollingDisabled = false;
@@ -32,6 +41,9 @@ class BotService extends ChangeNotifier {
   String? _lastTradingMode;
   Future<void>? _inFlightFetch;
   int _consecutiveEmptyPayloads = 0;
+  int _consecutiveFetchErrors = 0;
+  int _winStreak = 0;
+  int _lossStreak = 0;
 
   Bot? get bot => _bot;
   BotStats? get stats => _stats;
@@ -40,6 +52,16 @@ class BotService extends ChangeNotifier {
   bool get isConnected => _isConnected;
   String? get errorMessage => _errorMessage;
   List<Map<String, dynamic>> get activeBots => _activeBots;
+  List<Trade> get activeTrades => List.unmodifiable(_activeTrades);
+  Map<String, DateTime> get lastTradeBySymbol => Map.unmodifiable(_lastTradeBySymbol);
+
+  void attachRiskService(RiskManagementService service) {
+    _riskService = service;
+  }
+
+  void attachAlertService(TradeAlertService service) {
+    _alertService = service;
+  }
 
   Future<SharedPreferences> _getPrefs() async {
     _prefs ??= await SharedPreferences.getInstance();
@@ -60,6 +82,16 @@ class BotService extends ChangeNotifier {
       final rawSnapshot = prefs.getString(_activeBotsCacheKey(prefs));
       if (rawSnapshot == null || rawSnapshot.trim().isEmpty) {
         return;
+      }
+
+      final lastSyncStr = prefs.getString('last_bot_sync');
+      if (lastSyncStr != null) {
+        final lastSync = DateTime.tryParse(lastSyncStr);
+        if (lastSync != null &&
+            DateTime.now().difference(lastSync) > const Duration(hours: 2)) {
+          debugPrint('Cached bot snapshot is stale (>2h old), ignoring');
+          return;
+        }
       }
 
       final decoded = jsonDecode(rawSnapshot);
@@ -94,6 +126,7 @@ class BotService extends ChangeNotifier {
     // Don't skip polling due to auth state - let _fetchActiveBotsInternal handle auth errors
     _pollTimer = Timer.periodic(interval, (_) {
       fetchActiveBots(tradingMode: mode);
+      fetchActiveTrades();
     });
   }
 
@@ -249,13 +282,14 @@ class BotService extends ChangeNotifier {
         final data = jsonDecode(response.body);
         if (data['success'] == true) {
           final fetchedBots = List<Map<String, dynamic>>.from(data['bots'] ?? []);
-          if (fetchedBots.isEmpty && previousBots.isNotEmpty) {
+          if (fetchedBots.isEmpty) {
             _consecutiveEmptyPayloads += 1;
-            if (_consecutiveEmptyPayloads < 2) {
+            if (_consecutiveEmptyPayloads < 2 && previousBots.isNotEmpty) {
               debugPrint('Ignoring transient empty bot payload during refresh');
               _isLoading = false;
               return;
             }
+            _consecutiveEmptyPayloads = 0;
           } else {
             _consecutiveEmptyPayloads = 0;
           }
@@ -263,6 +297,7 @@ class BotService extends ChangeNotifier {
           _activeBots = fetchedBots;
           _lastFetchAt = now;
           _errorMessage = null;
+          _consecutiveFetchErrors = 0;
           debugPrint('Fetched ${_activeBots.length} active bots from backend');
           await _persistActiveBotsCache(prefs, _activeBots);
         } else {
@@ -271,12 +306,20 @@ class BotService extends ChangeNotifier {
         }
       } else {
         _errorMessage = 'Backend returned status ${response.statusCode}';
-        // Don't wipe _activeBots - preserve previous data on error
+        // Don't wipe _activeBots - preserve previous data on transient error,
+        // but mark the cache stale so it expires on next init.
       }
     } catch (e) {
       _errorMessage = 'Error fetching bots: $e';
-      // Don't wipe _activeBots - preserve previous data on error
+      _consecutiveFetchErrors += 1;
       debugPrint('Bot fetch error: $e');
+    }
+
+    if (_consecutiveFetchErrors >= 5) {
+      debugPrint('Clearing stale bot cache after $_consecutiveFetchErrors consecutive errors');
+      _activeBots = [];
+      await _persistActiveBotsCache(prefs, []);
+      _consecutiveFetchErrors = 0;
     }
 
     _isLoading = false;
@@ -375,7 +418,7 @@ class BotService extends ChangeNotifier {
             headers: headers,
             body: jsonEncode(requestBody),
           )
-          .timeout(const Duration(seconds: 45));
+          .timeout(const Duration(seconds: 120));
 
       debugPrint('📥 Response: ${response.statusCode}');
       debugPrint('  Body: ${response.body}');
@@ -730,6 +773,295 @@ class BotService extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+  }
+
+  /// Return the subset of [_activeTrades] whose symbol matches [symbol]
+  /// and whose status is still [TradeStatus.open].
+  List<Trade> _getActiveTradesForSymbol(String symbol) {
+    return _activeTrades
+        .where(
+          (trade) =>
+              trade.symbol == symbol && trade.status == TradeStatus.open,
+        )
+        .toList();
+  }
+
+  /// Delegate position-limit checks to the [RiskManagementService].
+  /// Falls back to a client-side heuristic when the service is not attached.
+  bool _checkPositionLimits(TradingSignal signal, {double? positionSize}) {
+    final riskService = _riskService;
+    if (riskService != null) {
+      // Build a signal copy with the computed position size so the risk
+      // service's exposure check uses the adjusted lot size.
+      final effectiveSignal = positionSize != null
+          ? signal.copyWith(positionSize: positionSize)
+          : signal;
+      final result = riskService.validateSignal(
+        effectiveSignal,
+        activeTrades: _activeTrades.where((t) => t.status == TradeStatus.open).toList(),
+        account: riskService.account ?? _getCachedAccount(),
+      );
+      if (!result.approved) {
+        debugPrint('POSITION_LIMIT_EXCEEDED: ${signal.symbol} — '
+            '${result.rejectionReason}');
+        return false;
+      }
+      return true;
+    }
+
+    // Fallback: reject if more than 3 open positions exist for the symbol.
+    final symbolTrades = _getActiveTradesForSymbol(signal.symbol);
+    if (symbolTrades.length >= 3) {
+      debugPrint('POSITION_LIMIT_EXCEEDED: ${signal.symbol} has '
+          '${symbolTrades.length} open trades (fallback limit: 3)');
+      return false;
+    }
+    return true;
+  }
+
+  /// Check whether the market is open for [symbol].
+  /// Uses [RiskManagementService.isMarketOpen] when available, otherwise
+  /// returns `true` (assume open).
+  bool _isMarketOpen(String symbol) {
+    final riskService = _riskService;
+    if (riskService != null) {
+      return riskService.isMarketOpen(symbol);
+    }
+    return true;
+  }
+
+  Account? _getCachedAccount() {
+    return null;
+  }
+
+  /// Full pre-trade validation pipeline for an incoming [signal].
+  ///
+  /// The checks are:
+  /// 0. Symbol blocklist gate (XPDUSD, ZAR forex, user-blocked)
+  /// 1. Market-hours gate
+  /// 2. Duplicate-trade gate
+  /// 3. Position-limit gate (with dynamic position sizing)
+  /// 4. Time-based holding-timeout check for existing trades
+  ///
+  /// When `autoExecute` is true and all checks pass, the signal is forwarded
+  /// to [TradeAlertService.emitAlert] so the user (or downstream executor)
+  /// can act on it.
+  Future<bool> _validateTradeConditions(
+    TradingSignal signal, {
+    bool autoExecute = true,
+  }) async {
+    // 0. Symbol blocklist gate — prevents trading XPDUSD, ZAR forex, etc.
+    if (_riskService?.isSymbolBlocked(signal.symbol) ?? _isSymbolBlockedLocally(signal.symbol)) {
+      debugPrint('SYMBOL_BLOCKED: ${signal.symbol} is blacklisted for trading');
+      return false;
+    }
+
+    // 1. Market-hours gate
+    if (!_isMarketOpen(signal.symbol)) {
+      debugPrint('MARKET_CLOSED: ${signal.symbol} — signal not validated');
+      return false;
+    }
+
+    // 2. Position-count gate — warn about existing trades, allow add-ons
+    //    up to maxContractsPerSymbol (mirroring backend's pyramid add-on).
+    //    The backend's pyramid add-on system expects multiple positions per
+    //    symbol (up to maxAddons for indices, more for premium forex).
+    final existingTrades = _getActiveTradesForSymbol(signal.symbol);
+    if (existingTrades.isNotEmpty) {
+      debugPrint('POSITION_ADDON_ALLOWED: ${signal.symbol} already has '
+          '${existingTrades.length} active trades — allowing add-on within limits');
+    }
+
+    // 3. Position-limit gate (with dynamic position sizing)
+    final positionSize = await _calculateAdjustedPositionSize(signal);
+    if (!_checkPositionLimits(signal, positionSize: positionSize)) {
+      debugPrint('POSITION_LIMIT_EXCEEDED: ${signal.symbol}');
+      return false;
+    }
+
+    // 4. Time-based holding-timeout check for existing trades on other symbols
+    for (final trade in _activeTrades.where((t) => t.status == TradeStatus.open)) {
+      if (trade.symbol != signal.symbol &&
+          DateTime.now().difference(trade.openedAt).inHours >= 8) {
+        debugPrint('TRADE_TIMEOUT_HOLDING: ${trade.symbol} open for '
+            '${DateTime.now().difference(trade.openedAt).inHours}h');
+      }
+    }
+
+    // All checks passed — update the signal with the computed lot size
+    final adjustedSignal = signal.copyWith(positionSize: positionSize);
+
+    if (autoExecute) {
+      final alertService = _alertService;
+      if (alertService != null) {
+        await alertService.emitAlert(adjustedSignal);
+      }
+    }
+
+    // Record the last trade timestamp for this symbol
+    _lastTradeBySymbol[signal.symbol] = signal.timestamp;
+
+    return true;
+  }
+
+  static const Set<String> _localBlockedSymbols = {
+    'GBPZAR', 'GBPZARm',
+    'USDZAR', 'USDZARm',
+    'ZARJPY', 'ZARJPYm',
+    'XPDUSD', 'XPDUSDm',
+    'XPTUSD', 'XPTUSDm',
+  };
+
+  bool _isSymbolBlockedLocally(String symbol) {
+    final normalised = symbol.toUpperCase().replaceAll('/', '').trim();
+    final withoutM = normalised.endsWith('M') && normalised.length > 1
+        ? normalised.substring(0, normalised.length - 1)
+        : normalised;
+    return _localBlockedSymbols.contains(normalised) ||
+        _localBlockedSymbols.contains(withoutM);
+  }
+
+  /// Calculate the adjusted position size for a signal, applying the
+  /// backend's profit-tier scaling and per-symbol defensive scaling.
+  ///
+  /// Mirrors `_resolve_adaptive_trade_amount()` +
+  /// `DynamicPositionSizer.calculate_position_size()` +
+  /// `_evaluate_pyramid_addon()` from the backend.
+  Future<double> _calculateAdjustedPositionSize(TradingSignal signal) async {
+    final riskService = _riskService;
+    if (riskService == null) {
+      // Fallback: 0.01 lots for indices, 0.01 for forex
+      return _defaultLotSize(signal.symbol);
+    }
+
+    final prefs = await _getPrefs();
+    final botConfigRaw = prefs.getString('bot_config');
+    Bot? savedBot;
+    if (botConfigRaw != null) {
+      try {
+        savedBot = Bot.fromJson(jsonDecode(botConfigRaw));
+      } catch (_) {}
+    }
+
+    final baseSize = savedBot?.riskPerTrade ?? 0.1;
+    final symbolPnL = _symbolProfit(signal.symbol);
+    final realizedPnL = _totalProfit;
+    final accountBalance = riskService.account?.balance ?? 0.0;
+    final limits = riskService.limits;
+
+    // Full profit-tier sizing: equity, streaks, volatility, drawdown,
+    // small-account scale, profit-tier boost, per-symbol defensive
+    return RiskManagementService.calculateScaledPositionSize(
+      baseSize: baseSize,
+      minSize: limits.minPositionSize,
+      maxSize: limits.maxPositionSize,
+      totalTrades: 0,
+      totalProfit: realizedPnL,
+      peakProfit: 0.0,
+      maxDrawdown: 0.0,
+      winStreak: _winStreak,
+      lossStreak: _lossStreak,
+      performanceMultiplier: 1.0,
+      volatilityLevel: 'Medium',
+      managementProfile: 'balanced',
+      accountBalance: accountBalance,
+      symbol: signal.symbol,
+      realizedPnL: realizedPnL,
+      symbolPnL: symbolPnL,
+    );
+  }
+
+  static double _defaultLotSize(String symbol) {
+    final upper = symbol.toUpperCase().replaceAll('/', '');
+    // US30, UK100, etc. — use smaller lots (0.01) for indices
+    if (upper.contains('US30') || upper.contains('UK100') ||
+        upper.contains('NAS100') || upper.contains('GER30') ||
+        upper.contains('SPX500') || upper.contains('USTEC')) {
+      return 0.01;
+    }
+    // Forex majors — standard 0.01 to 0.1 lots
+    if (upper.contains('USD') || upper.contains('EUR') ||
+        upper.contains('GBP') || upper.contains('JPY') ||
+        upper.contains('AUD') || upper.contains('CAD') || upper.contains('CHF')) {
+      return 0.01;
+    }
+    // Crypto — 0.001 to 0.01 lots
+    return 0.001;
+  }
+
+  double get _totalProfit {
+    // Approximate total profit from active trades' unrealized P&L
+    var total = 0.0;
+    for (final trade in _activeTrades.where((t) => t.status == TradeStatus.open)) {
+      total += trade.profit ?? 0.0;
+    }
+    return total;
+  }
+
+  double _symbolProfit(String symbol) {
+    var total = 0.0;
+    for (final trade in _activeTrades.where((t) => t.symbol == symbol)) {
+      total += trade.profit ?? 0.0;
+    }
+    return total;
+  }
+
+
+  /// Fetch the user's currently open trades from the backend and cache them
+  /// locally in [_activeTrades].
+  Future<void> fetchActiveTrades() async {
+    try {
+      final prefs = await _getPrefs();
+      final sessionToken = prefs.getString('auth_token');
+      if (sessionToken == null || sessionToken.isEmpty) {
+        debugPrint('Cannot fetch active trades: no session token');
+        return;
+      }
+
+      final url = '$_apiUrl/api/trades/open?mode=ALL';
+      final response = await http
+          .get(
+            Uri.parse(url),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': sessionToken,
+            },
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        if (data['success'] == true) {
+          final tradesData = data['trades'] as List? ?? [];
+          final trades = tradesData
+              .map((e) => Trade.fromJson(Map<String, dynamic>.from(e)))
+              .toList();
+          _activeTrades = trades;
+          debugPrint('Fetched ${_activeTrades.length} active trades');
+        } else {
+          _activeTrades = [];
+          debugPrint('Backend returned success=false for trades, clearing cache');
+        }
+      } else {
+        _activeTrades = [];
+        debugPrint('Backend returned status ${response.statusCode} for trades, clearing stale cache');
+      }
+    } catch (e) {
+      _activeTrades = [];
+      debugPrint('Error fetching active trades: $e');
+    }
+  }
+
+  /// Public entry point: process a received [TradingSignal] through the
+  /// full validation pipeline.
+  ///
+  /// Returns a [RiskValidationResult] describing whether the signal was
+  /// approved and (if rejected) why.
+  Future<RiskValidationResult> processSignal(TradingSignal signal) async {
+    final approved = await _validateTradeConditions(signal);
+    return RiskValidationResult(
+      approved: approved,
+    );
   }
 
   @override

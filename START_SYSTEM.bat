@@ -51,9 +51,13 @@ if "%ERRORLEVEL%"=="0" (
 )
 
 REM Step 3: Verify backend health
-echo [Step 3] Verifying backend health...
+REM NOTE: On a VPS, PostgreSQL init + bot history resync + MT5 warm-up can take
+REM well over 60s before waitress binds port 9000. Poll up to 180s so a SLOW
+REM startup is treated as healthy instead of falsely failing (which would otherwise
+REM kill the backend below). See logs: "Backend not responding ... after 60 seconds".
+echo [Step 3] Verifying backend health (allowing up to 180s for slow VPS startup)...
 set /a HEALTH_OK=0
-for /L %%I in (1,1,60) do (
+for /L %%I in (1,1,180) do (
     "%PYTHON_EXE%" -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9000/api/health', timeout=3); sys.exit(0)" >NUL 2>&1
     if not errorlevel 1 (
         set /a HEALTH_OK=1
@@ -64,7 +68,7 @@ for /L %%I in (1,1,60) do (
 
 :health_ready
 if "%HEALTH_OK%"=="0" (
-    echo ERROR: Backend not responding on port 9000 after 60 seconds
+    echo ERROR: Backend not responding on port 9000 after 180 seconds
     echo        Check backend logs above for startup errors.
     pause
     exit /b 1

@@ -14,6 +14,353 @@ This Flutter application now supports a **complete multi-tenant, multi-broker tr
 
 ---
 
+## Full Trading System Architecture
+
+```
+                     +-------------------------+
+                     |    Market Watch         |
+                     |  (All Exness Symbols)   |
+                     +------------+------------+
+                                  |
+                                  |
+                     +------------v------------+
+                     |   Multi-Symbol Scanner  |
+                     |  (Runs Every Tick)      |
+                     +------------+------------+
+                                  |
+          ------------------------------------------------
+          |        |         |        |        |          |
+          v        v         v        v        v
+     EURUSD   XAUUSD    BTCUSD   NVDA   GBPJPY ...etc
+          |
+          |
+          v
++---------------------------------------------------------+
+|         MARKET STRUCTURE ENGINE (SMC / ICT)             |
++---------------------------------------------------------+
+| Trend Detection                                         |
+| BOS Detection                                           |
+| CHOCH Detection                                         |
+| Swing High/Low                                          |
+| Internal Structure                                      |
+| External Structure                                      |
+| Liquidity Pools                                         |
+| Premium/Discount                                        |
+| Equal Highs/Lows                                        |
++---------------------------------------------------------+
+                         |
+                         v
++---------------------------------------------------------+
+|          SMART MONEY CONFIRMATION ENGINE                |
++---------------------------------------------------------+
+| Liquidity Sweep                                         |
+| Order Block                                             |
+| Fair Value Gap                                          |
+| Breaker Block                                           |
+| Mitigation Block                                        |
+| Rejection Candle                                        |
+| Displacement                                             |
+| Market Imbalance                                        |
++---------------------------------------------------------+
+                         |
+                         v
++---------------------------------------------------------+
+|          MULTI-TIMEFRAME CONFIRMATION                   |
++---------------------------------------------------------+
+| Monthly Trend                                           |
+| Weekly Trend                                            |
+| Daily Trend                                             |
+| H4 Trend                                                |
+| H1 Trend                                                |
+| M15 Entry Bias                                          |
+| M5 Entry                                                |
++---------------------------------------------------------+
+                         |
+                         v
++---------------------------------------------------------+
+|          SESSION FILTER                                 |
++---------------------------------------------------------+
+| Asian Session                                           |
+| London Session                                          |
+| New York Session                                        |
+| London/New York Overlap                                 |
+| Crypto Session                                          |
++---------------------------------------------------------+
+                         |
+                         v
++---------------------------------------------------------+
+|          NEWS FILTER                                    |
++---------------------------------------------------------+
+| High Impact                                             |
+| Medium Impact                                           |
+| Central Bank                                             |
+| NFP                                                     |
+| CPI                                                     |
+| FOMC                                                    |
++---------------------------------------------------------+
+                         |
+                         v
++---------------------------------------------------------+
+|          TRADE QUALITY SCORING                          |
++---------------------------------------------------------+
+
+Trend Alignment              20
+Liquidity Sweep              15
+BOS                          15
+CHOCH                        10
+Order Block                  10
+FVG                           8
+Volume                        5
+ATR Volatility                5
+Spread                         5
+Session                        5
+Risk Reward                    2
+
+TOTAL = 100
+
+Trade only if Score >= 85
+
+                         |
+                         v
++---------------------------------------------------------+
+|          RISK MANAGEMENT                                |
++---------------------------------------------------------+
+
+Risk Per Trade
+
+Forex             0.50%
+Gold              1.00%
+Indices           1.00%
+Crypto            0.50%
+Stocks            0.50%
+
+Maximum Open Trades = 3
+
+Maximum Daily Loss = 3%
+
+Maximum Daily Profit = 8%
+
+Maximum Weekly DD = 6%
+
+Maximum Monthly DD = 10%
+
+Maximum Correlated Trades = 2
+
+One Trade Per Symbol
+
+No Revenge Trading
+
+Daily Reset
+
+                         |
+                         v
++---------------------------------------------------------+
+|        TRADE EXECUTION ENGINE                           |
++---------------------------------------------------------+
+
+Dynamic Lot Size
+
+ATR Stop Loss
+
+Market Structure Stop
+
+Take Profit
+
+Partial Close
+
+Break Even
+
+Smart Trailing Stop
+
+Emergency Close
+
+                         |
+                         v
++---------------------------------------------------------+
+|       TRADE MANAGEMENT                                  |
++---------------------------------------------------------+
+
+Move to BE
+
+Partial TP1
+
+Partial TP2
+
+Trail Behind Swing
+
+Exit on Opposite CHOCH
+
+Exit on Opposite BOS
+
+Exit Before News
+
+Exit Before Weekend
+
+                         |
+                         v
++---------------------------------------------------------+
+|             DASHBOARD                                   |
++---------------------------------------------------------+
+
+Current Trend
+
+Current Session
+
+Spread
+
+ATR
+
+Risk %
+
+Score %
+
+Signal Quality
+
+Next News
+
+Daily Profit
+
+Weekly Profit
+
+Monthly Profit
+
+Open Trades
+
+Win Rate
+
+Profit Factor
+
+Drawdown
+```
+
+## Scanner Logic
+
+The scanner monitors every configured symbol continuously and ranks opportunities across all Exness instruments.
+
+Symbols include:
+
+- BTCUSDm
+- ETHUSDm
+- BNBUSDm
+- DOGEUSDm
+- SOLUSDm
+- XRPUSDm
+
+- EURUSDm
+- GBPUSDm
+- EURGBPm
+- USDJPYm
+- GBPJPYm
+- USDCADm
+- AUDUSDm
+- NZDUSDm
+- USDZARm
+- GBPZARm
+- EURJPYm
+
+- XAUUSDm
+- XPDUSDm
+- XPTUSDm
+
+- US30m
+- US500m
+- USTECm
+
+- NVDAm
+- MSFTm
+- GOOGLm
+- AAPLm
+- AMDm
+- METAm
+- TSMm
+- ORCLm
+- BACm
+- JPMm
+- WFCm
+
+- UKOILm
+- USOILm
+
+Nothing is removed from the universe; the scanner simply ranks and prioritizes the best opportunities.
+
+---
+
+## Institutional Trade Ranking
+
+The system evaluates each candidate by checklist-style criteria instead of a simple BUY/SELL flag.
+
+Example:
+
+```
+EURUSD
+
+Trend        ✓
+
+Sweep        ✓
+
+BOS          ✓
+
+CHOCH        ✓
+
+OB           ✓
+
+FVG          ✓
+
+Volume       ✓
+
+Spread       ✓
+
+Session      ✓
+
+RR           1:3
+
+QUALITY
+
+94%
+
+EXECUTE
+```
+
+```
+DOGEUSD
+
+Trend         ✓
+
+Sweep         ✕
+
+BOS           ✓
+
+CHOCH         ✕
+
+OB            ✕
+
+FVG           ✓
+
+Spread        Poor
+
+Session       Weak
+
+QUALITY
+
+61%
+
+IGNORE
+```
+
+---
+
+## AI Trade Confidence
+
+Every signal receives a confidence score.
+
+- 95-100% — ★★★★★ — Institutional Setup
+- 90-94% — ★★★★☆ — Excellent
+- 85-89% — ★★★★ — Good / Execute
+- 80-84% — ★★★ — Watchlist
+- Below 80 — Ignore
+
+---
+
 ## 🔐 User Authentication & Registration
 
 ### Getting Started

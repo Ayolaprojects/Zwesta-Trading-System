@@ -18,9 +18,10 @@ name: Deploy Backend to VPS
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'multi_broker_backend_updated.py'
-      - '.github/workflows/deploy-backend.yml'
+     paths:
+       - 'multi_broker_backend_updated.py'
+       - 'postgres_schema.py'
+       - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
     inputs:
       restart_only:
@@ -52,13 +53,19 @@ jobs:
             Write-Host "No python processes running"
           }
 
-      - name: Copy backend file
+       - name: Copy backend file
         if: ${{ github.event.inputs.restart_only != 'true' }}
         shell: pwsh
         run: |
           Write-Host "=== Copying patched backend to C:\backend\ ==="
           Copy-Item "${{ github.workspace }}\multi_broker_backend_updated.py" `
                     "C:\backend\multi_broker_backend_updated.py" -Force
+          # Also copy postgres_schema.py (used for schema init + migrations at startup)
+          if (Test-Path "${{ github.workspace }}\postgres_schema.py") {
+            Copy-Item "${{ github.workspace }}\postgres_schema.py" `
+                      "C:\backend\postgres_schema.py" -Force
+            Write-Host "Copied postgres_schema.py"
+          }
           Write-Host "File copied: $(Get-Date)"
           $item = Get-Item "C:\backend\multi_broker_backend_updated.py"
           Write-Host "Size: $($item.Length) bytes  Modified: $($item.LastWriteTime)"

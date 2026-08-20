@@ -5,3 +5,5 @@ export 'bot_model.dart';
 export 'broker_connection_model.dart';
 export 'statement.dart';
 export 'financial_statement.dart';
+export 'trading_signal.dart';
+export 'vps_model.dart';

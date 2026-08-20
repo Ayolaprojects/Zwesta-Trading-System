@@ -1,44 +1,52 @@
 $BackendUrl = 'http://127.0.0.1:9000'
-$Server = 'Exness-Real'
+$Server = 'Exness-MT5Real27'   # live server; change if your accounts use a different one
 $BrokerName = 'Exness'
 $PythonCmd = 'python'
 $DefaultZwestaPassword = 'Zwesta1985'
 
+# All live user terminals live under one folder: C:\MT5\Exness-Live\UserN
+# Each UserN is a separate Exness MT5 install logged into that user's own account.
+$BaseTerminalDir = 'C:\MT5\Exness-Live'
+
+# >>> ADD NEW USERS HERE <<<
+# Fill Mt5Account / Mt5Password for each user. TerminalPath must point at that
+# user's dedicated MT5 terminal folder (created under $BaseTerminalDir).
 $Users = @(
     @{
-        Email = 'billionaire.mogul@yahoo.com'
-        Name = 'Billionaire Mogul'
+        Email = 'user1@example.com'
+        Name = 'User One'
         UserPassword = $DefaultZwestaPassword
         Mt5Account = '<SET_MT5_ACCOUNT>'
         Mt5Password = '<SET_MT5_PASSWORD>'
-        TerminalPath = 'C:\MT5\Exness-Live\User1\terminal64.exe'
+        TerminalPath = "$BaseTerminalDir\User1\terminal64.exe"
     },
     @{
-        Email = 'lisabelezandala@gmail.com'
-        Name = 'Lisabelezandala'
+        Email = 'user2@example.com'
+        Name = 'User Two'
         UserPassword = $DefaultZwestaPassword
         Mt5Account = '<SET_MT5_ACCOUNT>'
         Mt5Password = '<SET_MT5_PASSWORD>'
-        TerminalPath = 'C:\MT5\Exness-Live\User2\terminal64.exe'
+        TerminalPath = "$BaseTerminalDir\User2\terminal64.exe"
     },
     @{
-        Email = 'bongiwemcimeli@yahoo.com'
-        Name = 'Bongiwe Mcimeli'
+        Email = 'user3@example.com'
+        Name = 'User Three'
         UserPassword = $DefaultZwestaPassword
         Mt5Account = '<SET_MT5_ACCOUNT>'
         Mt5Password = '<SET_MT5_PASSWORD>'
-        TerminalPath = 'C:\MT5\Exness-Live\User3\terminal64.exe'
+        TerminalPath = "$BaseTerminalDir\User3\terminal64.exe"
     }
 )
 
+# Reserved extra terminal folders (install MT5 into these for future users)
 $ReservedExtras = @(
-    'C:\MT5\Exness-Live\User4\terminal64.exe',
-    'C:\MT5\Exness-Live\User5\terminal64.exe',
-    'C:\MT5\Exness-Live\User6\terminal64.exe',
-    'C:\MT5\Exness-Live\User7\terminal64.exe',
-    'C:\MT5\Exness-Live\User8\terminal64.exe',
-    'C:\MT5\Exness-Live\User9\terminal64.exe',
-    'C:\MT5\Exness-Live\User10\terminal64.exe'
+    "$BaseTerminalDir\User4\terminal64.exe",
+    "$BaseTerminalDir\User5\terminal64.exe",
+    "$BaseTerminalDir\User6\terminal64.exe",
+    "$BaseTerminalDir\User7\terminal64.exe",
+    "$BaseTerminalDir\User8\terminal64.exe",
+    "$BaseTerminalDir\User9\terminal64.exe",
+    "$BaseTerminalDir\User10\terminal64.exe"
 )
 
 function Test-PlaceholderValue {

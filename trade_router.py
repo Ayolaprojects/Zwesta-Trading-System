@@ -250,24 +250,28 @@ class TradeRouter:
         try:
             if acct.mode == ExecutionMode.SOCKET:
                 result = self._trade_socket(acct, symbol, order_type, volume,
-                                            stop_loss, take_profit, comment)
+                                            stop_loss, take_profit, comment,
+                                            bot_id=bot_id)
             elif acct.mode == ExecutionMode.METAAPI:
                 result = self._trade_metaapi(acct, symbol, order_type, volume,
-                                             stop_loss, take_profit, comment)
+                                             stop_loss, take_profit, comment,
+                                             bot_id=bot_id)
             elif acct.mode == ExecutionMode.WORKER:
                 result = self._trade_worker(acct, symbol, order_type, volume,
                                             stop_loss, take_profit, comment,
                                             bot_id, user_id)
             elif acct.mode == ExecutionMode.LOCAL_MT5:
                 result = self._trade_local_mt5(acct, symbol, order_type, volume,
-                                               stop_loss, take_profit, comment)
+                                               stop_loss, take_profit, comment,
+                                               bot_id=bot_id)
             elif acct.mode == ExecutionMode.BINANCE:
                 result = self._trade_binance(acct, symbol, order_type, volume,
                                              stop_loss, take_profit, comment,
-                                             user_id, **kwargs)
+                                             user_id, bot_id=bot_id, **kwargs)
             elif acct.mode == ExecutionMode.FXCM:
                 result = self._trade_fxcm(acct, symbol, order_type, volume,
-                                          stop_loss, take_profit, comment)
+                                          stop_loss, take_profit, comment,
+                                          bot_id=bot_id)
             else:
                 result = {'success': False, 'comment': f'Unknown mode {acct.mode}',
                           'retcode': -1}
@@ -377,12 +381,12 @@ class TradeRouter:
 
     # ─── Private Execution Methods ─────────────────────────────────────
 
-    def _trade_socket(self, acct, symbol, order_type, volume, sl, tp, comment):
+    def _trade_socket(self, acct, symbol, order_type, volume, sl, tp, comment, bot_id=None):
         """Execute trade via socket bridge to MT5 EA."""
         if not acct.connection:
             return {'success': False, 'comment': 'No socket bridge', 'retcode': -1}
 
-        result = acct.connection.place_order(
+        params = dict(
             symbol=symbol,
             order_type=order_type,
             volume=volume,
@@ -390,14 +394,17 @@ class TradeRouter:
             takeProfit=tp,
             comment=comment,
         )
+        if bot_id is not None:
+            params['bot_id'] = bot_id
+        result = acct.connection.place_order(**params)
         return result
 
-    def _trade_metaapi(self, acct, symbol, order_type, volume, sl, tp, comment):
+    def _trade_metaapi(self, acct, symbol, order_type, volume, sl, tp, comment, bot_id=None):
         """Execute trade via MetaAPI REST."""
         if not acct.connection:
             return {'success': False, 'comment': 'No MetaAPI connection', 'retcode': -1}
 
-        result = acct.connection.place_order(
+        params = dict(
             symbol=symbol,
             order_type=order_type,
             volume=volume,
@@ -405,14 +412,17 @@ class TradeRouter:
             takeProfit=tp,
             comment=comment,
         )
+        if bot_id is not None:
+            params['bot_id'] = bot_id
+        result = acct.connection.place_order(**params)
         return result
 
-    def _trade_local_mt5(self, acct, symbol, order_type, volume, sl, tp, comment):
+    def _trade_local_mt5(self, acct, symbol, order_type, volume, sl, tp, comment, bot_id=None):
         """Execute trade via local MT5 terminal."""
         if not acct.connection:
             return {'success': False, 'comment': 'No MT5 connection', 'retcode': -1}
 
-        result = acct.connection.place_order(
+        params = dict(
             symbol=symbol,
             order_type=order_type,
             volume=volume,
@@ -420,6 +430,9 @@ class TradeRouter:
             takeProfit=tp,
             comment=comment,
         )
+        if bot_id is not None:
+            params['bot_id'] = bot_id
+        result = acct.connection.place_order(**params)
         return result
 
     def _trade_worker(self, acct, symbol, order_type, volume, sl, tp, comment,
@@ -440,16 +453,15 @@ class TradeRouter:
         return {'success': False, 'comment': 'Binance trades handled by binance_service',
                 'retcode': -1}
 
-    def _trade_fxcm(self, acct, symbol, order_type, volume, sl, tp, comment):
+    def _trade_fxcm(self, acct, symbol, order_type, volume, sl, tp, comment, bot_id=None):
         """Execute trade via FXCM REST API (FXCMConnection)."""
         if not acct.connection:
             return {'success': False, 'comment': 'No FXCM connection', 'retcode': -1}
         try:
-            result = acct.connection.place_order(
-                symbol=symbol,
-                order_type=order_type,
-                volume=volume,
-            )
+            params = dict(symbol=symbol, order_type=order_type, volume=volume)
+            if bot_id is not None:
+                params['bot_id'] = bot_id
+            result = acct.connection.place_order(**params)
             if result.get('success'):
                 return {
                     'success': True,

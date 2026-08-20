@@ -988,6 +988,9 @@ class _BotConfigurationScreenState extends State<BotConfigurationScreen> {
 
   bool get _isBinanceBroker => _activeBrokerName == 'binance';
 
+  bool get _isExnessBroker =>
+      const {'exness', 'xm', 'xm global'}.contains(_activeBrokerName);
+
   String get _symbolSectionTitle =>
       _isBinanceBroker ? 'Select Binance Pairs' : 'Select Trading Symbols';
 
@@ -5282,7 +5285,9 @@ if (profile == 'beginner') {
                         ),
                         subtitle: Text(
                           _topMoversEnabled
-                              ? 'ON — Bot automatically tracks the top-performing USDT pairs every 2 minutes and adds them to the scan universe, following new pumps and drops as they happen.'
+                              ? (_isExnessBroker
+                                  ? 'ON — Bot tracks the top-moving crypto assets (e.g. BTC, ETH, SOL) every 2 minutes via Binance momentum data and maps them to your Exness CFDs (e.g. BTCUSDm), following new pumps and drops as they happen.'
+                                  : 'ON — Bot automatically tracks the top-performing USDT pairs every 2 minutes and adds them to the scan universe, following new pumps and drops as they happen.')
                               : 'OFF — Bot only scans the symbols you configured above.',
                           style: TextStyle(
                             color: _topMoversEnabled
@@ -5338,7 +5343,9 @@ if (profile == 'beginner') {
                         ),
                         subtitle: Text(
                           _topMoversDirectTrading
-                              ? 'ON — Bot executes momentum trades directly when a top mover is detected, bypassing the signal engine. Requires Top Movers Scanner.'
+                              ? (_isExnessBroker
+                                  ? 'ON — Bot executes momentum trades directly on your Exness CFDs (e.g. BTCUSDm) when a top-moving crypto asset is detected, bypassing the signal engine. Requires Top Movers Scanner.'
+                                  : 'ON — Bot executes momentum trades directly when a top mover is detected, bypassing the signal engine. Requires Top Movers Scanner.')
                               : 'OFF — Top movers are only added to the scan list; the signal engine decides entries.',
                           style: TextStyle(
                             color: _topMoversDirectTrading

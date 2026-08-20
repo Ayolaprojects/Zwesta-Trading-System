@@ -59,7 +59,7 @@ echo.
 
 call flutter build apk --release ^
     --dart-define=ZWESTA_ENV=production ^
-    --dart-define=API_URL=http://your-vps-ip:9000
+    --dart-define=API_URL=http://148.113.5.21:9000
 
 if %errorlevel% neq 0 (
     echo [ERROR] APK build failed

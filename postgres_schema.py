@@ -518,6 +518,7 @@ POSTGRES_SCHEMA_SQL = [
         updated_at TEXT,
         trade_data TEXT,
         timestamp BIGINT,
+        broker TEXT,
         FOREIGN KEY (bot_id) REFERENCES user_bots(bot_id),
         FOREIGN KEY (user_id) REFERENCES users(user_id)
     )
@@ -661,6 +662,9 @@ MIGRATIONS = [
     ''',
     '''
     ALTER TABLE broker_credentials ADD COLUMN IF NOT EXISTS mt5_terminal_path TEXT;
+    ''',
+    '''
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS broker TEXT;
     ''',
 ]
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/login_screen.dart';
@@ -13,6 +14,10 @@ import 'services/financial_service.dart';
 import 'services/ig_auto_connect_service.dart';
 import 'services/commission_service.dart';
 import 'services/broker_credentials_service.dart';
+import 'services/vps_service.dart';
+import 'services/risk_management_service.dart';
+import 'services/trade_alert_service.dart';
+import 'services/strategy_engine.dart';
 import 'providers/currency_provider.dart';
 import 'providers/fallback_status_provider.dart';
 import 'theme/app_theme.dart';
@@ -36,7 +41,53 @@ void main() async {
             : Environment.staging,
       );
     }
+
+    // Point the app at the deployed VPS backend. The --dart-define=API_URL value
+    // (if supplied at build time) is already picked up by EnvironmentConfig.apiUrl;
+    // if not supplied, the hardcoded default now points at the real VPS host.
+    const String buildApiUrl = String.fromEnvironment('API_URL', defaultValue: '');
+    if (buildApiUrl.isNotEmpty) {
+      EnvironmentConfig.setApiUrl(buildApiUrl);
+    }
+
     EnvironmentConfig.validateLaunchConfiguration();
+
+    // Fail fast with a clear message instead of a cryptic "Future not completed"
+    // if the backend cannot be reached.
+    try {
+      final Uri healthUri = Uri.parse('${EnvironmentConfig.apiUrl}/api/health');
+      await http.get(healthUri).timeout(const Duration(seconds: 8));
+    } catch (e) {
+      runApp(MaterialApp(
+        home: Scaffold(
+          backgroundColor: Colors.red.shade50,
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.cloud_off, color: Colors.red, size: 64),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Cannot reach backend',
+                    style: TextStyle(fontSize: 20, color: Colors.red, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Tried: ${EnvironmentConfig.apiUrl}/api/health\n$e',
+                    style: const TextStyle(color: Colors.black87),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ));
+      return;
+    }
+
     runApp(const MyApp());
   } catch (e, st) {
     print('Main init error: $e\n$st');
@@ -111,6 +162,18 @@ void main() async {
           ),
           ChangeNotifierProvider(
             create: (_) => BrokerCredentialsService(),
+          ),
+          ChangeNotifierProvider(
+            create: (_) => VpsService(),
+          ),
+          ChangeNotifierProvider(
+            create: (_) => RiskManagementService(),
+          ),
+          ChangeNotifierProvider(
+            create: (_) => TradeAlertService(),
+          ),
+          ChangeNotifierProvider(
+            create: (_) => StrategyEngine(),
           ),
         ],
         child: MaterialApp(

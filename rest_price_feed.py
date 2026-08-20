@@ -49,6 +49,7 @@ PIP_VALUES = {
     'FOREX': 0.0001,      # Standard forex
     'GOLD': 0.01,         # XAU
     'SILVER': 0.001,      # XAG
+    'OIL': 0.01,          # USOIL/UKOIL/WTI/BRENT (~$80 quote, 1c pip)
     'CRYPTO': 0.01,       # BTC/ETH
     'STOCK': 0.01,        # Stocks
     'INDEX': 0.1,         # Indices
@@ -64,6 +65,8 @@ def get_pip_size(symbol):
         return PIP_VALUES['GOLD']
     if 'XAG' in sym or 'SILVER' in sym:
         return PIP_VALUES['SILVER']
+    if any(o in sym for o in ('USOIL', 'UKOIL', 'WTI', 'BRENT', 'OIL')):
+        return PIP_VALUES['OIL']
     if 'BTC' in sym or 'ETH' in sym:
         return PIP_VALUES['CRYPTO']
     if sym in ('US30', 'SPX500', 'NAS100', 'EUR50'):

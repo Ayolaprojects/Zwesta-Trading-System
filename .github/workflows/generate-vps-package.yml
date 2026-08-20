@@ -8,6 +8,7 @@ on:
       - main
     paths:
       - 'multi_broker_backend_updated.py'
+      - 'postgres_schema.py'
       - 'START_SYSTEM.bat'
       - 'start_postgres_backend.bat'
       - 'requirements-production.txt'
@@ -35,6 +36,7 @@ jobs:
           mkdir -p "$PKG_DIR"
 
           cp "$ROOT/multi_broker_backend_updated.py" "$PKG_DIR/"
+          cp "$ROOT/postgres_schema.py" "$PKG_DIR/"
           cp "$ROOT/START_SYSTEM.bat" "$PKG_DIR/"
           cp "$ROOT/start_postgres_backend.bat" "$PKG_DIR/"
           cp "$ROOT/requirements-production.txt" "$PKG_DIR/"

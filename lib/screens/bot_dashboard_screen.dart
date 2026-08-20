@@ -13,6 +13,8 @@ import '../providers/currency_provider.dart';
 import '../services/bot_service.dart';
 import '../services/broker_credentials_service.dart';
 import '../services/financial_export_service.dart';
+import '../services/risk_management_service.dart';
+import '../services/trade_alert_service.dart';
 import '../utils/environment_config.dart';
 import '../widgets/account_display_widget.dart';
 import '../widgets/logo_widget.dart';
@@ -53,8 +55,11 @@ class _BotDashboardScreenState extends State<BotDashboardScreen> {
     // Re-fetch bots with the correct mode
     if (mounted) {
       final botService = context.read<BotService>();
+      botService.attachRiskService(context.read<RiskManagementService>());
+      botService.attachAlertService(context.read<TradeAlertService>());
       botService.startPolling(tradingMode: mode);
       botService.fetchActiveBots(tradingMode: mode, force: true);
+      botService.fetchActiveTrades();
     }
   }
 
